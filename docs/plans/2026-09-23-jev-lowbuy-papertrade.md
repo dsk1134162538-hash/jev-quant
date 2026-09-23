@@ -3286,6 +3286,501 @@ git commit -m "feat: show stock names in panel and daily report"
 
 ---
 
+### Task 16: 决策留痕（后端）
+
+用户要用「Jev 判断」学习：每个主账户候选都要能追溯「为什么被选中 → 每条公告怎么判的（关键词还是 Jev、各类概率）→ 消息面看了哪些新闻、三档概率 → 当时市场情绪/外围的输入与概率 → 最终结果」。Jev 本身只返回类别、概率、置信度，不产生文字推理；留痕记录的就是这些输入和概率。不增加任何 Jev 调用。
+
+**Files:**
+- Modify: `jevq/db.py`, `jevq/judge/jev.py`, `jevq/judge/notices.py`, `jevq/judge/news.py`, `jevq/judge/market.py`, `jevq/engine.py`, `run.py`
+- Test: `tests/test_db.py`（新建）, `tests/test_notice_judge.py`, `tests/test_news_market.py`, `tests/test_engine.py`
+
+**Interfaces:**
+- Produces:
+  - `db.connect` 在建表后执行迁移：若缺列则 `ALTER TABLE decisions ADD COLUMN trace TEXT`、`ALTER TABLE notice_verdicts ADD COLUMN probs TEXT`（兼容已存在的旧库）
+  - `jev.score_probs(answer) -> dict[str, float]`：把 Score 答案的 `probabilities` 键从档位序号换成档位名
+  - `NoticeJudge.last_trace: list[dict]`：最近一次 `check` 的逐条记录，每项 `{"date","title","label","confidence","source"("keyword"|"jev"),"probabilities"(dict|None),"mine"(bool),"unsure"(bool)}`，按公告日期倒序；`check()` 返回值不变
+  - `NewsJudge.last_trace: dict | None`：`{"label","news": [str],"probabilities": dict|None,"confidence": float|None}`；`day_cache(kind='news')` 的 value 改存这个 dict 的 JSON（读取时兼容旧的纯文本档位）；`check()` 返回值不变
+  - `MarketJudge.sentiment_trace` / `MarketJudge.overseas_trace: dict | None`：`{"inputs": dict,"label","probabilities": dict,"confidence"}`；Jev 失败或输入为空时为 `None`；`sentiment()` / `overseas()` 返回值不变
+  - `Engine(..., overseas: str | None, overseas_trace: dict | None = None)`；主账户每个被检查的候选写一条 `decisions`，`trace` 列为 JSON：
+    ```
+    {"candidate": {"name","price","pct","ret5","rank","of"},
+     "notices": [...] | null, "news": {...} | null,
+     "market": {"mode","sentiment","sentiment_trace","overseas","overseas_trace"},
+     "outcome": {"bought": bool, "shares": int|null, "price": float|null}}
+    ```
+    `news` 只在公告通过、确实做了消息面判断时写入，否则为 `null`；情绪刷新那条 `decisions`（code 为空）的 trace 为 `sentiment_trace`。
+  - `run_day` 构造 Engine 时传 `overseas_trace=market.overseas_trace`
+
+- [ ] **Step 1: 写失败的测试**
+
+`tests/test_db.py`（新建）:
+```python
+import sqlite3
+
+from jevq import db
+
+
+def test_migrates_old_schema(tmp_path):
+    path = str(tmp_path / "old.sqlite")
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE decisions(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, code TEXT, verdict TEXT, detail TEXT)")
+    old.execute("CREATE TABLE notice_verdicts(id TEXT PRIMARY KEY, label TEXT, confidence REAL, source TEXT)")
+    old.execute("INSERT INTO decisions(ts, code, verdict, detail) VALUES ('t', '600001', 'pass', 'ok')")
+    old.commit()
+    old.close()
+    conn = db.connect(path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(decisions)")}
+    assert "trace" in cols
+    assert "probs" in {r[1] for r in conn.execute("PRAGMA table_info(notice_verdicts)")}
+    assert conn.execute("SELECT code, trace FROM decisions").fetchone() == ("600001", None)
+    db.connect(path)                                   # 再次连接不报错（迁移幂等）
+```
+
+`tests/test_notice_judge.py` 追加：
+```python
+def test_trace_records_each_notice_with_source_and_probs():
+    titles = ["甲:关于回购公司股份的进展公告", "甲:关于重大合同的公告"]
+    conn = setup(*titles)
+    judge = NoticeJudge(conn, FakeJev({titles[1]: "其他"}, confidence=0.8))
+    assert judge.check("600001", TODAY)[0] == "reject"
+    by_title = {t["title"]: t for t in judge.last_trace}
+    assert by_title[titles[0]]["source"] == "keyword" and by_title[titles[0]]["mine"] is True
+    assert by_title[titles[0]]["probabilities"] is None
+    assert by_title[titles[1]]["source"] == "jev" and by_title[titles[1]]["probabilities"] == {"其他": 0.8}
+    assert by_title[titles[1]]["unsure"] is False
+    judge2 = NoticeJudge(conn, FakeJev({}))                 # 全部走缓存
+    judge2.check("600001", TODAY)
+    assert {t["title"]: t["probabilities"] for t in judge2.last_trace}[titles[1]] == {"其他": 0.8}
+```
+
+`tests/test_news_market.py` 追加：
+```python
+def test_news_trace_and_cache_roundtrip():
+    conn = db.connect(":memory:")
+    judge = NewsJudge(conn, ScoreJev("中性"), fetch=lambda code: [news(1, "利好标题")])
+    assert judge.check("600001", "甲", NOW) == ("pass", "消息面中性")
+    t = judge.last_trace
+    assert t["label"] == "中性" and t["news"][0].startswith("利好标题")
+    assert t["probabilities"]["中性"] == 0.9
+    judge2 = NewsJudge(conn, ScoreJev("偏空"), fetch=lambda code: [])   # 走缓存
+    assert judge2.check("600001", "甲", NOW) == ("pass", "消息面中性")
+    assert judge2.last_trace == t
+
+
+def test_news_reads_legacy_plain_cache():
+    conn = db.connect(":memory:")
+    conn.execute("INSERT INTO day_cache VALUES (?, 'news', '600001', '偏空')", (NOW.date().isoformat(),))
+    judge = NewsJudge(conn, ScoreJev("中性"), fetch=lambda code: [])
+    assert judge.check("600001", "甲", NOW) == ("reject", "消息面偏空")
+    assert judge.last_trace["label"] == "偏空"
+
+
+def test_market_traces():
+    m = MarketJudge(ScoreJev("火热"))
+    m.sentiment({"涨停家数": 80})
+    assert m.sentiment_trace["inputs"] == {"涨停家数": 80} and m.sentiment_trace["label"] == "火热"
+    assert m.sentiment_trace["probabilities"]["火热"] == 0.9
+    m2 = MarketJudge(ScoreJev("中性", fail=True))
+    assert m2.overseas({"道琼斯": 0.1}) is None and m2.overseas_trace is None
+```
+
+`tests/test_engine.py` 追加：
+```python
+def test_main_decision_trace():
+    eng, ledger, _ = make(qs(**{"600001": -1.0, "600002": -2.0}))
+    eng.tick(at(10, 0))
+    rows = eng.conn.execute("SELECT code, trace FROM decisions WHERE code != '' ORDER BY id").fetchall()
+    traces = {code: json.loads(t) for code, t in rows}
+    t = traces["600002"]
+    assert t["candidate"]["rank"] == 1 and t["candidate"]["of"] == 2 and t["candidate"]["ret5"] == 15.0
+    assert t["market"]["mode"] == "intraday" and t["market"]["sentiment"] == "正常"
+    assert t["outcome"]["bought"] is True and t["outcome"]["shares"] > 0
+    assert t["notices"] is None and t["news"] is None     # 测试替身没有 last_trace
+
+
+def test_rejected_decision_trace_has_no_news():
+    class NoticeWithTrace(Judge):
+        last_trace = [{"title": "减持", "label": "新增减持", "mine": True}]
+    news = Judge()
+    news.last_trace = {"label": "中性"}
+    eng, _, _ = make(qs(**{"600002": -1.0}), notice=NoticeWithTrace({"600002": ("reject", "新增减持")}), news=news)
+    eng.tick(at(10, 0))
+    t = json.loads(eng.conn.execute("SELECT trace FROM decisions WHERE code='600002'").fetchone()[0])
+    assert t["notices"][0]["label"] == "新增减持" and t["news"] is None
+    assert t["outcome"]["bought"] is False
+```
+（`tests/test_engine.py` 顶部补 `import json`。）
+
+- [ ] **Step 2: 运行，确认失败**
+
+Run: `.venv/Scripts/python -m pytest tests/test_db.py tests/test_notice_judge.py tests/test_news_market.py tests/test_engine.py -q`
+Expected: 新增测试 FAIL
+
+- [ ] **Step 3: 实现**
+
+`jevq/db.py`：`SCHEMA` 不动，新增：
+```python
+MIGRATIONS = [("decisions", "trace", "TEXT"), ("notice_verdicts", "probs", "TEXT")]
+
+
+def _migrate(conn: sqlite3.Connection):
+    for table, column, kind in MIGRATIONS:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+    conn.commit()
+```
+`connect()` 在 `executescript(SCHEMA)` 之后调用 `_migrate(conn)`。
+
+`jevq/judge/jev.py` 追加：
+```python
+def score_probs(answer: dict) -> dict[str, float]:
+    return {answer["legend"][k]: p for k, p in answer["probabilities"].items()}
+```
+
+`jevq/judge/notices.py`：`import json`；`__init__` 加 `self.last_trace: list[dict] = []`；`check` 改为：
+```python
+    def check(self, code: str, today: date) -> tuple[str, str]:
+        notices = notices_for(self.conn, code, today)
+        verdicts: dict[str, tuple[str, float, str, dict | None]] = {}
+        pending = []
+        for n in notices:
+            cached = self.conn.execute(
+                "SELECT label, confidence, source, probs FROM notice_verdicts WHERE id=?", (n.id,)).fetchone()
+            if cached:
+                label, conf, source, probs = cached
+                verdicts[n.id] = (label, conf, source, json.loads(probs) if probs else None)
+            elif (label := classify_by_keyword(n.title)) is not None:
+                verdicts[n.id] = (label, 1.0, "keyword", None)
+                self._save(n.id, label, 1.0, "keyword", None)
+            else:
+                pending.append(n)
+
+        failed = False
+        if pending:
+            with ThreadPoolExecutor(self.workers) as pool:
+                results = list(pool.map(self._ask, pending))
+            for n, result in zip(pending, results):
+                if result is None:
+                    failed = True
+                    continue
+                label, conf, probs = result
+                verdicts[n.id] = (label, conf, "jev", probs)
+                self._save(n.id, label, conf, "jev", probs)
+
+        self.last_trace = []
+        first_bad = None
+        for n in notices:
+            if n.id not in verdicts:
+                continue
+            label, conf, source, probs = verdicts[n.id]
+            mine, unsure = label in MINE_LABELS, conf < LOW_CONFIDENCE
+            self.last_trace.append({"date": n.date, "title": n.title, "label": label, "confidence": conf,
+                                    "source": source, "probabilities": probs, "mine": mine, "unsure": unsure})
+            if first_bad is None and (mine or unsure):
+                first_bad = (n, label, conf, mine)
+        if failed:
+            return "error", "Jev 不可用"
+        if first_bad:
+            n, label, conf, mine = first_bad
+            if mine:
+                return "reject", f"{label}：{n.date} {n.title}"
+            return "reject", f"拿不准({conf:.2f})：{n.date} {n.title}"
+        return "pass", "公告无雷"
+```
+`_ask` 返回 `(ans["choice"], ans["confidence"], ans["probabilities"])`；`_save` 改为：
+```python
+    def _save(self, nid: str, label: str, conf: float, source: str, probs: dict | None):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO notice_verdicts(id, label, confidence, source, probs) VALUES (?, ?, ?, ?, ?)",
+            (nid, label, conf, source, None if probs is None else json.dumps(probs, ensure_ascii=False)))
+        self.conn.commit()
+```
+
+`jevq/judge/news.py`：`import json`、`from jevq.judge.jev import JevError, score_label, score_probs`；
+```python
+class NewsJudge:
+    def __init__(self, conn: sqlite3.Connection, jev, fetch=fetch_news):
+        self.conn, self.jev, self.fetch = conn, jev, fetch
+        self.last_trace: dict | None = None
+
+    def check(self, code: str, name: str, now: datetime) -> tuple[str, str]:
+        day = now.date().isoformat()
+        row = self.conn.execute("SELECT value FROM day_cache WHERE date=? AND kind='news' AND key=?",
+                                (day, code)).fetchone()
+        if row:
+            v = row[0]
+            trace = json.loads(v) if v.startswith("{") else {"label": v, "news": [], "probabilities": None,
+                                                              "confidence": None}
+        else:
+            trace = self._judge(code, name, now)
+            if trace is None:
+                self.last_trace = None
+                return "error", "消息面判断失败"
+            self.conn.execute("INSERT OR REPLACE INTO day_cache VALUES (?, 'news', ?, ?)",
+                              (day, code, json.dumps(trace, ensure_ascii=False)))
+            self.conn.commit()
+        self.last_trace = trace
+        label = trace["label"]
+        return ("reject" if label == "偏空" else "pass"), f"消息面{label}"
+
+    def _judge(self, code: str, name: str, now: datetime) -> dict | None:
+        try:
+            items = [n for n in self.fetch(code)
+                     if now - n.published <= timedelta(hours=NEWS_LOOKBACK_HOURS)]
+        except Exception:
+            return None
+        if not items:
+            return {"label": "中性", "news": [], "probabilities": None, "confidence": None}
+        lines = [f"{n.title}｜{n.content[:100]}" for n in items[:10]]
+        try:
+            ans = self.jev.ask({"股票": f"{name}({code})", "近24小时新闻": lines}, {"sentiment": {
+                "type": "score",
+                "instructions": "这些新闻对该股票未来一两个交易日股价的影响偏向哪一边？",
+                "criteria": LEVELS}})["sentiment"]
+        except JevError:
+            return None
+        return {"label": score_label(ans), "news": lines, "probabilities": score_probs(ans),
+                "confidence": ans.get("confidence")}
+```
+
+`jevq/judge/market.py`：
+```python
+from jevq.judge.jev import JevError, score_label, score_probs
+
+SENTIMENT_LEVELS = ["冰点", "偏弱", "正常", "火热"]
+OVERSEAS_LEVELS = ["偏弱", "中性", "偏强"]
+
+
+class MarketJudge:
+    def __init__(self, jev):
+        self.jev = jev
+        self.sentiment_trace: dict | None = None
+        self.overseas_trace: dict | None = None
+
+    def sentiment(self, stats: dict) -> str | None:
+        self.sentiment_trace = self._score(
+            stats, "A股短线情绪当前处于什么状态？（参考涨跌停家数、炸板率、连板高度、成交额和涨跌家数）",
+            SENTIMENT_LEVELS)
+        return self.sentiment_trace and self.sentiment_trace["label"]
+
+    def overseas(self, pcts: dict) -> str | None:
+        self.overseas_trace = self._score(pcts, "这些隔夜外围市场涨跌幅（%）对今天A股开盘的影响偏向？",
+                                          OVERSEAS_LEVELS)
+        return self.overseas_trace and self.overseas_trace["label"]
+
+    def _score(self, state: dict, instructions: str, levels: list[str]) -> dict | None:
+        if not state:
+            return None
+        try:
+            ans = self.jev.ask(state, {"level": {"type": "score", "instructions": instructions,
+                                                 "criteria": levels}})["level"]
+        except JevError:
+            return None
+        return {"inputs": state, "label": score_label(ans), "probabilities": score_probs(ans),
+                "confidence": ans.get("confidence")}
+```
+
+`jevq/engine.py`：
+- `__init__` 签名末尾加 `overseas_trace: dict | None = None`，保存为 `self.overseas_trace`；加 `self.sentiment_trace: dict | None = None`
+- `tick` 中把 `mode` 传给 `_buy_main(ranked, now, mode)`
+- `_sentiment`：调用 `market_judge.sentiment(stats)` 成功后 `self.sentiment_trace = getattr(self.market_judge, "sentiment_trace", None)`；异常或 stats 为空时 `self.sentiment_trace = None`；情绪那条 `_log` 追加参数 `trace=self.sentiment_trace`
+- `_log(self, now, code, verdict, detail, trace=None)`：`INSERT INTO decisions(ts, code, verdict, detail, trace) VALUES (?, ?, ?, ?, ?)`，trace 为 `None` 时写 `NULL`，否则 `json.dumps(trace, ensure_ascii=False)`
+- `_buy_main(self, ranked, now, mode)`：遍历改为 `for rank, q in enumerate(ranked, 1):`；在做完判断后组装 trace：
+```python
+            verdict, why = self._check(self.notice_judge, q.code, now.date())
+            notice_trace = getattr(self.notice_judge, "last_trace", None)
+            news_trace = None
+            if verdict == "pass":
+                verdict, why = self._check(self.news_judge, q.code, q.name, now)
+                news_trace = getattr(self.news_judge, "last_trace", None)
+            trace = {"candidate": {"name": q.name, "price": q.price, "pct": q.pct,
+                                   "ret5": self.ret5[q.code], "rank": rank, "of": len(ranked)},
+                     "notices": notice_trace, "news": news_trace,
+                     "market": {"mode": mode, "sentiment": self.sentiment_label,
+                                "sentiment_trace": self.sentiment_trace,
+                                "overseas": self.overseas, "overseas_trace": self.overseas_trace},
+                     "outcome": {"bought": False, "shares": None, "price": None}}
+            if verdict in ("reject", "error"):
+                self._log(now, q.code, verdict, why, trace)
+                self.rejected.add(q.code)
+                if verdict == "error":
+                    errors += 1
+                continue
+            f = self.ledger.buy("main", q, now, f"低吸{q.pct}%｜5日{self.ret5[q.code]}%｜{why}")
+            if f:
+                trace["outcome"] = {"bought": True, "shares": f.shares, "price": f.price}
+                fills.append(f)
+            self._log(now, q.code, verdict, why, trace)
+```
+  保留原有的「§7 仍失败 → 该股当日不买」注释；其余逻辑（槽位、检查数、熔断、可买性预检）不变。
+
+`run.py`：构造 `Engine(...)` 时追加关键字参数 `overseas_trace=market.overseas_trace`。
+
+- [ ] **Step 4: 运行，确认通过**
+
+Run: `.venv/Scripts/python -m pytest -q`
+Expected: 全部 passed
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add jevq/db.py jevq/judge jevq/engine.py run.py tests/test_db.py tests/test_notice_judge.py tests/test_news_market.py tests/test_engine.py
+git commit -m "feat: record decision traces (inputs and jev probabilities)"
+```
+
+---
+
+### Task 17: 决策明细面板
+
+在 Task 16 之后执行。
+
+**Files:**
+- Modify: `jevq/app/api.py`, `jevq/app/ui.html`
+- Test: `tests/test_api.py`
+
+**Interfaces:**
+- Consumes: `decisions.trace`（Task 16 的 JSON 结构）
+- Produces:
+  - `Api.decisions(day)` 每项新增 `"id": int` 和 `"has_trace": bool`
+  - `Api.decision(decision_id: int) -> dict | None`：`{"id","time","code","name","verdict","detail","trace": dict | None}`，不存在返回 `None`；trace 解析失败时为 `None`
+  - `ui.html`：「Jev 判断」表格每行可点击（`cursor:pointer`，`has_trace` 为真的行标一个「▸」），点击后在表格上方渲染明细；5 秒自动刷新时保留当前选中的明细（记住 `selectedId` 并在刷新后重新拉取）；再次点击同一行收起
+
+- [ ] **Step 1: 写失败的测试（追加到 `tests/test_api.py`，并更新 `test_fills_decisions_curve` 的期望：decisions 项多出 `"id"` 与 `"has_trace": False`）**
+
+```python
+def test_decision_detail(paths):
+    conn = db.connect(paths[0])
+    trace = {"candidate": {"name": "股票甲", "rank": 1, "of": 3}, "notices": [], "news": None,
+             "market": {"mode": "tail"}, "outcome": {"bought": False, "shares": None, "price": None}}
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, trace) VALUES (?, ?, ?, ?, ?)",
+                 ("2026-09-23T10:00:00", "600001", "pass", "消息面中性", json.dumps(trace, ensure_ascii=False)))
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, trace) VALUES (?, ?, ?, ?, ?)",
+                 ("2026-09-23T10:01:00", "600002", "reject", "x", "{broken"))
+    conn.commit()
+    conn.close()
+    api = make_api(paths)
+    rows = api.decisions("2026-09-23")
+    assert [r["has_trace"] for r in rows] == [True, True]
+    d = api.decision(rows[1]["id"])
+    assert d["code"] == "600001" and d["trace"]["candidate"]["rank"] == 1 and d["time"] == "10:00"
+    assert api.decision(rows[0]["id"])["trace"] is None      # 损坏的 JSON
+    assert api.decision(999) is None
+```
+（`tests/test_api.py` 顶部补 `import json`。）
+
+- [ ] **Step 2: 运行，确认失败**
+
+Run: `.venv/Scripts/python -m pytest tests/test_api.py -v`
+Expected: 新测试 FAIL（`AttributeError: 'Api' object has no attribute 'decision'`）
+
+- [ ] **Step 3: 实现 Api**
+
+`jevq/app/api.py`：`import json`；`decisions()` 的 SQL 改为 `SELECT id, ts, code, verdict, detail, trace IS NOT NULL ...`，每项加 `"id": id, "has_trace": bool(has_trace)`；新增：
+```python
+    def decision(self, decision_id: int) -> dict | None:
+        conn = db.connect(self._db_path)
+        try:
+            row = conn.execute("SELECT id, ts, code, verdict, detail, trace FROM decisions WHERE id=?",
+                               (int(decision_id),)).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        did, ts, code, verdict, detail, raw = row
+        try:
+            trace = json.loads(raw) if raw else None
+        except ValueError:
+            trace = None
+        name = self._lookup_names({code})[code] if code else ""
+        return {"id": did, "time": ts[11:16], "code": code or "市场", "name": name,
+                "verdict": verdict, "detail": detail, "trace": trace}
+```
+
+- [ ] **Step 4: 实现明细渲染（`jevq/app/ui.html`）**
+
+CSS 追加：
+```css
+  .clickable tr[data-id] { cursor:pointer; }
+  .clickable tr[data-id]:hover td { background:color-mix(in srgb, var(--accent) 8%, transparent); }
+  .detail { border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin-bottom:12px; }
+  .detail h3 { margin:0 0 6px; font-size:15px; }
+  .detail h4 { margin:12px 0 4px; font-size:13px; color:var(--muted); font-weight:500; }
+  .detail ul { margin:4px 0; padding-left:18px; }
+  .kv span { margin-right:14px; }
+```
+
+JS：新增全局 `let selectedId = null;`，并加入：
+```js
+const VERDICT = {pass: "通过", reject: "否决", error: "出错", sentiment: "情绪"};
+const probsTxt = (p) => p ? Object.entries(p).sort((a, b) => b[1] - a[1])
+  .map(([k, v]) => `${esc(k)} ${Number(v).toFixed(2)}`).join(" / ") : "";
+const kv = (o) => `<div class="kv">${Object.entries(o || {}).map(([k, v]) => `<span>${esc(k)} <b>${esc(v)}</b></span>`).join("")}</div>`;
+
+function marketBlock(title, label, tr) {
+  if (!tr) return `<h4>${title}</h4><div class="tag">${esc(label || "未知")}（无 Jev 记录，按行情不好处理）</div>`;
+  return `<h4>${title}：${esc(tr.label)}</h4>${kv(tr.inputs)}
+    <div class="tag">Jev：${probsTxt(tr.probabilities)}${tr.confidence != null ? `（置信度 ${fmt(tr.confidence)}）` : ""}</div>`;
+}
+
+function renderTrace(d) {
+  const t = d.trace;
+  const head = `<h3>${esc(d.code)} ${esc(d.name)}　${esc(d.time)}　${VERDICT[d.verdict] || esc(d.verdict)}　<span class="tag">${esc(d.detail)}</span></h3>`;
+  if (!t) return `<div class="detail">${head}<div class="tag">这条记录没有留痕数据</div></div>`;
+  if (!t.candidate) return `<div class="detail">${head}${marketBlock("市场情绪", t.label, t)}</div>`;
+  const c = t.candidate, parts = [head];
+  parts.push(`<h4>为什么被选中</h4><div>当前 ${fmt(c.pct)}%（0~-3% 低吸区间）｜近 5 日 ${fmt(c.ret5)}%｜候选排名 ${c.rank}/${c.of}｜现价 ${fmt(c.price)}</div>`);
+  if (t.notices) {
+    parts.push(`<h4>公告排雷（近 90 天 ${t.notices.length} 条）</h4>` + (t.notices.length ? table(["日期", "标题", "判定", "依据"],
+      t.notices.map((n) => [esc(n.date), esc(n.title),
+        esc(n.label) + (n.mine ? " ❌" : "") + (n.unsure ? " ⚠️拿不准" : ""),
+        n.source === "keyword" ? "标题关键词命中，未调用 Jev"
+          : `Jev：${probsTxt(n.probabilities)}（置信度 ${fmt(n.confidence)}）`])) : '<div class="tag">无公告</div>'));
+  }
+  if (t.news) {
+    parts.push(`<h4>消息面（近 24 小时 ${t.news.news.length} 条）→ ${esc(t.news.label)}</h4>`
+      + (t.news.news.length ? `<ul>${t.news.news.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : '<div class="tag">无新闻，按中性处理</div>')
+      + (t.news.probabilities ? `<div class="tag">Jev：${probsTxt(t.news.probabilities)}${t.news.confidence != null ? `（置信度 ${fmt(t.news.confidence)}）` : ""}</div>` : ""));
+  }
+  const m = t.market || {};
+  parts.push(`<h4>当时市场：${m.mode === "tail" ? "只在尾盘买" : "盘中可买"}</h4>`);
+  parts.push(marketBlock("市场情绪", m.sentiment, m.sentiment_trace));
+  parts.push(marketBlock("外围", m.overseas, m.overseas_trace));
+  const o = t.outcome || {};
+  parts.push(`<h4>结论</h4><div>${o.bought ? `买入 ${o.shares} 股 @ ${fmt(o.price)}` : `未买入（${esc(d.detail)}）`}</div>`);
+  return `<div class="detail">${parts.join("")}</div>`;
+}
+```
+把 `renderTab` 中 decisions 分支改为：
+```js
+  } else if (tab === "decisions") {
+    const rows = await api.decisions(today);
+    const detail = selectedId != null ? await api.decision(selectedId) : null;
+    body.innerHTML = (detail ? renderTrace(detail) : "") + `<div class="clickable">${table(["", "时间", "代码", "名称", "结果", "理由"],
+      rows.map((d) => [d.has_trace ? "▸" : "", d.time, esc(d.code), esc(d.name), VERDICT[d.verdict] || esc(d.verdict), esc(d.detail)]))}</div>`;
+    body.querySelectorAll(".clickable tr").forEach((tr, i) => {
+      if (i === 0) return;                                   // 表头
+      const d = rows[i - 1];
+      tr.dataset.id = d.id;
+      tr.onclick = () => { selectedId = selectedId === d.id ? null : d.id; renderTab(); };
+    });
+```
+（`table()` 的第一行是表头，所以用 `i - 1` 对齐数据行；原 decisions 分支中的局部 `label` 映射删除，改用 `VERDICT`。切换到其他标签页时把 `selectedId = null`。）
+
+- [ ] **Step 5: 运行，确认通过**
+
+Run: `.venv/Scripts/python -m pytest -q`
+Expected: 全部 passed
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add jevq/app/api.py jevq/app/ui.html tests/test_api.py
+git commit -m "feat: decision detail panel with jev inputs and probabilities"
+```
+
+---
+
 ### Task 12: 真实环境冒烟（需要 Jev API Key）
 
 **前置：** 用户在自己的终端设置好 Jev 凭证（Claude 不写入任何凭证），二选一：
