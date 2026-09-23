@@ -8,7 +8,7 @@ from pathlib import Path
 
 from jevq import db
 from jevq.config import ACCOUNTS, DB_PATH, REPORT_DIR
-from jevq.data import akdata, closes, tencent
+from jevq.data import akdata, closes, concepts, tencent
 from jevq.data.notice_store import sync_notices
 from jevq.engine import Engine
 from jevq.judge.jev import JevClient
@@ -18,10 +18,12 @@ from jevq.judge.notices import NoticeJudge
 from jevq.ledger import Ledger
 from jevq.report import write_report
 from jevq.runlock import hold_run_lock
+from jevq.strategies.board import BoardStrategy
 
 SESSIONS = [(time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))]
 REPORT_AT = time(15, 5)
 NOTICE_RESYNC_AT = time(13, 0)
+FAST_INTERVAL = 3.0     # 扫首板节拍：观察池非空时每隔这么多秒扫一次
 
 
 def in_session(t: time) -> bool:
@@ -41,10 +43,29 @@ def wait_until(t: time, stop: threading.Event) -> bool:
     return True
 
 
-def seconds_to_next_minute() -> float:
-    t = now()
+def _seconds_to_boundary(t: datetime) -> float:
     nxt = (t + timedelta(minutes=1)).replace(second=2, microsecond=0)
     return max(1.0, (nxt - t).total_seconds())
+
+
+def seconds_to_next_minute() -> float:
+    return _seconds_to_boundary(now())
+
+
+def _remaining_this_minute(t: datetime) -> float:
+    return max(1.0, 60 - t.second - t.microsecond / 1e6)
+
+
+def next_wake(now: datetime, has_watch: bool, fast_interval: float = FAST_INTERVAL) -> float:
+    """算这一刻该等多久再醒：没有观察池就直接睡到下一分钟整点；有就按 fast_interval 秒节拍醒，
+    但不会睡过头，最多睡到下一分钟边界（纯函数，不摸时钟，方便单测）。"""
+    remain = _remaining_this_minute(now)
+    return min(fast_interval, remain) if has_watch else remain
+
+
+def _tick_wait(seconds: float, stop: threading.Event) -> bool:
+    """扫板 3 秒节拍专用的等待钩子，和 seconds_to_next_minute 分开，方便测试用假时钟顶替。"""
+    return stop.wait(seconds)
 
 
 def prev_weekday(d: date) -> date:
@@ -163,17 +184,38 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         state["phase"] = "同步公告"
         _sync_notices(conn, today, log)
 
-    engine = Engine(conn, ledger, NoticeJudge(conn, jev), NewsJudge(conn, jev), market,
+    if not late:
+        state["phase"] = "刷新题材"
+        try:
+            if concepts.needs_refresh(conn, today):
+                concepts.refresh_concepts(conn, today, log=log)
+        except Exception as e:
+            log(f"题材刷新失败：{e!r}")
+    concept_map = concepts.load_concepts(conn)
+    if not concept_map:
+        msg = "题材数据缺失，扫首板今日只卖不买"
+        log(msg)
+        state["warning"] = f"{state['warning']}；{msg}" if state.get("warning") else msg
+    board_enabled = bool(concept_map) and bool(ret5)   # 扫首板排名要用 ret5，覆盖率不够也只卖不买
+    prev_closes = closes.prev_closes_from_db(conn, universe, today)
+
+    notice_judge, news_judge = NoticeJudge(conn, jev), NewsJudge(conn, jev)
+    engine = Engine(conn, ledger, notice_judge, news_judge, market,
                     tencent.fetch_quotes, akdata.fetch_pool_stats, universe, ret5, prev_day, overseas,
                     overseas_trace=market.overseas_trace)
+    board = BoardStrategy(conn, ledger, notice_judge, news_judge, tencent.fetch_quotes, universe, ret5,
+                          concept_map, prev_closes, prev_day, enabled=board_enabled)
     if calendar_fallback:
         engine.stale_before = None
+        board.stale_before = None
         log("交易日历不可用：停用「隔夜超期」规则")
 
     if once:
         fills = _safe_tick(engine, conn, now(), log)
+        board_fills = _safe_board_minute(board, engine.last_quotes, now(), conn, log)
         state.update(sentiment=engine.sentiment_label, prices={c: q.price for c, q in engine.last_quotes.items()})
-        log(f"情绪 {engine.sentiment_label}，成交 {fills}")
+        state["board_watch"] = _board_watch_state(board, state["names"])
+        log(f"情绪 {engine.sentiment_label}，成交 {fills + board_fills}")
         return None
 
     resynced = False
@@ -184,14 +226,19 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             _sync_notices(conn, today, log)
         if in_session(t.time()):
             state["phase"] = "盘中"
-            for f in _safe_tick(engine, conn, t, log):
-                log(f"{f.ts:%H:%M} {f.account} {'买' if f.side == 'buy' else '卖'} {f.code} "
-                    f"{f.price} x{f.shares} {f.reason}")
+            _log_fills(_safe_tick(engine, conn, t, log), log)
+            _log_fills(_safe_board_minute(board, engine.last_quotes, t, conn, log), log)
             state.update(sentiment=engine.sentiment_label,
                          prices={c: q.price for c, q in engine.last_quotes.items()})
+            state["board_watch"] = _board_watch_state(board, state["names"])
         else:
             state["phase"] = "休市等待"
-        if stop.wait(seconds_to_next_minute()):
+
+        if board.has_watch() and in_session(now().time()):
+            stopped = _fast_scan(board, stop, log, state)
+        else:
+            stopped = stop.wait(seconds_to_next_minute())
+        if stopped:
             log("收到停止指令，未生成当日报告")
             return None
 
@@ -229,6 +276,46 @@ def _safe_tick(engine: Engine, conn, t: datetime, log: Callable[[str], None]) ->
         conn.rollback()
         log(f"本轮出错：{e!r}")
         return []
+
+
+def _safe_board_minute(board: BoardStrategy, quotes: dict, t: datetime, conn,
+                       log: Callable[[str], None]) -> list:
+    """扫首板的每分钟一轮（卖出 + 观察池维护）；出错只记日志，不影响低吸 tick 和下一分钟。"""
+    try:
+        return board.on_minute(quotes, t)
+    except Exception as e:
+        conn.rollback()
+        log(f"扫首板本轮出错：{e!r}")
+        return []
+
+
+def _fast_scan(board: BoardStrategy, stop: threading.Event, log: Callable[[str], None],
+               state: dict) -> bool:
+    """观察池非空时的 3 秒扫板循环，跑到下一分钟边界或收到停止指令为止。返回是否被 stop 打断。"""
+    while board.has_watch() and in_session(now().time()):
+        t = now()
+        remain = _remaining_this_minute(t)
+        if _tick_wait(next_wake(t, True), stop):
+            return True
+        if remain <= FAST_INTERVAL:
+            return False
+        try:
+            _log_fills(board.on_fast(now()), log, "%H:%M:%S")
+        except Exception as e:
+            log(f"扫板出错：{e!r}")
+        state["board_watch"] = _board_watch_state(board, state.get("names", {}))
+    return False
+
+
+def _log_fills(fills, log: Callable[[str], None], fmt: str = "%H:%M") -> None:
+    for f in fills:
+        log(f"{f.ts.strftime(fmt)} {f.account} {'买' if f.side == 'buy' else '卖'} {f.code} "
+            f"{f.price} x{f.shares} {f.reason}")
+
+
+def _board_watch_state(board: BoardStrategy, names: dict) -> list[dict]:
+    """给桌面面板用：观察池代码 + 名称。"""
+    return [{"code": c, "name": names.get(c, "")} for c in sorted(board.watch)]
 
 
 def _sync_notices(conn, today: date, log: Callable[[str], None]):

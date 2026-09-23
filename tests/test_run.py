@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -7,7 +8,9 @@ import run
 from factories import quote
 from jevq import db
 from jevq.ledger import Ledger
+from jevq.rules.board import Candidate
 from jevq.runlock import hold_run_lock
+from jevq.strategies.board import BoardStrategy as RealBoardStrategy
 
 DAYS = [date(2026, 9, 21), date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24)]
 CLOSE_DATES = ["2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18", "2026-09-21", "2026-09-22"]
@@ -65,6 +68,40 @@ class FakeEngine:
         return []
 
 
+def seed_concepts(dbp, code="600001", concept="题材A", updated="2026-09-23"):
+    conn = db.connect(dbp)
+    conn.execute("INSERT OR REPLACE INTO concepts(code, concept, updated) VALUES (?, ?, ?)",
+                 (code, concept, updated))
+    conn.commit()
+    conn.close()
+
+
+class SpyBoard(RealBoardStrategy):
+    """真实 BoardStrategy 包一层：记录实例、按需注入一次性观察池、按需在 on_minute 炸一次。"""
+    instances: list = []
+    boom_once = False
+    force_watch_once: dict | None = None
+    fast_call_times: list = []
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        SpyBoard.instances.append(self)
+
+    def on_minute(self, quotes, now):
+        if SpyBoard.boom_once:
+            SpyBoard.boom_once = False
+            raise RuntimeError("board boom")
+        fills = super().on_minute(quotes, now)
+        if SpyBoard.force_watch_once:
+            self.watch.update(SpyBoard.force_watch_once)
+            SpyBoard.force_watch_once = None
+        return fills
+
+    def on_fast(self, now):
+        SpyBoard.fast_call_times.append(now)
+        return super().on_fast(now)
+
+
 class Env:
     pass
 
@@ -99,12 +136,28 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "Engine", FakeEngine)
     FakeMarket.fail = False
     FakeEngine.instances, FakeEngine.behavior = [], None
+
+    # 题材表默认空库；needs_refresh 天然会返回 True，必须顶掉，否则会真的去敲 akshare 的网。
+    monkeypatch.setattr(run.concepts, "needs_refresh", lambda conn, today: False)
+    monkeypatch.setattr(run.concepts, "refresh_concepts", lambda *a, **kw: 0)
+
+    monkeypatch.setattr(run, "BoardStrategy", SpyBoard)
+    SpyBoard.instances, SpyBoard.boom_once = [], False
+    SpyBoard.force_watch_once, SpyBoard.fast_call_times = None, []
+
+    def tick_wait(seconds, stop):
+        clock.t += timedelta(seconds=seconds)
+        return False
+
+    monkeypatch.setattr(run, "_tick_wait", tick_wait)
+
     logs: list[str] = []
 
     e = Env()
     e.db, e.reports, e.clock, e.feed, e.logs = str(dbp), reports, clock, feed, logs
     e.run = lambda **kw: run.run_day(log=logs.append, **kw)
     e.log_text = lambda: "\n".join(logs)
+    e.boards = SpyBoard.instances
     return e
 
 
@@ -356,6 +409,7 @@ def test_late_start_universe_load_failure_falls_back_to_held_only(env, monkeypat
 
 def test_insufficient_ret5_coverage_sets_warning_and_skips_buys(env, monkeypatch):
     monkeypatch.setattr(run.closes, "ret5_from_db", lambda conn, codes, today: {})
+    seed_concepts(env.db)   # 题材数据本身是全的，这条测试只关心 ret5 覆盖率告警，不想被题材缺失的提示串进来
     state: dict = {}
     env.run(state=state)
     eng = FakeEngine.instances[0]
@@ -407,3 +461,102 @@ def test_backfill_flag_holds_runner_lock(env):
     with hold_run_lock(Path(env.db).parent / "runner.lock"):
         with pytest.raises(RuntimeError, match="已有另一个交易进程在运行"):
             run.run_backfill(log=env.logs.append)
+
+
+# ---- Task 6：run_day 接入 BoardStrategy（每分钟 + 3 秒扫板）----
+
+def test_next_wake_no_watch_returns_full_remainder():
+    t = datetime(2026, 9, 23, 9, 30, 0)
+    assert run.next_wake(t, False) == 60.0
+
+
+def test_next_wake_no_watch_matches_plain_remaining_seconds():
+    t = datetime(2026, 9, 23, 9, 30, 37)
+    assert run.next_wake(t, False) == 23.0
+
+
+def test_next_wake_with_watch_returns_fast_interval():
+    t = datetime(2026, 9, 23, 9, 30, 0)          # 到下一分钟边界还有 62 秒，远大于 3 秒节拍
+    assert run.next_wake(t, True) == 3.0
+
+
+def test_next_wake_near_boundary_caps_at_remainder():
+    t = datetime(2026, 9, 23, 9, 31, 59)          # 距下一分钟只剩 1 秒
+    assert run.next_wake(t, True) == 1.0
+
+
+def test_board_watch_state_lists_watch_codes_with_names():
+    class FakeBoard:
+        watch = {"600002": Candidate("600002", "题材A", 3, 1, {}),
+                 "600001": Candidate("600001", "题材A", 3, 2, {})}
+
+    result = run._board_watch_state(FakeBoard(), {"600001": "甲", "600002": "乙"})
+    assert result == [{"code": "600001", "name": "甲"}, {"code": "600002", "name": "乙"}]
+
+
+def test_empty_concepts_disables_board_and_warns(env):
+    state: dict = {}
+    env.run(state=state)
+    assert "题材数据缺失，扫首板今日只卖不买" in state.get("warning", "")
+    assert "题材数据缺失，扫首板今日只卖不买" in env.log_text()
+    assert env.boards[0].enabled is False
+    assert len(FakeEngine.instances[0].ticks) == 240
+
+
+def test_concepts_present_but_ret5_short_still_disables_board(env, monkeypatch):
+    seed_concepts(env.db)
+    monkeypatch.setattr(run.closes, "ret5_from_db", lambda conn, codes, today: {})
+    state: dict = {}
+    env.run(state=state)
+    assert env.boards[0].enabled is False
+    # 这条只是 ret5 不够，不是题材缺失，不该重复提示题材数据缺失
+    assert "题材数据缺失" not in state.get("warning", "")
+
+
+def test_concepts_and_ret5_both_present_enables_board(env):
+    seed_concepts(env.db)
+    env.run()
+    assert env.boards[0].enabled is True
+
+
+def test_board_on_minute_exception_is_logged_and_day_continues(env):
+    seed_concepts(env.db)
+    SpyBoard.boom_once = True
+    path = env.run()
+    assert "扫首板本轮出错：RuntimeError('board boom')" in env.log_text()
+    assert len(FakeEngine.instances[0].ticks) == 240   # 低吸 tick 不受影响
+    assert path is not None and Path(path).exists()
+
+
+def test_calendar_failure_disables_board_stale_before(env, monkeypatch):
+    def fail():
+        raise TimeoutError("sina 超时")
+
+    monkeypatch.setattr(run.akdata, "trade_days", fail)
+    env.run()
+    assert env.boards[0].stale_before is None
+
+
+def test_concept_refresh_runs_when_stale_and_failure_is_logged_only(env, monkeypatch):
+    monkeypatch.setattr(run.concepts, "needs_refresh", lambda conn, today: True)
+    calls = []
+
+    def fail(conn, today, log=print):
+        calls.append(today)
+        raise RuntimeError("akshare down")
+
+    monkeypatch.setattr(run.concepts, "refresh_concepts", fail)
+    path = env.run()
+    assert calls == [date(2026, 9, 23)]
+    assert "题材刷新失败：RuntimeError('akshare down')" in env.log_text()
+    assert path is not None and len(FakeEngine.instances[0].ticks) == 240
+
+
+def test_watch_triggers_multiple_fast_scans_within_one_minute(env):
+    seed_concepts(env.db)
+    cand = Candidate("600001", "题材A", 3, 1, {"pct": 1, "amount": 1, "ret5": 1})
+    SpyBoard.force_watch_once = {"600001": cand}
+    env.run()
+    per_minute = Counter(t.replace(second=0, microsecond=0) for t in SpyBoard.fast_call_times)
+    assert per_minute                                    # on_fast 至少被调用过
+    assert max(per_minute.values()) > 1                   # 且同一分钟内不止一次
