@@ -14,7 +14,7 @@
 
 - 股票池：代码以 `60` / `00` 开头；剔除名称含 `ST`；剔除上市不满 60 个交易日
 - 所有涨跌幅相对**昨日收盘价**，单位 %，保留两位小数
-- 初始资金 30000 元/账户；最多同时持有 2 只；单笔预算 `min(可用现金, 15000)`；100 股整手
+- 初始资金 30000 元/账户；**全仓单票**：最多同时持有 1 只，单笔预算 = 全部可用现金（Task 18 起；此前为 2 只 × 1.5 万）；100 股整手
 - 费用：佣金 `max(5, 金额×0.00025)`；印花税仅卖出 `金额×0.0005`；过户费双向 `金额×0.00001`
 - 买入区间：`-3.00 ≤ 涨跌幅 ≤ 0.00`
 - 卖出：止损 `≤ -3%`；回到 0 轴 `≥ -0.2%`；反弹 `当前 - 日内最低 ≥ 1.5` 个点；`14:55` 尾盘清仓
@@ -3777,6 +3777,54 @@ Expected: 全部 passed
 ```bash
 git add jevq/app/api.py jevq/app/ui.html tests/test_api.py
 git commit -m "feat: decision detail panel with jev inputs and probabilities"
+```
+
+---
+
+### Task 18: 全仓单票
+
+用户 2026-09-23 把仓位从「最多 2 只、每只最多 1.5 万」改为**全仓单票**：同一时间最多持有 1 只，买入时用全部可用现金。主账户、影子账户同样适用。在 Task 17 之后执行。
+
+**Files:**
+- Modify: `jevq/config.py`
+- Test: `tests/test_ledger.py`, `tests/test_engine.py`（以及其他因仓位数/仓位大小变化而断言失效的测试）
+
+**Interfaces:**
+- Produces: `MAX_POSITIONS = 1`；`MAX_PER_TRADE = float("inf")`（注释：全仓，单笔预算即全部可用现金；`ledger.buy` 与引擎的可买性预检都用 `min(cash, MAX_PER_TRADE)`，因此无需改动这两处代码）
+
+- [ ] **Step 1: 改配置**
+
+`jevq/config.py`：
+```python
+MAX_PER_TRADE = float("inf")   # 全仓：单笔预算 = 全部可用现金（min(cash, inf) == cash）
+MAX_POSITIONS = 1              # 全仓单票
+```
+
+- [ ] **Step 2: 运行全量测试，列出失败项**
+
+Run: `.venv/Scripts/python -m pytest -q`
+Expected: 与仓位数或单笔金额相关的断言失败（例如 `test_ledger.py` 的 1500 股 / 两只持仓、`test_engine.py` 中影子账户买两只）。
+
+- [ ] **Step 3: 更新测试期望——只改与仓位相关的数字和持仓只数，不削弱其他断言**
+
+规则：
+- `buy_fee` / `sell_fee` / `affordable_shares(15000, …)` 这些纯函数测试**不改**（它们测的是函数本身，参数与仓位配置无关）。
+- `test_buy_updates_cash_and_position`：预算变为 30000，`quote(pct=-1.0)` 价 9.9 → `affordable_shares(30000, 9.9)`，按该函数算出的股数更新断言（3000 股：29700 + 费用 7.72 ≤ 30000）；现金断言同步更新。
+- `test_max_two_positions_and_no_duplicate` 改名为 `test_single_position_and_no_duplicate`：第一只买入成功，重复买同一只返回 None，第二只不同代码返回 None，`free_slots == 0`。
+- `test_sell_round_trip`、`test_equity_and_fills_on`、`test_cannot_sell_at_limit_down`：按新股数重算期望值（用 `buy_fee`/`sell_fee` 表达式，不写死小数）。
+- `test_engine.py`：凡是断言某账户持有两只的，改为持有排名第一且通过过滤的那一只；原测试意图（影子账户不经 Jev 按排名买、主账户跳过被否决的票）必须保留。例如 `test_main_skips_rejected_shadow_buys_top_ranked`：影子账户持有 `["600002"]`，主账户持有 `["600003"]`（600002 被否决后的下一名）。
+- 新增一条测试 `test_full_position_uses_all_cash`：初始 30000，买 10 元股票 → 股数为 `affordable_shares(30000, 10.0)`（2900 股：29000 + 7.29 ≤ 30000，3000 股需 30007.5 超出），买后现金 < 1010（不足再买一手）。
+
+- [ ] **Step 4: 运行，确认通过**
+
+Run: `.venv/Scripts/python -m pytest -q`
+Expected: 全部 passed
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add jevq/config.py tests
+git commit -m "feat: full single position (max 1 holding, all cash per trade)"
 ```
 
 ---
