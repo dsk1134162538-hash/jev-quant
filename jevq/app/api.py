@@ -136,10 +136,14 @@ class Api:
                 for did, ts, code, verdict, detail, has_trace in rows]
 
     def decision(self, decision_id: int) -> dict | None:
+        try:
+            decision_id = int(decision_id)
+        except (TypeError, ValueError):
+            return None
         conn = db.connect(self._db_path)
         try:
             row = conn.execute("SELECT id, ts, code, verdict, detail, trace FROM decisions WHERE id=?",
-                               (int(decision_id),)).fetchone()
+                               (decision_id,)).fetchone()
         finally:
             conn.close()
         if row is None:

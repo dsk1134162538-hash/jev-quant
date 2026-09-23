@@ -71,6 +71,8 @@ def test_decision_detail(paths):
     assert d["code"] == "600001" and d["trace"]["candidate"]["rank"] == 1 and d["time"] == "10:00"
     assert api.decision(rows[0]["id"])["trace"] is None      # 损坏的 JSON
     assert api.decision(999) is None
+    assert api.decision("x") is None
+    assert api.decision(None) is None
 
 
 def test_reports_and_path_traversal(paths):
