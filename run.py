@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from jevq import db
-from jevq.config import ACCOUNTS, DB_PATH
+from jevq.config import ACCOUNTS, DB_PATH, REPORT_DIR
 from jevq.data import akdata, tencent
 from jevq.data.notice_store import sync_notices
 from jevq.engine import Engine
@@ -17,6 +17,7 @@ from jevq.judge.news import NewsJudge
 from jevq.judge.notices import NoticeJudge
 from jevq.ledger import Ledger
 from jevq.report import write_report
+from jevq.runlock import hold_run_lock
 
 SESSIONS = [(time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))]
 REPORT_AT = time(15, 5)
@@ -27,82 +28,141 @@ def in_session(t: time) -> bool:
     return any(a <= t < b for a, b in SESSIONS)
 
 
+def now() -> datetime:
+    """唯一的时钟入口，测试里替换它来模拟一整天。"""
+    return datetime.now()
+
+
 def wait_until(t: time, stop: threading.Event) -> bool:
     """等到时刻 t；被 stop 打断返回 False。"""
-    while datetime.now().time() < t:
+    while now().time() < t:
         if stop.wait(5):
             return False
     return True
 
 
 def seconds_to_next_minute() -> float:
-    now = datetime.now()
-    nxt = (now + timedelta(minutes=1)).replace(second=2, microsecond=0)
-    return max(1.0, (nxt - now).total_seconds())
+    t = now()
+    nxt = (t + timedelta(minutes=1)).replace(second=2, microsecond=0)
+    return max(1.0, (nxt - t).total_seconds())
+
+
+def prev_weekday(d: date) -> date:
+    d -= timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+def held_codes(ledger: Ledger) -> list[str]:
+    return sorted({p.code for a in ACCOUNTS for p in ledger.positions(a)})
 
 
 def run_day(once: bool = False, stop: threading.Event | None = None,
             log: Callable[[str], None] = print, state: dict | None = None) -> Path | None:
-    """跑一个交易日。stop 被置位时尽快退出（不写报告）；state 供桌面面板读取运行状态。"""
+    """跑一个交易日。stop 被置位时尽快退出（不写报告）；state 供桌面面板读取运行状态。
+
+    原则（spec §7）：出问题宁可不买，但不能卖不掉——盘前任何一步失败都降级为只卖模式，
+    盘中单轮出错只记日志、下一分钟继续。
+    """
     stop = stop or threading.Event()
     state = state if state is not None else {}
+    with hold_run_lock(Path(DB_PATH).parent / "runner.lock"):
+        conn = db.connect(DB_PATH)
+        try:
+            return _run_day(conn, once, stop, log, state)
+        finally:
+            conn.close()
+
+
+def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None],
+             state: dict) -> Path | None:
+    ledger = Ledger(conn)
+    sell_only = False
     key = os.environ.get("TYPESAFE_API_KEY")
     if not key:
-        raise RuntimeError("缺少环境变量 TYPESAFE_API_KEY")
+        if not held_codes(ledger):
+            raise RuntimeError("缺少环境变量 TYPESAFE_API_KEY")
+        log("缺少环境变量 TYPESAFE_API_KEY，但有持仓需要卖出")
+        sell_only = True
 
-    today = date.today()
-    days = akdata.trade_days()
-    if today not in days and not once:
+    today = now().date()
+    try:
+        days = akdata.trade_days()
+        trading = today in days
+        prev_day = max(d for d in days if d < today)
+    except Exception as e:
+        log(f"交易日历获取失败：{e!r}；按周一至周五判断")
+        days, trading, prev_day = None, today.weekday() < 5, prev_weekday(today)
+        sell_only = True
+    if not trading and not once:
         log(f"{today} 非交易日，退出")
         return None
-    prev_day = max(d for d in days if d < today)
 
-    conn = db.connect(DB_PATH)
-    ledger = Ledger(conn)
-    jev = JevClient(key, conn=conn)
+    late = not once and now().time() >= REPORT_AT
+    if late and (Path(REPORT_DIR) / f"{today.isoformat()}.md").exists():
+        log("今日报告已生成，跳过")
+        return None
+
+    jev = JevClient(key or "", conn=conn)
     market = MarketJudge(jev)
 
-    state["phase"] = "准备股票池"
-    universe = akdata.load_universe(today, days)
-    log(f"股票池 {len(universe)} 只")
+    universe, ret5 = {}, {}
+    if late:
+        log("已过收盘，直接生成复盘报告")
+    elif not sell_only:
+        state["phase"] = "准备股票池"
+        try:
+            universe = akdata.load_universe(today, days)
+            log(f"股票池 {len(universe)} 只")
+            ret5 = tencent.fetch_5d_returns(sorted(universe), today)
+            log(f"5 日涨幅 {len(ret5)} 只")
+        except Exception as e:
+            log(f"股票池准备失败：{e!r}")
+            universe, ret5 = {}, {}
+            sell_only = True
+    if sell_only and not late:
+        log("只卖模式：今日不开新仓")
     state["names"] = dict(universe)
-    ret5 = tencent.fetch_5d_returns(sorted(universe), today)
-    log(f"5 日涨幅 {len(ret5)} 只")
 
     state["phase"] = "等待 09:15"
-    if not once and not wait_until(time(9, 15), stop):
+    if not once and not late and not wait_until(time(9, 15), stop):
         return None
-    try:
-        overseas_pcts = tencent.fetch_overseas()
-    except Exception as e:
-        log(f"外围失败: {e!r}")
-        overseas_pcts = {}
-    overseas = market.overseas(overseas_pcts)
-    state["overseas"] = overseas
-    log(f"外围 {overseas_pcts} → {overseas}")
 
-    state["phase"] = "同步公告"
-    log(f"公告同步 {sync_notices(conn, today)} 条")
+    overseas = None
+    if key and not late:
+        try:
+            overseas_pcts = tencent.fetch_overseas()
+            overseas = market.overseas(overseas_pcts)
+            log(f"外围 {overseas_pcts} → {overseas}")
+        except Exception as e:
+            log(f"外围失败：{e!r}")
+            overseas = None
+    state["overseas"] = overseas
+
+    if not late:
+        state["phase"] = "同步公告"
+        _sync_notices(conn, today, log)
 
     engine = Engine(conn, ledger, NoticeJudge(conn, jev), NewsJudge(conn, jev), market,
                     tencent.fetch_quotes, akdata.fetch_pool_stats, universe, ret5, prev_day, overseas,
                     overseas_trace=market.overseas_trace)
 
     if once:
-        fills = engine.tick(datetime.now())
+        fills = _safe_tick(engine, conn, now(), log)
         state.update(sentiment=engine.sentiment_label, prices={c: q.price for c, q in engine.last_quotes.items()})
         log(f"情绪 {engine.sentiment_label}，成交 {fills}")
         return None
 
     resynced = False
-    while datetime.now().time() < REPORT_AT:
-        now = datetime.now()
-        if not resynced and now.time() >= NOTICE_RESYNC_AT:
-            sync_notices(conn, today)
+    while now().time() < REPORT_AT:
+        t = now()
+        if not resynced and t.time() >= NOTICE_RESYNC_AT:
             resynced = True
-        if in_session(now.time()):
+            _sync_notices(conn, today, log)
+        if in_session(t.time()):
             state["phase"] = "盘中"
-            for f in engine.tick(now):
+            for f in _safe_tick(engine, conn, t, log):
                 log(f"{f.ts:%H:%M} {f.account} {'买' if f.side == 'buy' else '卖'} {f.code} "
                     f"{f.price} x{f.shares} {f.reason}")
             state.update(sentiment=engine.sentiment_label,
@@ -114,10 +174,42 @@ def run_day(once: bool = False, stop: threading.Event | None = None,
             return None
 
     prices = {c: q.price for c, q in engine.last_quotes.items()}
-    path = write_report(conn, ledger, today, prices, overseas, engine.sentiment_label, names=universe)
-    state["phase"] = "已收盘"
+    names = dict(universe)
+    held = held_codes(ledger)
+    if held:
+        try:
+            quotes = tencent.fetch_quotes(held)
+            prices.update({c: q.price for c, q in quotes.items()})
+            names = {**{c: q.name for c, q in quotes.items()}, **names}
+        except Exception as e:
+            log(f"收盘价刷新失败，沿用最后快照：{e!r}")
+    try:
+        path = write_report(conn, ledger, today, prices, overseas, engine.sentiment_label,
+                            out_dir=REPORT_DIR, names=names)
+    except Exception as e:
+        log(f"复盘报告生成失败：{e!r}")
+        return None
+    finally:
+        state["phase"] = "已收盘"
     log(f"复盘报告 {path}；" + "，".join(f"{a} {ledger.equity(a, prices):,.2f}" for a in ACCOUNTS))
     return path
+
+
+def _safe_tick(engine: Engine, conn, t: datetime, log: Callable[[str], None]) -> list:
+    """单轮出错只记日志；回滚这一轮没提交的半截写入，下一分钟照常卖。"""
+    try:
+        return engine.tick(t)
+    except Exception as e:
+        conn.rollback()
+        log(f"本轮出错：{e!r}")
+        return []
+
+
+def _sync_notices(conn, today: date, log: Callable[[str], None]):
+    try:
+        log(f"公告同步 {sync_notices(conn, today)} 条")
+    except Exception as e:
+        log(f"公告同步失败：{e!r}")
 
 
 def main(argv=None):
