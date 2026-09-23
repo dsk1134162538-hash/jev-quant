@@ -20,7 +20,7 @@
 - 卖出：止损 `≤ -3%`；回到 0 轴 `≥ -0.2%`；反弹 `当前 - 日内最低 ≥ 1.5` 个点；`14:55` 尾盘清仓
 - 尾盘买入窗口 `14:50–14:57`；盘中买入窗口 `09:30–14:57`
 - 公告回看 90 天；新闻回看 24 小时；**公告排雷**中 Jev 置信度 `< 0.6` 视为拿不准（设计文档 §5 第 3 步；消息面/情绪/外围不做置信度门槛，见 ledger R12）
-- Jev：`POST https://api.typesafe.ai/v1/systemone`，模型 `jev-latest`，API Key 从环境变量 `TYPESAFE_API_KEY` 读取
+- Jev：`POST https://api.typesafe.ai/v1/systemone`，模型 `jev-latest`，API Key 从环境变量 `TYPESAFE_API_KEY` 读取；或经 Cloudflare Workers AI（`typesafe/jev`，`CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`，Task 14）
 - 出问题宁可不买，但不能卖不掉：卖出路径不调用 Jev
 - 所有命令在 `D:\claude\jev-quant` 下执行，Python 用 `.venv/Scripts/python`
 
@@ -3006,13 +3006,176 @@ Expected: 打印桌面上 `Jev低吸模拟盘.lnk` 的路径
 
 ---
 
+### Task 14: Jev 调用通道（TypeSafe / Cloudflare）
+
+在 Task 13 之后、Task 12 之前执行。背景：TypeSafe 官网暂停新用户注册，Jev 同时在 Cloudflare Workers AI 上架（模型 ID `typesafe/jev`），请求体外多一层 `{"model", "input"}`，返回同样带 `answers`。
+
+**Files:**
+- Modify: `jevq/judge/jev.py`, `run.py`
+- Test: `tests/test_jev.py`
+
+**Interfaces:**
+- Consumes: 现有 `JevClient`、`run_day`
+- Produces:
+  - `Provider(name: str, url: str, headers: dict[str, str], wrap_model: str | None)`；`Provider.body(state, questions) -> dict`
+  - `typesafe_provider(api_key) -> Provider`、`cloudflare_provider(account_id, token) -> Provider`
+  - `provider_from_env(env: Mapping[str, str] = os.environ) -> Provider`：有 `TYPESAFE_API_KEY` 用 TypeSafe；否则有 `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` 用 Cloudflare；都没有抛 `RuntimeError("缺少 Jev 凭证：设置 TYPESAFE_API_KEY，或 CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN")`
+  - `JevClient(api_key: str | None = None, session=None, conn=None, provider: Provider | None = None)`：`provider` 优先；否则用 `typesafe_provider(api_key)`。现有调用 `JevClient("k", session=s)` 行为不变。
+  - 响应解析：若 JSON 顶层有 dict 型 `result` 字段则先取 `result`（Cloudflare REST 的常见外壳），再取 `answers`。
+
+- [ ] **Step 1: 写失败的测试（追加到 `tests/test_jev.py`）**
+
+```python
+from jevq.judge.jev import cloudflare_provider, provider_from_env, typesafe_provider
+
+
+def test_cloudflare_body_url_and_auth():
+    s = FakeSession(OK)
+    JevClient(session=s, provider=cloudflare_provider("acc123", "tok")).ask("state", Q)
+    url, body, headers = s.calls[0]
+    assert url == "https://api.cloudflare.com/client/v4/accounts/acc123/ai/run"
+    assert body == {"model": "typesafe/jev", "input": {"state": "state", "questions": Q}}
+    assert headers["Authorization"] == "Bearer tok"
+
+
+def test_unwraps_result_envelope():
+    wrapped = Resp(200, {"result": {"answers": {"q": {"type": "noul", "noul": 0.7}}}, "success": True})
+    ans = JevClient(session=FakeSession(wrapped), provider=cloudflare_provider("a", "t")).ask("s", Q)
+    assert ans["q"]["noul"] == 0.7
+
+
+def test_provider_from_env():
+    assert provider_from_env({"TYPESAFE_API_KEY": "k"}).name == "typesafe"
+    cf = provider_from_env({"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"})
+    assert cf.name == "cloudflare"
+    assert provider_from_env({"TYPESAFE_API_KEY": "k", "CLOUDFLARE_ACCOUNT_ID": "a",
+                              "CLOUDFLARE_API_TOKEN": "t"}).name == "typesafe"
+    with pytest.raises(RuntimeError, match="缺少 Jev 凭证"):
+        provider_from_env({"CLOUDFLARE_ACCOUNT_ID": "a"})
+
+
+def test_typesafe_provider_matches_legacy_constructor():
+    s1, s2 = FakeSession(OK), FakeSession(OK)
+    JevClient("k", session=s1).ask("s", Q)
+    JevClient(session=s2, provider=typesafe_provider("k")).ask("s", Q)
+    assert s1.calls == s2.calls
+```
+
+- [ ] **Step 2: 运行，确认失败**
+
+Run: `.venv/Scripts/python -m pytest tests/test_jev.py -v`
+Expected: FAIL，`ImportError: cannot import name 'cloudflare_provider'`
+
+- [ ] **Step 3: 实现**
+
+在 `jevq/judge/jev.py` 顶部 import 增加 `import os`、`from collections.abc import Mapping`、`from dataclasses import dataclass`，并加入：
+
+```python
+CLOUDFLARE_URL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run"
+CLOUDFLARE_MODEL = "typesafe/jev"
+
+
+@dataclass(frozen=True)
+class Provider:
+    name: str
+    url: str
+    headers: dict[str, str]
+    wrap_model: str | None = None      # 非空时请求体为 {"model": wrap_model, "input": {...}}
+
+    def body(self, state, questions: dict) -> dict:
+        if self.wrap_model:
+            return {"model": self.wrap_model, "input": {"state": state, "questions": questions}}
+        return {"state": state, "model": JEV_MODEL, "questions": questions}
+
+
+def typesafe_provider(api_key: str) -> Provider:
+    return Provider("typesafe", JEV_URL, {"Authorization": f"Bearer {api_key}"})
+
+
+def cloudflare_provider(account_id: str, token: str) -> Provider:
+    return Provider("cloudflare", CLOUDFLARE_URL.format(account=account_id),
+                    {"Authorization": f"Bearer {token}"}, wrap_model=CLOUDFLARE_MODEL)
+
+
+def provider_from_env(env: Mapping[str, str] = os.environ) -> Provider:
+    if env.get("TYPESAFE_API_KEY"):
+        return typesafe_provider(env["TYPESAFE_API_KEY"])
+    if env.get("CLOUDFLARE_ACCOUNT_ID") and env.get("CLOUDFLARE_API_TOKEN"):
+        return cloudflare_provider(env["CLOUDFLARE_ACCOUNT_ID"], env["CLOUDFLARE_API_TOKEN"])
+    raise RuntimeError("缺少 Jev 凭证：设置 TYPESAFE_API_KEY，或 CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN")
+```
+
+`JevClient` 改为：
+
+```python
+class JevClient:
+    def __init__(self, api_key: str | None = None, session=None,
+                 conn: sqlite3.Connection | None = None, provider: Provider | None = None):
+        self.provider = provider or typesafe_provider(api_key)
+        self.session = session or requests.Session()
+        self.conn = conn
+
+    def ask(self, state, questions: dict) -> dict:
+        body = self.provider.body(state, questions)
+        error = "unknown"
+        for _ in range(2):
+            try:
+                r = self.session.post(self.provider.url, json=body, headers=self.provider.headers,
+                                      timeout=JEV_TIMEOUT)
+            except requests.RequestException as e:
+                error = repr(e)
+                continue
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data.get("result"), dict):
+                    data = data["result"]
+                answers = data["answers"]
+                self._log(body, answers, None)
+                return answers
+            error = f"HTTP {r.status_code}: {r.text[:200]}"
+            if r.status_code not in RETRYABLE and r.status_code < 500:
+                break
+        self._log(body, None, error)
+        raise JevError(error)
+```
+
+`_log` 与 `score_label` 不变。
+
+`run.py` 的 `run_day` 中，把：
+```python
+    key = os.environ.get("TYPESAFE_API_KEY")
+    if not key:
+        raise RuntimeError("缺少环境变量 TYPESAFE_API_KEY")
+```
+换成：
+```python
+    provider = provider_from_env()
+```
+把 `jev = JevClient(key, conn=conn)` 换成 `jev = JevClient(conn=conn, provider=provider)`，并在其后加 `log(f"Jev 通道：{provider.name}")`。import 增加 `from jevq.judge.jev import JevClient, provider_from_env`（替换原 `JevClient` 单独 import）；若 `os` 不再使用则删除 `import os`。
+
+- [ ] **Step 4: 运行，确认通过**
+
+Run: `.venv/Scripts/python -m pytest -q`
+Expected: 全部 passed
+
+Run（未设置任何凭证时）: `.venv/Scripts/python run.py --once`
+Expected: 以 `缺少 Jev 凭证：设置 TYPESAFE_API_KEY，或 CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN` 退出
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add jevq/judge/jev.py run.py tests/test_jev.py
+git commit -m "feat: pluggable jev provider (typesafe or cloudflare workers ai)"
+```
+
+---
+
 ### Task 12: 真实环境冒烟（需要 Jev API Key）
 
-**前置：** 用户已申请 TypeSafe API Key，并在自己的终端里设置好环境变量（这一步由用户操作，Claude 不写入任何 Key）：
-```bash
-setx TYPESAFE_API_KEY "<你的 key>"
-```
-设置后需要重开一个终端才会生效。
+**前置：** 用户在自己的终端设置好 Jev 凭证（Claude 不写入任何凭证），二选一：
+- TypeSafe：`setx TYPESAFE_API_KEY "<key>"`
+- Cloudflare Workers AI（TypeSafe 暂停注册时的替代）：`setx CLOUDFLARE_ACCOUNT_ID "<id>"` 与 `setx CLOUDFLARE_API_TOKEN "<token>"`
+设置后需要重开终端 / 重启桌面程序才会生效。
 
 - [ ] **Step 1: 交易时段跑一轮**
 
