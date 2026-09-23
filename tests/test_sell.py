@@ -65,3 +65,9 @@ def test_stop_loss(pct, open_pct):
 def test_eod_liquidation():
     d = run(-0.8, -1.5, low_pct=-1.5, when=at(14, 55))
     assert d.sell and d.reason == "尾盘清仓"
+
+
+def test_eod_specific_trigger_takes_priority():
+    """At 14:55, specific triggers (e.g. 摸到+1%) take priority over EOD liquidation."""
+    d = run(1.0, 0.5, when=at(14, 55))
+    assert d.sell and d.reason == "摸到+1%"
