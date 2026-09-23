@@ -215,13 +215,13 @@ async function renderTab() {
 async function refresh() {
   const s = await api.status();
   today = s.today;
-  $("dot").className = "dot" + (s.running ? " on" : "");
-  $("phase").textContent = s.running ? s.phase : "未运行";
+  $("dot").className = "dot" + (s.running || s.background ? " on" : "");
+  $("phase").textContent = s.running ? s.phase : (s.background ? "后台任务运行中" : "未运行");
   $("overseas").textContent = s.overseas || "–";
   $("sentiment").textContent = s.sentiment || "–";
   $("warningWrap").style.display = s.warning ? "" : "none";
   $("warning").innerHTML = esc(s.warning);
-  $("btnStart").disabled = s.running;
+  $("btnStart").disabled = s.running || s.background;
   $("btnStop").disabled = !s.running;
   renderAccounts(s.accounts);
   renderCurve(await api.equity_curve());

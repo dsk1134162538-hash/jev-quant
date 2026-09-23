@@ -1,6 +1,7 @@
 import json
 import threading
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +9,7 @@ from factories import quote
 from jevq import db
 from jevq.app.api import Api
 from jevq.ledger import Ledger
+from jevq.runlock import hold_run_lock
 
 T = datetime(2026, 9, 23, 14, 50)
 
@@ -174,3 +176,12 @@ def test_api_init_creates_fresh_db(paths):
     api = make_api(paths)
     s = api.status()
     assert [a["equity"] for a in s["accounts"]] == [30000, 30000]
+
+
+def test_status_background_true_when_another_handle_holds_runner_lock(paths):
+    api = make_api(paths)
+    lock_path = Path(paths[0]).parent / "runner.lock"
+    with hold_run_lock(lock_path):
+        s = api.status()
+    assert s["background"] is True and s["running"] is False
+    assert api.status()["background"] is False

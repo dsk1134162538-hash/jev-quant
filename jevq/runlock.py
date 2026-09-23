@@ -9,6 +9,7 @@ except ImportError:          # 非 Windows
     import fcntl
 
 HELD_MSG = "已有另一个交易进程在运行（桌面面板或 run.bat）"
+DAEMON_LOCK_NAME = "daemon.lock"
 
 
 def _lock(f):
@@ -25,6 +26,23 @@ def _unlock(f):
         msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
     else:
         fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def is_held(path) -> bool:
+    """锁文件当前是否被其他进程（或本进程的另一个句柄）占用。不存在的文件视为未占用。"""
+    path = Path(path)
+    if not path.exists():
+        return False
+    f = open(path, "a+b")
+    try:
+        try:
+            _lock(f)
+        except OSError:
+            return True
+        _unlock(f)
+        return False
+    finally:
+        f.close()
 
 
 @contextmanager
