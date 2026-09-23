@@ -20,6 +20,7 @@ class Engine:
         self.fetch_quotes, self.fetch_pools = fetch_quotes, fetch_pools
         self.universe, self.ret5, self.prev_day, self.overseas = universe, ret5, prev_day, overseas
         self.overseas_trace = overseas_trace
+        self.stale_before: date | None = prev_day
         self.rejected: set[str] = set()
         self._rejected_day: date | None = None
         self.fail_streak = 0
@@ -39,7 +40,8 @@ class Engine:
         mode = buy_mode(self._sentiment(now, quotes), self.overseas)
         if self.halted or not buy_window_open(mode, now.time()):
             return fills
-        ranked = rank_candidates((q for c, q in quotes.items() if c in self.universe), self.ret5)
+        ranked = rank_candidates(
+            (q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()), self.ret5)
         fills += self._buy_shadow(ranked, now)
         fills += self._buy_main(ranked, now, mode)
         return fills
@@ -72,14 +74,20 @@ class Engine:
 
     def _sells(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         fills = []
+        stale_codes = set()
         for account in ACCOUNTS:
             for pos in self.ledger.positions(account):
                 q = quotes.get(pos.code)
                 if q is None:
                     continue
-                d = decide_sell(pos, q, now, self.prev_day)
+                if q.ts.date() < now.date():
+                    stale_codes.add(pos.code)
+                    continue
+                d = decide_sell(pos, q, now, self.stale_before)
                 if d.sell and (f := self.ledger.sell(account, pos, q, now, d.reason)):
                     fills.append(f)
+        if stale_codes:
+            print(f"[engine] {now:%H:%M} 行情非当日，跳过卖出 {len(stale_codes)} 只")
         return fills
 
     def _sentiment(self, now: datetime, quotes: dict[str, Quote]) -> str | None:

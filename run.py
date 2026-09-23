@@ -87,6 +87,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         sell_only = True
 
     today = now().date()
+    calendar_fallback = False
     try:
         days = akdata.trade_days()
         trading = today in days
@@ -95,6 +96,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         log(f"交易日历获取失败：{e!r}；按周一至周五判断")
         days, trading, prev_day = None, today.weekday() < 5, prev_weekday(today)
         sell_only = True
+        calendar_fallback = True
     if not trading and not once:
         log(f"{today} 非交易日，退出")
         return None
@@ -147,6 +149,9 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     engine = Engine(conn, ledger, NoticeJudge(conn, jev), NewsJudge(conn, jev), market,
                     tencent.fetch_quotes, akdata.fetch_pool_stats, universe, ret5, prev_day, overseas,
                     overseas_trace=market.overseas_trace)
+    if calendar_fallback:
+        engine.stale_before = None
+        log("交易日历不可用：停用「隔夜超期」规则")
 
     if once:
         fills = _safe_tick(engine, conn, now(), log)

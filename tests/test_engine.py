@@ -251,6 +251,40 @@ def test_stale_position_sold_at_open():
         ("600001", "sell", "隔夜超期")]
 
 
+def test_stale_quote_position_not_sold():
+    eng, ledger, feed = make(qs(**{"600001": -1.0}))
+    ledger.buy("main", quote("600001", pct=-1.0), at(10, 0), "x")
+    feed["quotes"] = {"600001": quote("600001", pct=-5.0, ts=datetime(2026, 9, 23, 15, 0))}
+    fills = eng.tick(at(9, 31, datetime(2026, 9, 24)))
+    assert fills == []
+    assert ledger.holds("main", "600001")
+
+
+def test_fresh_quote_position_sold():
+    eng, ledger, feed = make(qs(**{"600001": -1.0}))
+    ledger.buy("main", quote("600001", pct=-1.0), at(10, 0), "x")
+    feed["quotes"] = {"600001": quote("600001", pct=-5.0, ts=datetime(2026, 9, 24, 9, 31))}
+    fills = eng.tick(at(9, 31, datetime(2026, 9, 24)))
+    assert [(f.code, f.reason) for f in fills] == [("600001", "止损")]
+
+
+def test_stale_candidate_not_bought():
+    eng, ledger, feed = make(qs(**{"600001": -1.0}))
+    feed["quotes"] = {"600001": quote("600001", pct=-1.0, ts=datetime(2026, 9, 22, 10, 0))}
+    eng.tick(at(10, 0))
+    assert ledger.positions("main") == [] and ledger.positions("shadow") == []
+
+
+def test_stale_before_none_disables_overnight_rule():
+    eng, ledger, feed = make(qs(**{"600001": 0.0}))
+    eng.stale_before = None
+    ledger.buy("main", quote("600001", pct=-1.0), datetime(2026, 9, 21, 10, 0), "old")
+    feed["quotes"] = {"600001": quote("600001", pct=0.0, open_pct=0.0, ts=at(9, 31))}
+    fills = eng.tick(at(9, 31))
+    assert [f for f in fills if f.side == "sell"] == []
+    assert ledger.holds("main", "600001")
+
+
 def test_rejected_restored_from_todays_decisions():
     notice = Judge()
     eng, ledger, _ = make(qs(**{"600002": -1.0, "600003": -1.0}), notice=notice)

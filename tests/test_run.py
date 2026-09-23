@@ -145,6 +145,17 @@ def test_calendar_failure_falls_back_to_weekdays_sell_only(env, monkeypatch):
     assert len(eng.ticks) == 240
 
 
+def test_calendar_failure_disables_stale_before(env, monkeypatch):
+    def fail():
+        raise TimeoutError("sina 超时")
+
+    monkeypatch.setattr(run.akdata, "trade_days", fail)
+    env.run()
+    eng = FakeEngine.instances[0]
+    assert eng.stale_before is None
+    assert "交易日历不可用：停用「隔夜超期」规则" in env.log_text()
+
+
 def test_calendar_failure_weekend_is_not_a_trading_day(env, monkeypatch):
     monkeypatch.setattr(run.akdata, "trade_days", lambda: 1 / 0)
     env.clock.t = datetime(2026, 9, 26, 9, 29)          # 周六
