@@ -52,7 +52,8 @@ class Engine:
         """重启后恢复当日已否决/出错的股票，避免重复问 Jev。"""
         rows = self.conn.execute(
             "SELECT DISTINCT code FROM decisions WHERE verdict IN ('reject', 'error') "
-            "AND code != '' AND substr(ts, 1, 10) = ?", (day.isoformat(),)).fetchall()
+            "AND code != '' AND (strategy IS NULL OR strategy = 'lowbuy') "
+            "AND substr(ts, 1, 10) = ?", (day.isoformat(),)).fetchall()
         self.rejected = {r[0] for r in rows}
         self._rejected_day = day
 

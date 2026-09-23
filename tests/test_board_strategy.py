@@ -6,7 +6,7 @@ from factories import quote
 from jevq import db
 from jevq.data.closes import prev_closes_from_db, save_closes
 from jevq.ledger import Ledger
-from jevq.rules.board import Candidate
+from jevq.rules.board import WATCH_MAX, Candidate
 from jevq.strategies.board import BoardStrategy
 
 DAY = datetime(2026, 9, 23)
@@ -57,9 +57,8 @@ def make(notice=None, news=None, fetch_quotes=None, enabled=True):
 
 
 def leader_code(quotes):
-    """三项名次之和最小者：600002 (pct=9,rank1; amount=1e7,rank3; ret5=10,rank1 -> 5)
-    600001 (pct=8,rank2; amount=3e7,rank1; ret5=5,rank2 -> 5) -> 并列，取 rp 更小者(600001 rp=2 vs 600002 rp=1)
-    实际按代码算出后用测试自己核对，这里返回计算得到的龙头代码。"""
+    """按 jevq.rules.board.leader 的规则（三项名次之和最小，并列取 pct 名次更小者）计算 AI
+    题材当前的龙头代码，供测试断言用，避免在每个用例里手写期望值。"""
     from jevq.rules.board import hot_concepts, leader
     hot = hot_concepts(quotes, CONCEPT_MAP, DAY.date())
     cand = leader("AI", hot["AI"], quotes, RET5)
@@ -222,3 +221,231 @@ def test_prev_closes_from_db_returns_latest_two_of_three_days():
 
     result = prev_closes_from_db(conn, ["600001"], date(2026, 9, 23))
     assert result == {"600001": (9.0, 8.5)}
+
+
+# ---- fix round 1 ----------------------------------------------------------
+
+def test_full_account_defers_judge_then_judges_once_slot_frees():
+    notice = Judge()
+    news = Judge()
+    strat, conn, ledger = make(notice=notice, news=news)
+    quotes = hot_quotes()
+    code = leader_code(quotes)
+    filler = quote("900001", pct=-1.0, pre_close=10.0, ts=DAY)
+    ledger.buy("board_main", filler, at(9, 30), "filler")
+
+    strat.on_minute(quotes, at(9, 35))
+    assert code in strat.watch
+    assert notice.calls == []                      # 满仓：进观察池但不问 Jev
+
+    conn.execute("DELETE FROM positions WHERE account='board_main' AND code='900001'")
+    conn.commit()
+
+    strat.on_minute(quotes, at(9, 36))
+    assert notice.calls == [code]                   # 空位后恰好判断一次
+    assert strat.verdicts[code][0] == "pass"
+
+    strat.on_minute(quotes, at(9, 37))
+    assert notice.calls == [code]                   # 已判断过，不重复
+
+
+def test_full_account_skips_jev_calls_but_still_maintains_watch():
+    notice = Judge()
+    strat, conn, ledger = make(notice=notice)
+    quotes = hot_quotes()
+    code = leader_code(quotes)
+    filler = quote("900001", pct=-1.0, pre_close=10.0, ts=DAY)
+    ledger.buy("board_main", filler, at(9, 30), "filler")
+
+    strat.on_minute(quotes, at(9, 35))
+
+    assert code in strat.watch
+    assert notice.calls == []
+    assert code not in strat.verdicts
+
+
+def test_restores_rejected_from_decisions_on_first_minute_of_day():
+    strat, conn, _ = make()
+    conn.executemany(
+        "INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES (?, ?, ?, ?, ?)", [
+            ("2026-09-23T09:31:00", "600002", "reject", "新增减持", "board"),
+            ("2026-09-23T09:32:00", "600003", "error", "判断异常", "board"),
+            ("2026-09-22T09:31:00", "600001", "reject", "昨天的", "board"),          # 昨天的不恢复
+            ("2026-09-23T09:33:00", "600004", "reject", "低吸的否决", "lowbuy"),      # 别的策略不恢复
+        ])
+    conn.commit()
+
+    strat.on_minute({}, at(10, 0))
+    assert strat.rejected == {"600002", "600003"}
+
+
+def test_board_reject_does_not_leak_into_lowbuy_engine():
+    import test_engine as te
+
+    notice = te.Judge()
+    eng, ledger, _ = te.make(te.qs(**{"600002": -1.0}), notice=notice)
+    eng.conn.execute(
+        "INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES (?, ?, ?, ?, ?)",
+        ("2026-09-23T09:31:00", "600002", "reject", "board 的否决", "board"))
+    eng.conn.commit()
+
+    eng.tick(te.at(10, 0))
+    assert notice.calls == ["600002"]               # board 的否决不影响低吸判断
+    assert ledger.holds("main", "600002")
+
+
+def test_sells_exception_isolated_per_position():
+    strat, conn, ledger = make()
+    yesterday = DAY.replace(day=DAY.day - 1)
+    a = quote("600001", pct=8.0, pre_close=10.0, ts=at(14, 0, yesterday))
+    b = quote("600002", pct=8.0, pre_close=10.0, ts=at(14, 0, yesterday))
+    ledger.buy("board_main", a, at(10, 0, yesterday), "manual")
+    ledger.buy("board_shadow", b, at(10, 0, yesterday), "manual")
+
+    real_sell = ledger.sell
+
+    def flaky_sell(account, pos, q, ts, reason):
+        if pos.code == "600001":
+            raise RuntimeError("boom")
+        return real_sell(account, pos, q, ts, reason)
+
+    ledger.sell = flaky_sell
+
+    blowup_a = quote("600001", pct=5.0, open_pct=10.0, pre_close=10.0, ts=at(10, 0))
+    blowup_b = quote("600002", pct=5.0, open_pct=10.0, pre_close=10.0, ts=at(10, 0))
+    fills = strat.on_minute({"600001": blowup_a, "600002": blowup_b}, at(10, 0))
+
+    assert any(f.code == "600002" and f.account == "board_shadow" for f in fills)
+    assert ledger.holds("board_main", "600001")       # 卖出异常，仍持有，没有卡死其它票
+    assert not ledger.holds("board_shadow", "600002")
+
+
+def test_on_fast_main_buy_exception_does_not_block_shadow_or_other_codes():
+    q1 = quote("600001", pct=9.2, pre_close=10.0, ts=DAY)
+    q2 = quote("600002", pct=9.2, pre_close=10.0, ts=DAY)
+    strat, conn, ledger = make(fetch_quotes=lambda codes: {"600001": q1, "600002": q2})
+    strat.watch = {
+        "600001": Candidate("600001", "AI", 3, 4, {}),
+        "600002": Candidate("600002", "AI", 3, 4, {}),
+    }
+    strat.verdicts = {
+        "600001": ("pass", "ok", {"outcome": {"bought": False}}),
+        "600002": ("pass", "ok", {"outcome": {"bought": False}}),
+    }
+
+    real_buy = ledger.buy
+
+    def flaky_buy(account, q, ts, reason):
+        if account == "board_main" and q.code == "600001":
+            raise RuntimeError("boom")
+        return real_buy(account, q, ts, reason)
+
+    ledger.buy = flaky_buy
+
+    strat.on_fast(at(9, 35))
+
+    assert not ledger.holds("board_main", "600001")    # 主账户买入异常
+    assert ledger.holds("board_shadow", "600001")       # 影子账户不受影响（先处理到的票占满仓位）
+    assert ledger.holds("board_main", "600002")         # 主账户仍能买到下一只票，异常没有中断整个循环
+
+
+def test_on_fast_buy_updates_trace_outcome_and_logs_second_decision_row():
+    q = quote("600001", pct=9.2, pre_close=10.0, ts=DAY)
+    strat, conn, ledger = make(fetch_quotes=lambda codes: {"600001": q})
+    trace = {"strategy": "board", "candidate": {}, "notices": None, "news": None,
+             "outcome": {"bought": False, "shares": None, "price": None}}
+    strat.watch = {"600001": Candidate("600001", "AI", 3, 4, {})}
+    strat.verdicts = {"600001": ("pass", "ok", trace)}
+
+    strat.on_fast(at(9, 35))
+
+    assert trace["outcome"]["bought"] is True
+    assert trace["outcome"]["shares"] > 0
+    assert trace["outcome"]["price"] == q.price
+    rows = conn.execute(
+        "SELECT verdict, detail, strategy FROM decisions WHERE code='600001' ORDER BY id").fetchall()
+    assert rows[-1][0] == "pass"
+    assert rows[-1][1].startswith("扫板")
+    assert rows[-1][2] == "board"
+
+
+def test_exit_pct_removes_candidate_from_watch():
+    strat, conn, _ = make()
+    strat.watch = {"600001": Candidate("600001", "AI", 3, 4, {})}
+    strat.verdicts = {"600001": ("pass", "ok", {"outcome": {}})}
+
+    dropped = {"600001": quote("600001", pct=5.9, pre_close=10.0, ts=at(10, 0))}
+    strat.on_minute(dropped, at(10, 0))
+
+    assert "600001" not in strat.watch
+    assert "600001" not in strat.verdicts
+
+
+def test_watch_max_caps_total_size_across_concepts():
+    universe = {c: f"n{c}" for c in ["600001", "600002", "600003", "700001", "700002", "700003"]}
+    concept_map = {"600001": ["AI"], "600002": ["AI"], "600003": ["AI"],
+                   "700001": ["BIO"], "700002": ["BIO"], "700003": ["BIO"]}
+    ret5 = {c: 5.0 for c in universe}
+    prev_closes = {c: (9.5, 9.0) for c in universe}
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    strat = BoardStrategy(conn, ledger, Judge(), Judge(), lambda codes: {}, universe, ret5,
+                          concept_map, prev_closes, PREV_DAY)
+    strat.watch = {f"F{i}": Candidate(f"F{i}", "OTHER", 3, 1, {}) for i in range(4)}
+
+    quotes = {c: quote(c, pct=8.0, pre_close=10.0, ts=DAY) for c in universe}
+    quotes.update({f"F{i}": quote(f"F{i}", pct=8.0, pre_close=10.0, ts=DAY) for i in range(4)})
+
+    strat.on_minute(quotes, at(9, 35))
+    assert len(strat.watch) == WATCH_MAX
+
+
+def test_stale_quote_position_not_sold():
+    strat, conn, ledger = make()
+    yesterday = DAY.replace(day=DAY.day - 1)
+    pos_q = quote("600001", pct=8.0, pre_close=10.0, ts=at(14, 0, yesterday))
+    ledger.buy("board_main", pos_q, at(10, 0, yesterday), "manual")
+
+    stale = quote("600001", pct=-5.0, pre_close=10.0, ts=datetime(2026, 9, 22, 15, 0))
+    fills = strat.on_minute({"600001": stale}, at(9, 31, DAY))
+
+    assert fills == []
+    assert ledger.holds("board_main", "600001")
+
+
+def test_on_fast_stale_quote_not_bought():
+    stale_q = quote("600001", pct=9.2, pre_close=10.0, ts=datetime(2026, 9, 22, 10, 0))
+    strat, conn, ledger = make(fetch_quotes=lambda codes: {"600001": stale_q})
+    strat.watch = {"600001": Candidate("600001", "AI", 3, 4, {})}
+    strat.verdicts = {"600001": ("pass", "ok", {"outcome": {"bought": False}})}
+
+    fills = strat.on_fast(at(9, 35))
+
+    assert fills == []
+    assert not ledger.holds("board_main", "600001")
+    assert not ledger.holds("board_shadow", "600001")
+
+
+class RaisingJudge:
+    def __init__(self):
+        self.calls = []
+
+    def check(self, code, *args):
+        self.calls.append(code)
+        raise RuntimeError("boom")
+
+
+def test_judge_exception_becomes_error_and_rejected():
+    notice = RaisingJudge()
+    strat, conn, _ = make(notice=notice)
+    quotes = hot_quotes()
+    code = leader_code(quotes)
+
+    strat.on_minute(quotes, at(9, 35))
+
+    assert code not in strat.watch
+    assert code in strat.rejected
+    row = conn.execute("SELECT verdict, detail, strategy FROM decisions WHERE code=?", (code,)).fetchone()
+    assert row[0] == "error"
+    assert "判断异常" in row[1]
+    assert row[2] == "board"
