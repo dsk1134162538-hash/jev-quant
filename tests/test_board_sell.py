@@ -56,3 +56,11 @@ def test_stale_position_sells_unless_sealed():
     r = d(qq(2.0, high_pct=2.0), buy=date(2026, 9, 21), prev=date(2026, 9, 23))
     assert r.sell and r.reason == "隔夜超期"
     assert not d(qq(10.0, high_pct=10.0), buy=date(2026, 9, 21), prev=date(2026, 9, 23)).sell
+
+
+def test_sealed_overnight_position_uses_normal_rules_on_t_plus_2():
+    # T=09-22 买入，T+1=09-23 封死涨停隔夜持有；T+2=09-24 开盘 +4%。runner 昨天跑过 → prev_trade_day=None，
+    # 按正常规则判断：没触发止损/炸板/冲高回落/尾盘，继续持有，而不是按「隔夜超期」开盘卖。
+    q_ = quote(pct=4.0, ts=datetime(2026, 9, 24, 9, 31))
+    r = decide_board_sell(position(buy_date=date(2026, 9, 22)), q_, datetime(2026, 9, 24, 9, 31), None)
+    assert not r.sell

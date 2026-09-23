@@ -748,3 +748,79 @@ def test_board_events_failures_do_not_block_report(env, monkeypatch):
     assert path is not None and Path(path).exists()
     assert "封板统计回填失败：RuntimeError('fill down')" in env.log_text()
     assert "封板统计记录失败：RuntimeError('zt down')" in env.log_text()
+
+
+# ---- final fix wave ----
+
+def seed_turnover(dbp, ts):
+    conn = db.connect(dbp)
+    conn.execute("INSERT OR REPLACE INTO turnover VALUES (?, ?)", (ts, 1.0))
+    conn.commit()
+    conn.close()
+
+
+def test_ran_on_detects_turnover_rows_of_that_day(env):
+    seed_turnover(env.db, "2026-09-22 14:59")
+    conn = db.connect(env.db)
+    try:
+        assert run.ran_on(conn, date(2026, 9, 22)) is True
+        assert run.ran_on(conn, date(2026, 9, 21)) is False
+    finally:
+        conn.close()
+
+
+def test_ran_yesterday_disables_board_stale_rule(env):
+    seed_turnover(env.db, "2026-09-22 10:00")
+    env.run()
+    assert env.boards[0].stale_before is None
+    assert not hasattr(FakeEngine.instances[0], "stale_before")   # 低吸的隔夜超期规则不受影响
+
+
+def test_missed_yesterday_keeps_board_stale_rule(env):
+    seed_turnover(env.db, "2026-09-21 10:00")               # 前天跑过，昨天没跑
+    env.run()
+    assert env.boards[0].stale_before == date(2026, 9, 22)
+
+
+def test_board_gets_empty_quotes_when_minute_fetch_failed(env, monkeypatch):
+    from datetime import time as dtime
+    seed_concepts(env.db)
+    conn = db.connect(env.db)
+    Ledger(conn).buy("board_main", quote("600001", pct=1.0, ts=datetime(2026, 9, 22, 10, 0)),
+                     datetime(2026, 9, 22, 10, 0), "x")
+    conn.close()
+    seen = []
+
+    class RecordingBoard(SpyBoard):
+        def on_minute(self, quotes, now):
+            seen.append((now.time().replace(second=0), dict(quotes)))
+            return super().on_minute(quotes, now)
+
+    monkeypatch.setattr(run, "BoardStrategy", RecordingBoard)
+
+    def behavior(eng, now):
+        if now.time() < dtime(9, 31):
+            # 09:30 取数成功
+            eng.last_quotes = {"600001": quote("600001", pct=1.0, ts=now)}
+            eng.last_fetch_minute = now.strftime("%Y-%m-%d %H:%M")
+        elif now.time() < dtime(9, 32):
+            # 09:31 取数失败：last_quotes 保持 09:30 的旧快照，这里篡改成会触发止损的价格，
+            # 用来证明 board 没拿它去卖
+            eng.last_quotes = {"600001": quote("600001", pct=-5.0, ts=now.replace(minute=30))}
+        else:
+            eng.last_quotes = {"600001": quote("600001", pct=1.0, ts=now)}
+            eng.last_fetch_minute = now.strftime("%Y-%m-%d %H:%M")
+
+    FakeEngine.behavior = behavior
+    env.run()
+    by_minute = dict(seen)
+    assert by_minute[dtime(9, 30)] != {}
+    assert by_minute[dtime(9, 31)] == {}
+    assert by_minute[dtime(9, 32)] != {}
+    conn = db.connect(env.db)
+    try:
+        sells = conn.execute("SELECT COUNT(*) FROM fills WHERE account='board_main' AND side='sell' "
+                             "AND reason='止损'").fetchone()[0]
+    finally:
+        conn.close()
+    assert sells == 0

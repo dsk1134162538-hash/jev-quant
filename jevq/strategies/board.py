@@ -34,6 +34,8 @@ class BoardStrategy:
     def on_minute(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         if self._rejected_day != now.date():
             self._restore_rejected(now.date())
+        if not quotes:
+            return []       # 这一分钟没拿到新行情：不卖（不能用旧价），也不动观察池
         fills = self._sells(quotes, now)
         if not self.enabled:
             return fills

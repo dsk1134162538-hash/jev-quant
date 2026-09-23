@@ -75,6 +75,12 @@ def prev_weekday(d: date) -> date:
     return d
 
 
+def ran_on(conn, day: date) -> bool:
+    """那天 runner 有没有跑过盘中：turnover 表每分钟取数成功都会写一行，有一行就算跑过。"""
+    return conn.execute("SELECT 1 FROM turnover WHERE ts LIKE ? LIMIT 1",
+                        (f"{day.isoformat()}%",)).fetchone() is not None
+
+
 def held_codes(ledger: Ledger) -> list[str]:
     return sorted({p.code for a in ACCOUNTS for p in ledger.positions(a)})
 
@@ -224,6 +230,13 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if not late:
         board = BoardStrategy(conn, ledger, notice_judge, news_judge, tencent.fetch_quotes, universe, ret5,
                               concept_map, prev_closes, prev_day, enabled=board_enabled)
+        # 「隔夜超期」只管 runner 错过了上一交易日的情况：昨天跑过，说明持仓昨天已经按规则处理过
+        # （封死涨停隔夜的票就是规则允许留下的），今天照常按同一套规则判断，不在开盘一刀切卖掉。
+        try:
+            if ran_on(conn, prev_day):
+                board.stale_before = None
+        except Exception as e:
+            log(f"读取昨日运行记录失败，扫首板保留「隔夜超期」规则：{e!r}")
     if calendar_fallback:
         engine.stale_before = None
         if board is not None:
@@ -233,7 +246,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if once:
         t = now()
         fills = _safe_tick(engine, conn, t, log)
-        board_fills = _safe_board_minute(board, engine.last_quotes, t, conn, log) if board is not None else []
+        board_fills = _safe_board_minute(board, _fresh_quotes(engine, t), t, conn, log) if board is not None else []
         state.update(sentiment=engine.sentiment_label, prices={c: q.price for c, q in engine.last_quotes.items()})
         if board is not None:
             state["board_watch"] = _board_watch_state(board, state["names"])
@@ -254,7 +267,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             last_tick_minute = minute_key
             state["phase"] = "盘中"
             _log_fills(_safe_tick(engine, conn, t, log), log)
-            _log_fills(_safe_board_minute(board, engine.last_quotes, t, conn, log), log)
+            _log_fills(_safe_board_minute(board, _fresh_quotes(engine, t), t, conn, log), log)
             state.update(sentiment=engine.sentiment_label,
                          prices={c: q.price for c, q in engine.last_quotes.items()})
             state["board_watch"] = _board_watch_state(board, state["names"])
@@ -318,6 +331,14 @@ def _safe_tick(engine: Engine, conn, t: datetime, log: Callable[[str], None]) ->
         conn.rollback()
         log(f"本轮出错：{e!r}")
         return []
+
+
+def _fresh_quotes(engine: Engine, t: datetime) -> dict:
+    """这一分钟低吸 tick 取数成功才把行情交给扫首板；失败时 last_quotes 还是上一分钟的旧快照，
+    拿它去卖会用旧价成交，所以给空字典，扫首板这一分钟既不卖也不动观察池。"""
+    if getattr(engine, "last_fetch_minute", None) == t.strftime("%Y-%m-%d %H:%M"):
+        return engine.last_quotes
+    return {}
 
 
 def _safe_board_minute(board: BoardStrategy, quotes: dict, t: datetime, conn,

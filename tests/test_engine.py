@@ -312,3 +312,13 @@ def test_rejected_restored_from_todays_decisions():
     eng.tick(at(10, 0))
     assert notice.calls == []
     assert eng.rejected == {"600002", "600003"}
+
+
+def test_last_fetch_minute_only_set_on_successful_fetch():
+    eng, _, feed = make(qs(**{"600001": 2.0}))
+    assert eng.last_fetch_minute is None
+    eng.tick(at(10, 0))
+    assert eng.last_fetch_minute == "2026-09-23 10:00"
+    feed["quotes"] = RuntimeError("qt down")
+    eng.tick(at(10, 1))
+    assert eng.last_fetch_minute == "2026-09-23 10:00"     # 失败不更新，last_quotes 仍是 10:00 的旧快照

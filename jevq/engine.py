@@ -28,6 +28,7 @@ class Engine:
         self.fail_streak = 0
         self.halted = False
         self.last_quotes: dict[str, Quote] = {}
+        self.last_fetch_minute: str | None = None   # 最近一次取数成功的分钟（"%Y-%m-%d %H:%M"）
         self.sentiment_label: str | None = None
         self.sentiment_trace: dict | None = None
         self._sentiment_at: datetime | None = None
@@ -69,6 +70,7 @@ class Engine:
             return None
         self.fail_streak = 0
         self.last_quotes = quotes
+        self.last_fetch_minute = now.strftime("%Y-%m-%d %H:%M")
         total = sum(q.amount for c, q in quotes.items() if c in self.universe)
         self.conn.execute("INSERT OR REPLACE INTO turnover VALUES (?, ?)",
                           (now.strftime("%Y-%m-%d %H:%M"), total))
