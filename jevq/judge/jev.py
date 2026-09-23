@@ -56,3 +56,7 @@ class JevClient:
 def score_label(answer: dict) -> str:
     probs = answer["probabilities"]
     return answer["legend"][max(probs, key=probs.get)]
+
+
+def score_probs(answer: dict) -> dict[str, float]:
+    return {answer["legend"][k]: p for k, p in answer["probabilities"].items()}

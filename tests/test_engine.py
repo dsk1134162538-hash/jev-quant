@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime
 
 import pytest
@@ -199,3 +200,27 @@ def test_max_checks_per_tick_caps_judge_calls(monkeypatch):
     eng.tick(at(10, 0))
     assert len(notice.calls) == 2
     assert ledger.positions("main") == []
+
+
+def test_main_decision_trace():
+    eng, ledger, _ = make(qs(**{"600001": -1.0, "600002": -2.0}))
+    eng.tick(at(10, 0))
+    rows = eng.conn.execute("SELECT code, trace FROM decisions WHERE code != '' ORDER BY id").fetchall()
+    traces = {code: json.loads(t) for code, t in rows}
+    t = traces["600002"]
+    assert t["candidate"]["rank"] == 1 and t["candidate"]["of"] == 2 and t["candidate"]["ret5"] == 15.0
+    assert t["market"]["mode"] == "intraday" and t["market"]["sentiment"] == "正常"
+    assert t["outcome"]["bought"] is True and t["outcome"]["shares"] > 0
+    assert t["notices"] is None and t["news"] is None     # 测试替身没有 last_trace
+
+
+def test_rejected_decision_trace_has_no_news():
+    class NoticeWithTrace(Judge):
+        last_trace = [{"title": "减持", "label": "新增减持", "mine": True}]
+    news = Judge()
+    news.last_trace = {"label": "中性"}
+    eng, _, _ = make(qs(**{"600002": -1.0}), notice=NoticeWithTrace({"600002": ("reject", "新增减持")}), news=news)
+    eng.tick(at(10, 0))
+    t = json.loads(eng.conn.execute("SELECT trace FROM decisions WHERE code='600002'").fetchone()[0])
+    assert t["notices"][0]["label"] == "新增减持" and t["news"] is None
+    assert t["outcome"]["bought"] is False

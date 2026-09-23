@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -35,43 +36,57 @@ def classify_by_keyword(title: str) -> str | None:
 class NoticeJudge:
     def __init__(self, conn: sqlite3.Connection, jev, workers: int = 8):
         self.conn, self.jev, self.workers = conn, jev, workers
+        self.last_trace: list[dict] = []
 
     def check(self, code: str, today: date) -> tuple[str, str]:
         notices = notices_for(self.conn, code, today)
-        verdicts: dict[str, tuple[str, float]] = {}
+        verdicts: dict[str, tuple[str, float, str, dict | None]] = {}
         pending = []
         for n in notices:
-            cached = self.conn.execute("SELECT label, confidence FROM notice_verdicts WHERE id=?",
-                                       (n.id,)).fetchone()
+            cached = self.conn.execute(
+                "SELECT label, confidence, source, probs FROM notice_verdicts WHERE id=?", (n.id,)).fetchone()
             if cached:
-                verdicts[n.id] = cached
+                label, conf, source, probs = cached
+                verdicts[n.id] = (label, conf, source, json.loads(probs) if probs else None)
             elif (label := classify_by_keyword(n.title)) is not None:
-                verdicts[n.id] = (label, 1.0)
-                self._save(n.id, label, 1.0, "keyword")
+                verdicts[n.id] = (label, 1.0, "keyword", None)
+                self._save(n.id, label, 1.0, "keyword", None)
             else:
                 pending.append(n)
 
+        failed = False
         if pending:
             with ThreadPoolExecutor(self.workers) as pool:
                 results = list(pool.map(self._ask, pending))
-            # Save successful results immediately, then check for failures
             for n, result in zip(pending, results):
-                if result is not None:
-                    label, conf = result
-                    verdicts[n.id] = (label, conf)
-                    self._save(n.id, label, conf, "jev")
-            if any(r is None for r in results):
-                return "error", "Jev 不可用"
+                if result is None:
+                    failed = True
+                    continue
+                label, conf, probs = result
+                verdicts[n.id] = (label, conf, "jev", probs)
+                self._save(n.id, label, conf, "jev", probs)
 
+        self.last_trace = []
+        first_bad = None
         for n in notices:
-            label, conf = verdicts[n.id]
-            if label in MINE_LABELS:
+            if n.id not in verdicts:
+                continue
+            label, conf, source, probs = verdicts[n.id]
+            mine, unsure = label in MINE_LABELS, conf < LOW_CONFIDENCE
+            self.last_trace.append({"date": n.date, "title": n.title, "label": label, "confidence": conf,
+                                    "source": source, "probabilities": probs, "mine": mine, "unsure": unsure})
+            if first_bad is None and (mine or unsure):
+                first_bad = (n, label, conf, mine)
+        if failed:
+            return "error", "Jev 不可用"
+        if first_bad:
+            n, label, conf, mine = first_bad
+            if mine:
                 return "reject", f"{label}：{n.date} {n.title}"
-            if conf < LOW_CONFIDENCE:
-                return "reject", f"拿不准({conf:.2f})：{n.date} {n.title}"
+            return "reject", f"拿不准({conf:.2f})：{n.date} {n.title}"
         return "pass", "公告无雷"
 
-    def _ask(self, n) -> tuple[str, float] | None:
+    def _ask(self, n) -> tuple[str, float, dict] | None:
         try:
             ans = self.jev.ask({"公告标题": n.title, "公告类型": n.type},
                                {"kind": {"type": "choice",
@@ -79,9 +94,10 @@ class NoticeJudge:
                                          "criteria": CRITERIA}})["kind"]
         except JevError:
             return None
-        return ans["choice"], ans["confidence"]
+        return ans["choice"], ans["confidence"], ans["probabilities"]
 
-    def _save(self, nid: str, label: str, conf: float, source: str):
-        self.conn.execute("INSERT OR REPLACE INTO notice_verdicts VALUES (?, ?, ?, ?)",
-                          (nid, label, conf, source))
+    def _save(self, nid: str, label: str, conf: float, source: str, probs: dict | None):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO notice_verdicts(id, label, confidence, source, probs) VALUES (?, ?, ?, ?, ?)",
+            (nid, label, conf, source, None if probs is None else json.dumps(probs, ensure_ascii=False)))
         self.conn.commit()

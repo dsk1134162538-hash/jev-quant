@@ -62,3 +62,32 @@ def test_market_judge():
     assert MarketJudge(ScoreJev("偏弱")).overseas({"道琼斯": -1.2}) == "偏弱"
     assert MarketJudge(ScoreJev("正常", fail=True)).sentiment({"涨停家数": 1}) is None
     assert MarketJudge(ScoreJev("中性")).overseas({}) is None
+
+
+def test_news_trace_and_cache_roundtrip():
+    conn = db.connect(":memory:")
+    judge = NewsJudge(conn, ScoreJev("中性"), fetch=lambda code: [news(1, "利好标题")])
+    assert judge.check("600001", "甲", NOW) == ("pass", "消息面中性")
+    t = judge.last_trace
+    assert t["label"] == "中性" and t["news"][0].startswith("利好标题")
+    assert t["probabilities"]["中性"] == 0.9
+    judge2 = NewsJudge(conn, ScoreJev("偏空"), fetch=lambda code: [])   # 走缓存
+    assert judge2.check("600001", "甲", NOW) == ("pass", "消息面中性")
+    assert judge2.last_trace == t
+
+
+def test_news_reads_legacy_plain_cache():
+    conn = db.connect(":memory:")
+    conn.execute("INSERT INTO day_cache VALUES (?, 'news', '600001', '偏空')", (NOW.date().isoformat(),))
+    judge = NewsJudge(conn, ScoreJev("中性"), fetch=lambda code: [])
+    assert judge.check("600001", "甲", NOW) == ("reject", "消息面偏空")
+    assert judge.last_trace["label"] == "偏空"
+
+
+def test_market_traces():
+    m = MarketJudge(ScoreJev("火热"))
+    m.sentiment({"涨停家数": 80})
+    assert m.sentiment_trace["inputs"] == {"涨停家数": 80} and m.sentiment_trace["label"] == "火热"
+    assert m.sentiment_trace["probabilities"]["火热"] == 0.9
+    m2 = MarketJudge(ScoreJev("中性", fail=True))
+    assert m2.overseas({"道琼斯": 0.1}) is None and m2.overseas_trace is None

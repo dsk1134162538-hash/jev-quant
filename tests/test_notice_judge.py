@@ -101,6 +101,21 @@ def test_no_notices_passes():
     assert NoticeJudge(db.connect(":memory:"), FakeJev({})).check("600001", TODAY)[0] == "pass"
 
 
+def test_trace_records_each_notice_with_source_and_probs():
+    titles = ["甲:关于回购公司股份的进展公告", "甲:关于重大合同的公告"]
+    conn = setup(*titles)
+    judge = NoticeJudge(conn, FakeJev({titles[1]: "其他"}, confidence=0.8))
+    assert judge.check("600001", TODAY)[0] == "reject"
+    by_title = {t["title"]: t for t in judge.last_trace}
+    assert by_title[titles[0]]["source"] == "keyword" and by_title[titles[0]]["mine"] is True
+    assert by_title[titles[0]]["probabilities"] is None
+    assert by_title[titles[1]]["source"] == "jev" and by_title[titles[1]]["probabilities"] == {"其他": 0.8}
+    assert by_title[titles[1]]["unsure"] is False
+    judge2 = NoticeJudge(conn, FakeJev({}))                 # 全部走缓存
+    judge2.check("600001", TODAY)
+    assert {t["title"]: t["probabilities"] for t in judge2.last_trace}[titles[1]] == {"其他": 0.8}
+
+
 def test_partial_batch_failure_caches_successes():
     """Two ambiguous notices, one succeeds and is cached, one fails.
     First check returns error but one notice is cached.

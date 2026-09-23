@@ -24,9 +24,21 @@ CREATE TABLE IF NOT EXISTS equity(date TEXT, account TEXT, value REAL, PRIMARY K
 """
 
 
+MIGRATIONS = [("decisions", "trace", "TEXT"), ("notice_verdicts", "probs", "TEXT")]
+
+
+def _migrate(conn: sqlite3.Connection):
+    for table, column, kind in MIGRATIONS:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+    conn.commit()
+
+
 def connect(path: str) -> sqlite3.Connection:
     if path != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False, timeout=15)
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn

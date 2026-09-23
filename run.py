@@ -85,7 +85,8 @@ def run_day(once: bool = False, stop: threading.Event | None = None,
     log(f"公告同步 {sync_notices(conn, today)} 条")
 
     engine = Engine(conn, ledger, NoticeJudge(conn, jev), NewsJudge(conn, jev), market,
-                    tencent.fetch_quotes, akdata.fetch_pool_stats, universe, ret5, prev_day, overseas)
+                    tencent.fetch_quotes, akdata.fetch_pool_stats, universe, ret5, prev_day, overseas,
+                    overseas_trace=market.overseas_trace)
 
     if once:
         fills = engine.tick(datetime.now())

@@ -14,16 +14,19 @@ from jevq.rules.sell import decide_sell
 class Engine:
     def __init__(self, conn: sqlite3.Connection, ledger: Ledger, notice_judge, news_judge,
                  market_judge, fetch_quotes, fetch_pools, universe: dict[str, str],
-                 ret5: dict[str, float], prev_day: date, overseas: str | None):
+                 ret5: dict[str, float], prev_day: date, overseas: str | None,
+                 overseas_trace: dict | None = None):
         self.conn, self.ledger = conn, ledger
         self.notice_judge, self.news_judge, self.market_judge = notice_judge, news_judge, market_judge
         self.fetch_quotes, self.fetch_pools = fetch_quotes, fetch_pools
         self.universe, self.ret5, self.prev_day, self.overseas = universe, ret5, prev_day, overseas
+        self.overseas_trace = overseas_trace
         self.rejected: set[str] = set()
         self.fail_streak = 0
         self.halted = False
         self.last_quotes: dict[str, Quote] = {}
         self.sentiment_label: str | None = None
+        self.sentiment_trace: dict | None = None
         self._sentiment_at: datetime | None = None
 
     def tick(self, now: datetime) -> list[Fill]:
@@ -36,7 +39,7 @@ class Engine:
             return fills
         ranked = rank_candidates((q for c, q in quotes.items() if c in self.universe), self.ret5)
         fills += self._buy_shadow(ranked, now)
-        fills += self._buy_main(ranked, now)
+        fills += self._buy_main(ranked, now, mode)
         return fills
 
     def _fetch(self, now: datetime) -> dict[str, Quote] | None:
@@ -76,14 +79,17 @@ class Engine:
             if stats:
                 try:
                     self.sentiment_label = self.market_judge.sentiment(stats)
+                    self.sentiment_trace = getattr(self.market_judge, "sentiment_trace", None)
                 except Exception as e:
                     print(f"[engine] 情绪判断异常: {e!r}")
                     self.sentiment_label = None
+                    self.sentiment_trace = None
             else:
                 self.sentiment_label = None
+                self.sentiment_trace = None
             self._sentiment_at = now
             self._log(now, "", "sentiment", json.dumps(
-                {"stats": stats, "label": self.sentiment_label}, ensure_ascii=False))
+                {"stats": stats, "label": self.sentiment_label}, ensure_ascii=False), trace=self.sentiment_trace)
         return self.sentiment_label
 
     def _market_stats(self, now: datetime, quotes: dict[str, Quote]) -> dict:
@@ -111,9 +117,9 @@ class Engine:
                 fills.append(f)
         return fills
 
-    def _buy_main(self, ranked: list[Quote], now: datetime) -> list[Fill]:
+    def _buy_main(self, ranked: list[Quote], now: datetime, mode: str) -> list[Fill]:
         fills, checked, errors = [], 0, 0
-        for q in ranked:
+        for rank, q in enumerate(ranked, 1):
             if self.ledger.free_slots("main") <= 0 or checked >= MAX_CHECKS_PER_TICK:
                 break
             if q.code in self.rejected or self.ledger.holds("main", q.code):
@@ -124,19 +130,30 @@ class Engine:
                 continue
             checked += 1
             verdict, why = self._check(self.notice_judge, q.code, now.date())
+            notice_trace = getattr(self.notice_judge, "last_trace", None)
+            news_trace = None
             if verdict == "pass":
                 verdict, why = self._check(self.news_judge, q.code, q.name, now)
-            self._log(now, q.code, verdict, why)
-            if verdict == "reject":
+                news_trace = getattr(self.news_judge, "last_trace", None)
+            trace = {"candidate": {"name": q.name, "price": q.price, "pct": q.pct,
+                                   "ret5": self.ret5[q.code], "rank": rank, "of": len(ranked)},
+                     "notices": notice_trace, "news": news_trace,
+                     "market": {"mode": mode, "sentiment": self.sentiment_label,
+                                "sentiment_trace": self.sentiment_trace,
+                                "overseas": self.overseas, "overseas_trace": self.overseas_trace},
+                     "outcome": {"bought": False, "shares": None, "price": None}}
+            if verdict in ("reject", "error"):
+                self._log(now, q.code, verdict, why, trace)
                 self.rejected.add(q.code)
+                if verdict == "error":
+                    # Spec §7: Jev 超时/报错 → 重试一次（JevClient 内部已重试）；仍失败 → 该股当日不买。
+                    errors += 1
                 continue
-            if verdict == "error":
-                # Spec §7: Jev 超时/报错 → 重试一次（JevClient 内部已重试）；仍失败 → 该股当日不买。
-                self.rejected.add(q.code)
-                errors += 1
-                continue
-            if f := self.ledger.buy("main", q, now, f"低吸{q.pct}%｜5日{self.ret5[q.code]}%｜{why}"):
+            f = self.ledger.buy("main", q, now, f"低吸{q.pct}%｜5日{self.ret5[q.code]}%｜{why}")
+            if f:
+                trace["outcome"] = {"bought": True, "shares": f.shares, "price": f.price}
                 fills.append(f)
+            self._log(now, q.code, verdict, why, trace)
         return fills
 
     @staticmethod
@@ -148,7 +165,8 @@ class Engine:
         except Exception as e:
             return "error", f"判断异常：{e!r}"
 
-    def _log(self, now: datetime, code: str, verdict: str, detail: str):
-        self.conn.execute("INSERT INTO decisions(ts, code, verdict, detail) VALUES (?, ?, ?, ?)",
-                          (now.isoformat(timespec="seconds"), code, verdict, detail))
+    def _log(self, now: datetime, code: str, verdict: str, detail: str, trace: dict | None = None):
+        self.conn.execute("INSERT INTO decisions(ts, code, verdict, detail, trace) VALUES (?, ?, ?, ?, ?)",
+                          (now.isoformat(timespec="seconds"), code, verdict, detail,
+                           None if trace is None else json.dumps(trace, ensure_ascii=False)))
         self.conn.commit()
