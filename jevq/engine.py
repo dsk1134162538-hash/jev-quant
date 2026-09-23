@@ -2,8 +2,10 @@ import json
 import sqlite3
 from datetime import date, datetime, timedelta
 
-from jevq.config import ACCOUNTS, MAX_CHECKS_PER_TICK, SENTIMENT_REFRESH_MIN
-from jevq.ledger import Ledger
+from jevq.config import (ACCOUNTS, MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE,
+                         SENTIMENT_REFRESH_MIN)
+from jevq.judge.jev import JevError
+from jevq.ledger import Ledger, affordable_shares
 from jevq.models import Fill, Quote
 from jevq.rules.buy import buy_mode, buy_window_open, rank_candidates
 from jevq.rules.sell import decide_sell
@@ -71,7 +73,14 @@ class Engine:
         fresh = self._sentiment_at and now - self._sentiment_at < timedelta(minutes=SENTIMENT_REFRESH_MIN)
         if not fresh:
             stats = self._market_stats(now, quotes)
-            self.sentiment_label = self.market_judge.sentiment(stats) if stats else None
+            if stats:
+                try:
+                    self.sentiment_label = self.market_judge.sentiment(stats)
+                except Exception as e:
+                    print(f"[engine] 情绪判断异常: {e!r}")
+                    self.sentiment_label = None
+            else:
+                self.sentiment_label = None
             self._sentiment_at = now
             self._log(now, "", "sentiment", json.dumps(
                 {"stats": stats, "label": self.sentiment_label}, ensure_ascii=False))
@@ -103,25 +112,41 @@ class Engine:
         return fills
 
     def _buy_main(self, ranked: list[Quote], now: datetime) -> list[Fill]:
-        fills, checked = [], 0
+        fills, checked, errors = [], 0, 0
         for q in ranked:
             if self.ledger.free_slots("main") <= 0 or checked >= MAX_CHECKS_PER_TICK:
                 break
             if q.code in self.rejected or self.ledger.holds("main", q.code):
                 continue
+            if errors >= MAX_ERRORS_PER_TICK:
+                break
+            if affordable_shares(min(self.ledger.cash("main"), MAX_PER_TRADE), q.price) == 0:
+                continue
             checked += 1
-            verdict, why = self.notice_judge.check(q.code, now.date())
+            verdict, why = self._check(self.notice_judge, q.code, now.date())
             if verdict == "pass":
-                verdict, why = self.news_judge.check(q.code, q.name, now)
+                verdict, why = self._check(self.news_judge, q.code, q.name, now)
             self._log(now, q.code, verdict, why)
             if verdict == "reject":
                 self.rejected.add(q.code)
                 continue
             if verdict == "error":
+                # Spec §7: Jev 超时/报错 → 重试一次（JevClient 内部已重试）；仍失败 → 该股当日不买。
+                self.rejected.add(q.code)
+                errors += 1
                 continue
             if f := self.ledger.buy("main", q, now, f"低吸{q.pct}%｜5日{self.ret5[q.code]}%｜{why}"):
                 fills.append(f)
         return fills
+
+    @staticmethod
+    def _check(judge, *args) -> tuple[str, str]:
+        try:
+            return judge.check(*args)
+        except JevError:
+            raise
+        except Exception as e:
+            return "error", f"判断异常：{e!r}"
 
     def _log(self, now: datetime, code: str, verdict: str, detail: str):
         self.conn.execute("INSERT INTO decisions(ts, code, verdict, detail) VALUES (?, ?, ?, ?)",
