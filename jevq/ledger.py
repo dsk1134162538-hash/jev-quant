@@ -23,8 +23,10 @@ def affordable_shares(budget: float, price: float) -> int:
 
 
 class Ledger:
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: sqlite3.Connection, init: bool = True):
         self.conn = conn
+        if not init:
+            return
         for a in ACCOUNTS:
             conn.execute("INSERT OR IGNORE INTO cash(account, amount) VALUES (?, ?)",
                          (a, INITIAL_CASH))
@@ -64,10 +66,14 @@ class Ledger:
     def sell(self, account: str, pos: Position, q: Quote, ts: datetime, reason: str) -> Fill | None:
         if q.suspended or q.price <= q.limit_down:
             return None
+        # 先删持仓：另一个连接已经卖掉时 rowcount 为 0，不能再入账一次现金。
+        cur = self.conn.execute("DELETE FROM positions WHERE account=? AND code=?", (account, pos.code))
+        if cur.rowcount != 1:
+            self.conn.rollback()
+            return None
         amount = pos.shares * q.price
         fee = sell_fee(amount)
         self.conn.execute("UPDATE cash SET amount = amount + ? WHERE account=?", (amount - fee, account))
-        self.conn.execute("DELETE FROM positions WHERE account=? AND code=?", (account, pos.code))
         return self._record(Fill(account, pos.code, "sell", q.price, pos.shares, fee, ts, reason))
 
     def equity(self, account: str, prices: dict[str, float]) -> float:

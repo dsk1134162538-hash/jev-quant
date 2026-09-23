@@ -81,3 +81,26 @@ def test_full_position_uses_all_cash(ledger):
     shares = affordable_shares(30000, 10.0)
     assert f.shares == shares
     assert ledger.cash("main") < 1010
+
+
+def test_two_ledgers_same_file_sell_once(tmp_path):
+    path = str(tmp_path / "t.sqlite")
+    a, b = Ledger(db.connect(path)), Ledger(db.connect(path))
+    a.buy("main", quote(pct=-1.0), T, "")
+    cash_after_buy = a.cash("main")
+    pos_a, pos_b = a.positions("main")[0], b.positions("main")[0]
+    when = datetime(2026, 9, 24, 9, 31)
+    f1 = a.sell("main", pos_a, quote(pct=1.0), when, "高开止盈")
+    f2 = b.sell("main", pos_b, quote(pct=1.0), when, "高开止盈")
+    assert f1 is not None and f2 is None
+    fresh = Ledger(db.connect(path))
+    sells = [f for f in fresh.fills_on(date(2026, 9, 24)) if f.side == "sell"]
+    assert len(sells) == 1
+    amount = pos_a.shares * 10.1
+    assert fresh.cash("main") == pytest.approx(cash_after_buy + amount - sell_fee(amount))
+
+
+def test_ledger_init_false_does_not_create_cash_rows():
+    conn = db.connect(":memory:")
+    Ledger(conn, init=False)
+    assert conn.execute("SELECT COUNT(*) FROM cash").fetchone()[0] == 0
