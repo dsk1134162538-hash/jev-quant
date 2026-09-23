@@ -77,11 +77,16 @@ def seed_concepts(dbp, code="600001", concept="题材A", updated="2026-09-23"):
 
 
 class SpyBoard(RealBoardStrategy):
-    """真实 BoardStrategy 包一层：记录实例、按需注入一次性观察池、按需在 on_minute 炸一次。"""
+    """真实 BoardStrategy 包一层：记录实例、按需注入观察池（一次性或常驻）、按需炸一次
+    on_minute/on_fast、按需在 on_fast 里模拟真实耗时（顺手拨一下假表）。"""
     instances: list = []
     boom_once = False
     force_watch_once: dict | None = None
+    force_watch: dict | None = None   # 常驻版：每分钟 on_minute 都补回去，不怕被剔出观察池
     fast_call_times: list = []
+    on_fast_latency = 0.0
+    on_fast_boom_once = False
+    advance_clock = None   # Callable[[float], None]，测试用来模拟 on_fast 的真实耗时
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
@@ -95,10 +100,18 @@ class SpyBoard(RealBoardStrategy):
         if SpyBoard.force_watch_once:
             self.watch.update(SpyBoard.force_watch_once)
             SpyBoard.force_watch_once = None
+        if SpyBoard.force_watch:
+            for code, cand in SpyBoard.force_watch.items():
+                self.watch.setdefault(code, cand)
         return fills
 
     def on_fast(self, now):
         SpyBoard.fast_call_times.append(now)
+        if SpyBoard.on_fast_latency and SpyBoard.advance_clock:
+            SpyBoard.advance_clock(SpyBoard.on_fast_latency)
+        if SpyBoard.on_fast_boom_once:
+            SpyBoard.on_fast_boom_once = False
+            raise RuntimeError("on_fast boom")
         return super().on_fast(now)
 
 
@@ -143,7 +156,9 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run, "BoardStrategy", SpyBoard)
     SpyBoard.instances, SpyBoard.boom_once = [], False
-    SpyBoard.force_watch_once, SpyBoard.fast_call_times = None, []
+    SpyBoard.force_watch_once, SpyBoard.force_watch, SpyBoard.fast_call_times = None, None, []
+    SpyBoard.on_fast_latency, SpyBoard.on_fast_boom_once = 0.0, False
+    SpyBoard.advance_clock = lambda seconds: setattr(clock, "t", clock.t + timedelta(seconds=seconds))
 
     def tick_wait(seconds, stop):
         clock.t += timedelta(seconds=seconds)
@@ -541,15 +556,118 @@ def test_concept_refresh_runs_when_stale_and_failure_is_logged_only(env, monkeyp
     monkeypatch.setattr(run.concepts, "needs_refresh", lambda conn, today: True)
     calls = []
 
-    def fail(conn, today, log=print):
-        calls.append(today)
+    def fail(conn, today, **kw):
+        calls.append((today, kw))
         raise RuntimeError("akshare down")
 
     monkeypatch.setattr(run.concepts, "refresh_concepts", fail)
     path = env.run()
-    assert calls == [date(2026, 9, 23)]
+    assert len(calls) == 1 and calls[0][0] == date(2026, 9, 23)
+    # deadline 是 09:25，且接了 stop，这样刷新慢了/收到停止指令都能提前退出，不顶着开盘时间
+    assert calls[0][1]["deadline"] == datetime(2026, 9, 23, 9, 25)
+    assert calls[0][1]["stop"] is not None
     assert "题材刷新失败：RuntimeError('akshare down')" in env.log_text()
     assert path is not None and len(FakeEngine.instances[0].ticks) == 240
+
+
+def test_concept_refresh_not_attempted_when_not_stale(env, monkeypatch):
+    calls = []
+    monkeypatch.setattr(run.concepts, "needs_refresh", lambda conn, today: False)
+    monkeypatch.setattr(run.concepts, "refresh_concepts", lambda *a, **kw: calls.append(1) or 0)
+    env.run()
+    assert calls == []
+
+
+def test_late_start_does_not_load_concepts_or_build_board(env, monkeypatch):
+    hold(env, price=9.9)
+    monkeypatch.setattr(run.akdata, "load_universe", lambda today, days: {})
+    env.feed["quotes"] = {"600001": quote("600001", pct=5.0, name="甲",
+                                          ts=datetime(2026, 9, 23, 15, 10))}
+    env.clock.t = datetime(2026, 9, 23, 15, 10)
+    needs_refresh_calls = []
+    monkeypatch.setattr(run.concepts, "needs_refresh", lambda conn, today: needs_refresh_calls.append(1) or False)
+    path = env.run()
+    assert path is not None
+    assert needs_refresh_calls == []          # 晚启动不读/刷题材
+    assert SpyBoard.instances == []            # 也不构造 BoardStrategy
+
+
+def test_load_concepts_failure_disables_board_and_logs(env, monkeypatch):
+    seed_concepts(env.db)
+    monkeypatch.setattr(run.concepts, "load_concepts", lambda conn: (_ for _ in ()).throw(RuntimeError("db locked")))
+    path = env.run()
+    assert "题材读取失败" in env.log_text()
+    assert env.boards[0].enabled is False
+    assert path is not None and len(FakeEngine.instances[0].ticks) == 240
+
+
+def test_prev_closes_failure_disables_board_and_logs(env, monkeypatch):
+    seed_concepts(env.db)
+    monkeypatch.setattr(run.closes, "prev_closes_from_db",
+                        lambda conn, codes, today: (_ for _ in ()).throw(RuntimeError("db locked")))
+    path = env.run()
+    assert "昨收/前日收读取失败" in env.log_text()
+    assert env.boards[0].enabled is False
+    assert path is not None and len(FakeEngine.instances[0].ticks) == 240
+
+
+def test_on_fast_exception_is_isolated_and_ticks_continue(env):
+    seed_concepts(env.db)
+    cand = Candidate("600001", "题材A", 3, 1, {"pct": 1, "amount": 1, "ret5": 1})
+    SpyBoard.force_watch_once = {"600001": cand}
+    SpyBoard.on_fast_boom_once = True
+    path = env.run()
+    assert "扫板出错：RuntimeError('on_fast boom')" in env.log_text()
+    assert len(SpyBoard.fast_call_times) > 1        # 炸完之后循环继续跑，不是就此死掉
+    assert len(FakeEngine.instances[0].ticks) == 240
+    assert path is not None
+
+
+def test_once_mode_shares_same_t_for_engine_and_board_tick(env, monkeypatch):
+    seed_concepts(env.db)
+    seen = {}
+
+    class RecordingBoard(SpyBoard):
+        def on_minute(self, quotes, now):
+            seen["board_t"] = now
+            return super().on_minute(quotes, now)
+
+    monkeypatch.setattr(run, "BoardStrategy", RecordingBoard)
+    orig_tick = FakeEngine.tick
+
+    def recording_tick(self, now):
+        seen["engine_t"] = now
+        return orig_tick(self, now)
+
+    monkeypatch.setattr(FakeEngine, "tick", recording_tick)
+    env.run(once=True)
+    assert seen["board_t"] == seen["engine_t"]
+
+
+def test_fast_scan_survives_on_fast_latency_no_minute_skipped_or_doubled(env):
+    """真实场景里 on_fast 会花点真实时间；固定 deadline 之前的老实现会在这种情况下把
+    deadline 越推越远，导致好几个整分钟的 tick（连带低吸和扫首板的卖出）被跳过。"""
+    seed_concepts(env.db)
+    cand = Candidate("600001", "题材A", 3, 1, {"pct": 1, "amount": 1, "ret5": 1})
+    SpyBoard.force_watch = {"600001": cand}
+    SpyBoard.on_fast_latency = 0.5
+    env.run()
+    eng = FakeEngine.instances[0]
+    assert len(eng.ticks) == 240                       # 一分钟都没被吞掉
+    minutes = [t.replace(second=0, microsecond=0) for t in eng.ticks]
+    assert len(minutes) == len(set(minutes))            # 也没有哪一分钟被吃两次
+
+
+def test_watchlist_minute_tick_keeps_two_second_buffer(env):
+    seed_concepts(env.db)
+    cand = Candidate("600001", "题材A", 3, 1, {"pct": 1, "amount": 1, "ret5": 1})
+    SpyBoard.force_watch = {"600001": cand}
+    env.run()
+    eng = FakeEngine.instances[0]
+    assert len(eng.ticks) == 240
+    # 第一笔 tick 是在观察池还是空的时候打的（09:30:00 整点）；从下一笔起观察池已经非空，
+    # fast_scan 固定在 :02 边界交回控制权，tick 时间应该带着这个缓冲，不会退化成整点 :00。
+    assert all(t.second >= 2 for t in eng.ticks[1:])
 
 
 def test_watch_triggers_multiple_fast_scans_within_one_minute(env):

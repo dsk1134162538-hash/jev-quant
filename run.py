@@ -165,6 +165,38 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         log("只卖模式：今日不开新仓")
     state["names"] = dict(universe)
 
+    # 题材刷新/读取放在盘前准备阶段（09:15 等待之前），并给一个硬 deadline：
+    # 放在等待之后做会顶着 09:30 开盘时间，之前这里没有 deadline 也没接 stop，
+    # 一旦刷新变慢就会把第一笔 09:30 的 tick 往后拖。晚启动（late）不选股票、
+    # 不判断，也就不需要题材数据，直接跳过，BoardStrategy 也不构造。
+    concept_map: dict[str, list[str]] = {}
+    prev_closes: dict = {}
+    board_enabled = False
+    if not late:
+        state["phase"] = "刷新题材"
+        try:
+            if concepts.needs_refresh(conn, today):
+                deadline = datetime.combine(today, time(9, 25))
+                concepts.refresh_concepts(conn, today, deadline=deadline, stop=stop, log=log)
+        except Exception as e:
+            log(f"题材刷新失败：{e!r}")
+        try:
+            concept_map = concepts.load_concepts(conn)
+        except Exception as e:
+            log(f"题材读取失败，扫首板今日只卖不买：{e!r}")
+            concept_map = {}
+        if not concept_map:
+            msg = "题材数据缺失，扫首板今日只卖不买"
+            log(msg)
+            state["warning"] = f"{state['warning']}；{msg}" if state.get("warning") else msg
+        board_enabled = bool(concept_map) and bool(ret5)   # 扫首板排名要用 ret5，覆盖率不够也只卖不买
+        try:
+            prev_closes = closes.prev_closes_from_db(conn, universe, today)
+        except Exception as e:
+            log(f"昨收/前日收读取失败，扫首板今日只卖不买：{e!r}")
+            prev_closes = {}
+            board_enabled = False
+
     state["phase"] = "等待 09:15"
     if not once and not late and not wait_until(time(9, 15), stop):
         return None
@@ -184,54 +216,49 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         state["phase"] = "同步公告"
         _sync_notices(conn, today, log)
 
-    if not late:
-        state["phase"] = "刷新题材"
-        try:
-            if concepts.needs_refresh(conn, today):
-                concepts.refresh_concepts(conn, today, log=log)
-        except Exception as e:
-            log(f"题材刷新失败：{e!r}")
-    concept_map = concepts.load_concepts(conn)
-    if not concept_map:
-        msg = "题材数据缺失，扫首板今日只卖不买"
-        log(msg)
-        state["warning"] = f"{state['warning']}；{msg}" if state.get("warning") else msg
-    board_enabled = bool(concept_map) and bool(ret5)   # 扫首板排名要用 ret5，覆盖率不够也只卖不买
-    prev_closes = closes.prev_closes_from_db(conn, universe, today)
-
     notice_judge, news_judge = NoticeJudge(conn, jev), NewsJudge(conn, jev)
     engine = Engine(conn, ledger, notice_judge, news_judge, market,
                     tencent.fetch_quotes, akdata.fetch_pool_stats, universe, ret5, prev_day, overseas,
                     overseas_trace=market.overseas_trace)
-    board = BoardStrategy(conn, ledger, notice_judge, news_judge, tencent.fetch_quotes, universe, ret5,
-                          concept_map, prev_closes, prev_day, enabled=board_enabled)
+    board = None
+    if not late:
+        board = BoardStrategy(conn, ledger, notice_judge, news_judge, tencent.fetch_quotes, universe, ret5,
+                              concept_map, prev_closes, prev_day, enabled=board_enabled)
     if calendar_fallback:
         engine.stale_before = None
-        board.stale_before = None
+        if board is not None:
+            board.stale_before = None
         log("交易日历不可用：停用「隔夜超期」规则")
 
     if once:
-        fills = _safe_tick(engine, conn, now(), log)
-        board_fills = _safe_board_minute(board, engine.last_quotes, now(), conn, log)
+        t = now()
+        fills = _safe_tick(engine, conn, t, log)
+        board_fills = _safe_board_minute(board, engine.last_quotes, t, conn, log) if board is not None else []
         state.update(sentiment=engine.sentiment_label, prices={c: q.price for c, q in engine.last_quotes.items()})
-        state["board_watch"] = _board_watch_state(board, state["names"])
+        if board is not None:
+            state["board_watch"] = _board_watch_state(board, state["names"])
         log(f"情绪 {engine.sentiment_label}，成交 {fills + board_fills}")
         return None
 
     resynced = False
+    last_tick_minute = None
     while now().time() < REPORT_AT:
         t = now()
         if not resynced and t.time() >= NOTICE_RESYNC_AT:
             resynced = True
             _sync_notices(conn, today, log)
-        if in_session(t.time()):
+        minute_key = t.replace(second=0, microsecond=0)
+        if in_session(t.time()) and minute_key != last_tick_minute:
+            # 防重复的安全网：正常情况下 _fast_scan 固定在 :02 边界交回控制权，不会撞到同一分钟
+            # 两次；万一出于什么原因还是撞上了，这里挡一道，不重复吃这一分钟的 tick。
+            last_tick_minute = minute_key
             state["phase"] = "盘中"
             _log_fills(_safe_tick(engine, conn, t, log), log)
             _log_fills(_safe_board_minute(board, engine.last_quotes, t, conn, log), log)
             state.update(sentiment=engine.sentiment_label,
                          prices={c: q.price for c, q in engine.last_quotes.items()})
             state["board_watch"] = _board_watch_state(board, state["names"])
-        else:
+        elif not in_session(t.time()):
             state["phase"] = "休市等待"
 
         if board.has_watch() and in_session(now().time()):
@@ -291,13 +318,25 @@ def _safe_board_minute(board: BoardStrategy, quotes: dict, t: datetime, conn,
 
 def _fast_scan(board: BoardStrategy, stop: threading.Event, log: Callable[[str], None],
                state: dict) -> bool:
-    """观察池非空时的 3 秒扫板循环，跑到下一分钟边界或收到停止指令为止。返回是否被 stop 打断。"""
+    """观察池非空时的 3 秒扫板循环。返回是否被 stop 打断。
+
+    边界在进入时算死一次（deadline = 现在 + seconds_to_next_minute()，带着 :02 缓冲），
+    循环全程只跟这个固定 deadline 比。不能在每轮重新用「现在到下一分钟还有多久」算边界——
+    on_fast 只要有点真实耗时，"现在"就已经跨过分钟整点，重新算出来的又是一个新的、快满
+    60 秒的余量，循环会一直续命下去，把后面好几个整分钟的 tick（低吸和扫首板的卖出都在
+    里面）都吞掉。这个 bug 真实复现过：on_fast 模拟 0.3 秒耗时，一小时里 29 分钟被跳过。
+    """
+    t0 = now()
+    deadline = t0 + timedelta(seconds=_seconds_to_boundary(t0))   # 用不带副作用的纯公式算，
+    # 不走 seconds_to_next_minute()：那个是外层「没有观察池」分支专用的等待入口，测试会把它
+    # 换成一个会顺手拨表的假实现，这里借用会把 deadline 算错。
     while board.has_watch() and in_session(now().time()):
-        t = now()
-        remain = _remaining_this_minute(t)
-        if _tick_wait(next_wake(t, True), stop):
+        remain = (deadline - now()).total_seconds()
+        if remain <= 0:
+            return False
+        if _tick_wait(min(FAST_INTERVAL, remain), stop):
             return True
-        if remain <= FAST_INTERVAL:
+        if now() >= deadline:
             return False
         try:
             _log_fills(board.on_fast(now()), log, "%H:%M:%S")

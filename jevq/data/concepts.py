@@ -1,5 +1,6 @@
+import threading
 import time as _time
-from datetime import date
+from datetime import date, datetime
 
 import akshare as ak
 
@@ -24,7 +25,10 @@ def needs_refresh(conn, today: date, max_age_days: int = 7) -> bool:
 
 
 def refresh_concepts(conn, today: date, fetch_list=fetch_concept_list, fetch_members=fetch_concept_members,
-                     pause: float = 0.5, max_consecutive_failures: int = 10, log=print) -> int:
+                     pause: float = 0.5, max_consecutive_failures: int = 10,
+                     deadline: datetime | None = None, stop: threading.Event | None = None,
+                     log=print) -> int:
+    """deadline/stop 到点就中断（不算失败），跑了多少算多少——凑不够一半就照旧保留旧数据。"""
     try:
         boards = fetch_list()
     except Exception as e:
@@ -32,6 +36,12 @@ def refresh_concepts(conn, today: date, fetch_list=fetch_concept_list, fetch_mem
         return 0
     rows, ok, fails = [], 0, 0
     for label, name in boards:
+        if deadline is not None and datetime.now() >= deadline:
+            log("题材刷新到时间上限，中断")
+            break
+        if stop is not None and stop.is_set():
+            log("收到停止指令，题材刷新中断")
+            break
         try:
             members = fetch_members(label)
             rows += [(code, name) for code in members]
