@@ -28,18 +28,19 @@ def test_affordable_shares_leaves_room_for_fee():
 
 def test_buy_updates_cash_and_position(ledger):
     f = ledger.buy("main", quote(pct=-1.0), T, "test")
-    assert f.shares == 1500 and f.price == 9.9
-    assert ledger.cash("main") == pytest.approx(30000 - 14850 - buy_fee(14850))
+    shares = affordable_shares(30000, 9.9)
+    assert f.shares == shares and f.price == 9.9
+    amount = shares * 9.9
+    assert ledger.cash("main") == pytest.approx(30000 - amount - buy_fee(amount))
     assert ledger.holds("main", "600001")
     assert ledger.cash("shadow") == 30000
 
 
-def test_max_two_positions_and_no_duplicate(ledger):
+def test_single_position_and_no_duplicate(ledger):
     assert ledger.buy("main", quote("600001", pct=-1), T, "")
     assert ledger.buy("main", quote("600001", pct=-1), T, "") is None
-    assert ledger.buy("main", quote("600002", pct=-1), T, "")
+    assert ledger.buy("main", quote("600002", pct=-1), T, "") is None
     assert ledger.free_slots("main") == 0
-    assert ledger.buy("main", quote("600003", pct=-1), T, "") is None
 
 
 def test_cannot_buy_at_limit_up_or_suspended(ledger):
@@ -53,7 +54,9 @@ def test_sell_round_trip(ledger):
     f = ledger.sell("main", pos, quote(pct=1.0), datetime(2026, 9, 24, 9, 31), "高开止盈")
     assert f.side == "sell" and f.price == 10.1
     assert not ledger.holds("main", "600001")
-    expected = 30000 - 14850 - buy_fee(14850) + 15150 - sell_fee(15150)
+    shares = affordable_shares(30000, 9.9)
+    buy_amount, sell_amount = shares * 9.9, shares * 10.1
+    expected = 30000 - buy_amount - buy_fee(buy_amount) + sell_amount - sell_fee(sell_amount)
     assert ledger.cash("main") == pytest.approx(expected)
 
 
@@ -67,6 +70,14 @@ def test_cannot_sell_at_limit_down(ledger):
 def test_equity_and_fills_on(ledger):
     ledger.buy("main", quote(pct=-1.0), T, "")
     value = ledger.equity("main", {"600001": 10.0})
-    assert value == pytest.approx(ledger.cash("main") + 15000)
+    shares = affordable_shares(30000, 9.9)
+    assert value == pytest.approx(ledger.cash("main") + shares * 10.0)
     assert len(ledger.fills_on(date(2026, 9, 23))) == 1
     assert ledger.fills_on(date(2026, 9, 24)) == []
+
+
+def test_full_position_uses_all_cash(ledger):
+    f = ledger.buy("main", quote(pct=0.0), T, "")
+    shares = affordable_shares(30000, 10.0)
+    assert f.shares == shares
+    assert ledger.cash("main") < 1010

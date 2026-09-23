@@ -60,8 +60,8 @@ def test_main_skips_rejected_shadow_buys_top_ranked():
     notice = Judge({"600002": ("reject", "新增减持")})
     eng, ledger, _ = make(quotes, notice=notice)
     eng.tick(at(10, 0))
-    assert [p.code for p in ledger.positions("shadow")] == ["600002", "600003"]
-    assert sorted(p.code for p in ledger.positions("main")) == ["600001", "600003"]
+    assert [p.code for p in ledger.positions("shadow")] == ["600002"]
+    assert sorted(p.code for p in ledger.positions("main")) == ["600003"]
     rows = eng.conn.execute("SELECT code, verdict FROM decisions").fetchall()
     assert ("600002", "reject") in rows
 
@@ -139,7 +139,7 @@ def test_error_breaker_stops_checking_after_max_errors_per_tick():
 
 
 def test_unaffordable_candidate_skipped_without_judge_call():
-    quotes = {**qs(**{"600002": -1.0}), "600001": quote("600001", pct=0.0, pre_close=200.0)}
+    quotes = {**qs(**{"600002": -1.0}), "600001": quote("600001", pct=0.0, pre_close=310.0)}
     ret5 = {"600001": 20.0, "600002": 10.0, "600003": 10.0, "600004": 1.0}
     notice = Judge()
     eng, ledger, _ = make(quotes, notice=notice, ret5=ret5)

@@ -2,8 +2,8 @@ from datetime import time
 
 # 资金与仓位
 INITIAL_CASH = 30_000.0
-MAX_PER_TRADE = 15_000.0
-MAX_POSITIONS = 2
+MAX_PER_TRADE = float("inf")   # 全仓：单笔预算 = 全部可用现金（min(cash, inf) == cash）
+MAX_POSITIONS = 1              # 全仓单票
 LOT = 100
 
 # 费用
