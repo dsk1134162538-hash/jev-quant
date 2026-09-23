@@ -2,3 +2,4 @@ akshare>=1.18
 pandas
 requests
 pytest
+pywebview

@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Jev 低吸模拟盘</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2129; --muted:#86909c; --line:#e5e6eb;
+          --up:#d93026; --down:#1a9e5c; --accent:#3370ff; --shadow:#8f5cf7; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#17181a; --card:#232429; --text:#e8e9eb; --muted:#8a8f98; --line:#34363c;
+            --up:#f5584a; --down:#2fbf71; --accent:#5b8cff; --shadow:#a98bff; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 "Microsoft YaHei UI", system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:16px; padding:14px 20px; background:var(--card); border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0 12px 0 0; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); display:inline-block; margin-right:6px; }
+  .dot.on { background:var(--down); box-shadow:0 0 0 3px color-mix(in srgb, var(--down) 25%, transparent); }
+  .tag { color:var(--muted); }
+  .tag b { color:var(--text); font-weight:600; }
+  .spacer { flex:1; }
+  button { border:1px solid var(--line); background:var(--card); color:var(--text); padding:6px 16px; border-radius:6px; cursor:pointer; font:inherit; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.45; cursor:default; }
+  main { padding:16px 20px; display:grid; gap:16px; }
+  .cards { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card h2 { font-size:14px; margin:0 0 8px; color:var(--muted); font-weight:500; }
+  .big { font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .up { color:var(--up); } .down { color:var(--down); }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  td.wrap { white-space:normal; }
+  th { color:var(--muted); font-weight:500; }
+  .tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:10px; }
+  .tabs button { border:none; border-radius:0; border-bottom:2px solid transparent; background:none; padding:8px 14px; }
+  .tabs button.active { border-bottom-color:var(--accent); color:var(--accent); }
+  .empty { color:var(--muted); padding:16px 8px; }
+  #curve svg { width:100%; height:180px; display:block; }
+  .legend span { margin-right:14px; color:var(--muted); }
+  .legend i { display:inline-block; width:10px; height:3px; vertical-align:middle; margin-right:4px; }
+  #log { font:12px/1.6 Consolas, monospace; max-height:360px; overflow:auto; white-space:pre-wrap; }
+  .layout { display:grid; grid-template-columns:200px 1fr; gap:16px; }
+  .report-list button { display:block; width:100%; text-align:left; margin-bottom:4px; }
+  .md table { margin:8px 0; } .md h1 { font-size:18px; } .md h2 { font-size:15px; margin-top:18px; }
+  .md blockquote { color:var(--muted); margin:8px 0; padding-left:10px; border-left:3px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Jev 低吸模拟盘</h1>
+  <span><span id="dot" class="dot"></span><span id="phase">未运行</span></span>
+  <span class="tag">外围 <b id="overseas">–</b></span>
+  <span class="tag">情绪 <b id="sentiment">–</b></span>
+  <span class="spacer"></span>
+  <button id="btnStart" class="primary">开始运行</button>
+  <button id="btnStop" disabled>停止</button>
+</header>
+<main>
+  <section class="cards" id="accounts"></section>
+  <section class="card" id="curve">
+    <h2>净值曲线 <span class="legend"><span><i style="background:var(--accent)"></i>主账户(Jev)</span><span><i style="background:var(--shadow)"></i>影子账户</span></span></h2>
+    <div id="curveBody"></div>
+  </section>
+  <section class="card">
+    <div class="tabs">
+      <button data-tab="fills" class="active">今日成交</button>
+      <button data-tab="decisions">Jev 判断</button>
+      <button data-tab="reports">复盘报告</button>
+      <button data-tab="logs">运行日志</button>
+    </div>
+    <div id="tabBody"></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = (n, d = 2) => n == null ? "–" : Number(n).toLocaleString("zh-CN", {minimumFractionDigits:d, maximumFractionDigits:d});
+const signCls = (n) => n > 0 ? "up" : n < 0 ? "down" : "";
+let api, tab = "fills", today = "";
+
+function table(headers, rows) {
+  if (!rows.length) return '<div class="empty">暂无数据</div>';
+  return `<table><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr>${rows.map((r) =>
+    `<tr>${r.map((c, i) => `<td class="${i === r.length - 1 ? "wrap" : ""}">${c}</td>`).join("")}</tr>`).join("")}</table>`;
+}
+
+function renderAccounts(accounts) {
+  $("accounts").innerHTML = accounts.map((a) => `
+    <div class="card">
+      <h2>${esc(a.name)}</h2>
+      <div class="big">${fmt(a.equity)} <span class="${signCls(a.return_pct)}" style="font-size:15px">${a.return_pct > 0 ? "+" : ""}${fmt(a.return_pct)}%</span></div>
+      <div class="tag">现金 ${fmt(a.cash)}</div>
+      ${table(["代码", "股数", "成本价", "现价", "盈亏", "买入日"], a.positions.map((p) => [
+        esc(p.code), p.shares, fmt(p.buy_price), fmt(p.price),
+        `<span class="${signCls(p.pnl_pct)}">${p.pnl_pct == null ? "–" : fmt(p.pnl_pct) + "%"}</span>`, esc(p.buy_date)]))}
+    </div>`).join("");
+}
+
+function renderCurve(curve) {
+  const series = [["main", "var(--accent)"], ["shadow", "var(--shadow)"]];
+  const all = series.flatMap(([k]) => curve[k] || []);
+  if (all.length < 2) { $("curveBody").innerHTML = '<div class="empty">收盘后生成第一条记录，满两天开始画线</div>'; return; }
+  const dates = [...new Set(all.map((p) => p[0]))].sort();
+  const vals = all.map((p) => p[1]).concat([30000]);
+  const lo = Math.min(...vals), hi = Math.max(...vals), W = 1000, H = 180, pad = 10;
+  const x = (d) => pad + (dates.indexOf(d) / Math.max(1, dates.length - 1)) * (W - 2 * pad);
+  const y = (v) => H - pad - ((v - lo) / Math.max(1, hi - lo)) * (H - 2 * pad);
+  const lines = series.map(([k, color]) => `<polyline fill="none" stroke="${color}" stroke-width="2"
+      points="${(curve[k] || []).map((p) => `${x(p[0])},${y(p[1])}`).join(" ")}"/>`).join("");
+  $("curveBody").innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <line x1="0" x2="${W}" y1="${y(30000)}" y2="${y(30000)}" stroke="var(--line)" stroke-dasharray="4 4"/>${lines}</svg>
+    <div class="tag">${esc(dates[0])} → ${esc(dates[dates.length - 1])}　虚线为初始资金 30,000</div>`;
+}
+
+function mdToHtml(md) {
+  const out = []; let rows = [];
+  const flush = () => { if (rows.length) { out.push(table(rows[0], rows.slice(1))); rows = []; } };
+  for (const line of md.split("\n")) {
+    if (line.startsWith("|")) {
+      const cells = line.split("|").slice(1, -1).map((c) => esc(c.trim()));
+      if (!cells.every((c) => /^-+$/.test(c))) rows.push(cells);
+      continue;
+    }
+    flush();
+    if (line.startsWith("## ")) out.push(`<h2>${esc(line.slice(3))}</h2>`);
+    else if (line.startsWith("# ")) out.push(`<h1>${esc(line.slice(2))}</h1>`);
+    else if (line.startsWith("> ")) out.push(`<blockquote>${esc(line.slice(2))}</blockquote>`);
+    else if (line.trim()) out.push(`<p>${esc(line)}</p>`);
+  }
+  flush();
+  return out.join("");
+}
+
+async function renderTab() {
+  const body = $("tabBody");
+  if (tab === "fills") {
+    const rows = await api.fills(today);
+    body.innerHTML = table(["时间", "账户", "代码", "方向", "价格", "股数", "费用", "理由"],
+      rows.map((f) => [f.time, esc(f.account), esc(f.code), f.side, fmt(f.price), f.shares, fmt(f.fee), esc(f.reason)]));
+  } else if (tab === "decisions") {
+    const rows = await api.decisions(today);
+    const label = {pass: "通过", reject: "否决", error: "出错", sentiment: "情绪"};
+    body.innerHTML = table(["时间", "代码", "结果", "理由"],
+      rows.map((d) => [d.time, esc(d.code), label[d.verdict] || esc(d.verdict), esc(d.detail)]));
+  } else if (tab === "reports") {
+    const names = await api.reports();
+    if (!names.length) { body.innerHTML = '<div class="empty">还没有复盘报告，第一个交易日 15:05 后生成</div>'; return; }
+    body.innerHTML = `<div class="layout"><div class="report-list">${names.map((n) =>
+      `<button data-report="${esc(n)}">${esc(n.replace(".md", ""))}</button>`).join("")}</div><div class="md" id="md"></div></div>`;
+    body.querySelectorAll("[data-report]").forEach((b) =>
+      b.onclick = async () => { $("md").innerHTML = mdToHtml(await api.report(b.dataset.report)); });
+    body.querySelector("[data-report]").click();
+  } else {
+    const lines = await api.logs();
+    body.innerHTML = `<div id="log">${lines.length ? esc(lines.join("\n")) : "暂无日志"}</div>`;
+    $("log").scrollTop = 1e9;
+  }
+}
+
+async function refresh() {
+  const s = await api.status();
+  today = s.today;
+  $("dot").className = "dot" + (s.running ? " on" : "");
+  $("phase").textContent = s.running ? s.phase : "未运行";
+  $("overseas").textContent = s.overseas || "–";
+  $("sentiment").textContent = s.sentiment || "–";
+  $("btnStart").disabled = s.running;
+  $("btnStop").disabled = !s.running;
+  renderAccounts(s.accounts);
+  renderCurve(await api.equity_curve());
+  if (tab !== "reports") await renderTab();
+}
+
+window.addEventListener("pywebviewready", async () => {
+  api = window.pywebview.api;
+  $("btnStart").onclick = async () => { await api.start(); refresh(); };
+  $("btnStop").onclick = async () => { await api.stop(); refresh(); };
+  document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
+    tab = b.dataset.tab; renderTab();
+  });
+  await refresh();
+  await renderTab();
+  setInterval(refresh, 5000);
+});
+</script>
+</body>
+</html>
