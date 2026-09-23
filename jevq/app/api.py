@@ -98,6 +98,7 @@ class Api:
             conn.close()
         return {"running": self.is_running(), "phase": self._state.get("phase", "未运行"),
                 "overseas": self._state.get("overseas"), "sentiment": self._state.get("sentiment"),
+                "warning": self._state.get("warning"),
                 "today": date.today().isoformat(), "accounts": accounts}
 
     def _account(self, ledger: Ledger, account: str, prices: dict[str, float],

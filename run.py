@@ -8,7 +8,7 @@ from pathlib import Path
 
 from jevq import db
 from jevq.config import ACCOUNTS, DB_PATH, REPORT_DIR
-from jevq.data import akdata, tencent
+from jevq.data import akdata, closes, tencent
 from jevq.data.notice_store import sync_notices
 from jevq.engine import Engine
 from jevq.judge.jev import JevClient
@@ -117,8 +117,21 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         try:
             universe = akdata.load_universe(today, days)
             log(f"股票池 {len(universe)} 只")
-            ret5 = tencent.fetch_5d_returns(sorted(universe), today)
+            ret5 = closes.ret5_from_db(conn, universe, today)
             log(f"5 日涨幅 {len(ret5)} 只")
+            if universe and len(ret5) / len(universe) < 0.8:
+                missing = [c for c in universe if c not in ret5]
+                deadline = (now() + timedelta(minutes=10)) if once \
+                    else datetime.combine(today, time(9, 25))
+                filled = closes.backfill_closes(conn, missing, today, tencent.fetch_kline,
+                                                deadline=deadline, log=log)
+                log(f"5 日涨幅补数 {filled} 只")
+                ret5 = closes.ret5_from_db(conn, universe, today)
+            if universe and len(ret5) / len(universe) < 0.8:
+                n_ok = len(ret5)
+                ret5 = {}
+                log(f"5 日涨幅覆盖不足（{n_ok}/{len(universe)}），今日只卖不买")
+                state["warning"] = "5 日涨幅数据不足，今日只卖不买"
         except Exception as e:
             log(f"股票池准备失败：{e!r}")
             universe, ret5 = {}, {}
@@ -181,11 +194,14 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     prices = {c: q.price for c, q in engine.last_quotes.items()}
     names = dict(universe)
     held = held_codes(ledger)
-    if held:
+    close_codes = sorted(set(universe) | set(held))
+    if close_codes:
         try:
-            quotes = tencent.fetch_quotes(held)
+            quotes = tencent.fetch_quotes(close_codes)
             prices.update({c: q.price for c, q in quotes.items()})
             names = {**{c: q.name for c, q in quotes.items()}, **names}
+            saved = closes.save_closes(conn, today, {c: q.price for c, q in quotes.items()})
+            log(f"收盘价存库 {saved} 条")
         except Exception as e:
             log(f"收盘价刷新失败，沿用最后快照：{e!r}")
     try:
@@ -217,12 +233,32 @@ def _sync_notices(conn, today: date, log: Callable[[str], None]):
         log(f"公告同步失败：{e!r}")
 
 
+def run_backfill(log: Callable[[str], None] = print) -> None:
+    """只补收盘价历史，不交易、不需要 Jev 凭证。仍拿 runner 锁，避免和交易进程同时写库。"""
+    with hold_run_lock(Path(DB_PATH).parent / "runner.lock"):
+        conn = db.connect(DB_PATH)
+        try:
+            today = now().date()
+            days = akdata.trade_days()
+            universe = akdata.load_universe(today, days)
+            log(f"股票池 {len(universe)} 只")
+            filled = closes.backfill_closes(conn, sorted(universe), today, tencent.fetch_kline, log=log)
+            ret5 = closes.ret5_from_db(conn, universe, today)
+            log(f"补数 {filled} 只；5 日涨幅覆盖 {len(ret5)}/{len(universe)}")
+        finally:
+            conn.close()
+
+
 def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--once", action="store_true", help="立即跑一轮后退出（冒烟测试）")
+    p.add_argument("--backfill", action="store_true", help="只补齐收盘价历史后退出，不交易")
     args = p.parse_args(argv)
     try:
-        run_day(once=args.once)
+        if args.backfill:
+            run_backfill()
+        else:
+            run_day(once=args.once)
     except RuntimeError as e:
         sys.exit(str(e))
 

@@ -33,6 +33,13 @@ def test_status_marks_positions_to_fetched_prices(paths):
     assert main["positions"][0]["pnl_pct"] == round((10.1 / 9.9 - 1) * 100, 2)
     assert shadow["equity"] == 30000 and shadow["positions"] == []
     assert s["running"] is False and s["phase"] == "未运行"
+    assert s["warning"] is None
+
+
+def test_status_surfaces_warning_from_state(paths):
+    api = make_api(paths)
+    api._state["warning"] = "5 日涨幅数据不足，今日只卖不买"
+    assert api.status()["warning"] == "5 日涨幅数据不足，今日只卖不买"
 
 
 def test_fills_decisions_curve(paths):

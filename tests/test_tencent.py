@@ -1,6 +1,9 @@
 from datetime import date
 
-from jevq.data.tencent import (five_day_return, parse_index_pcts, parse_quotes,
+import pytest
+import requests
+
+from jevq.data.tencent import (fetch_kline, five_day_return, parse_index_pcts, parse_quotes,
                                parse_sina_a50, symbol)
 
 
@@ -54,6 +57,41 @@ def test_parse_index_pcts():
 def test_parse_sina_a50():
     text = 'var hq_str_hf_CHA50CFD="14573.730,,14573.000,14574.000,14714.000,14571.000,10:05:50,14654.000,14659.000,765012";'
     assert parse_sina_a50(text) == -0.55
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, payload=None):
+        self.status_code = status_code
+        self._payload = payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(str(self.status_code))
+
+    def json(self):
+        return self._payload
+
+
+class FakeSession:
+    def __init__(self, resp):
+        self.resp = resp
+
+    def get(self, url, params=None, timeout=None):
+        return self.resp
+
+
+def test_fetch_kline_parses_qfqday():
+    payload = {"data": {"sh600519": {"qfqday": [
+        ["2026-09-21", "1", "1", "1", "1", "1"],
+        ["2026-09-22", "1", "2", "1", "1", "1"]]}}}
+    s = FakeSession(FakeResponse(200, payload))
+    assert fetch_kline("600519", session=s) == [("2026-09-21", 1.0), ("2026-09-22", 2.0)]
+
+
+def test_fetch_kline_raises_on_501_waf_block():
+    s = FakeSession(FakeResponse(501, None))
+    with pytest.raises(requests.HTTPError):
+        fetch_kline("600519", session=s)
 
 
 def test_fetch_overseas_prints_a50_failure(capsys):

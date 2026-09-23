@@ -59,6 +59,7 @@
   <span><span id="dot" class="dot"></span><span id="phase">未运行</span></span>
   <span class="tag">外围 <b id="overseas">–</b></span>
   <span class="tag">情绪 <b id="sentiment">–</b></span>
+  <span class="tag" id="warningWrap" style="display:none"><b id="warning" style="color:var(--up)"></b></span>
   <span class="spacer"></span>
   <button id="btnStart" class="primary">开始运行</button>
   <button id="btnStop" disabled>停止</button>
@@ -218,6 +219,8 @@ async function refresh() {
   $("phase").textContent = s.running ? s.phase : "未运行";
   $("overseas").textContent = s.overseas || "–";
   $("sentiment").textContent = s.sentiment || "–";
+  $("warningWrap").style.display = s.warning ? "" : "none";
+  $("warning").innerHTML = esc(s.warning);
   $("btnStart").disabled = s.running;
   $("btnStop").disabled = !s.running;
   renderAccounts(s.accounts);

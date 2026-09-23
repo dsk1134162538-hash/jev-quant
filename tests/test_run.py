@@ -10,6 +10,17 @@ from jevq.ledger import Ledger
 from jevq.runlock import hold_run_lock
 
 DAYS = [date(2026, 9, 21), date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24)]
+CLOSE_DATES = ["2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18", "2026-09-21", "2026-09-22"]
+
+
+def seed_closes(dbp, code, prices=None):
+    """给 code 灌 6 个交易日的收盘价，让 5 日涨幅覆盖率天然是 100%（默认 5.0%，和旧 mock 值保持一致）。"""
+    prices = prices or [10.0, 10.0, 10.0, 10.0, 10.0, 10.5]
+    conn = db.connect(dbp)
+    conn.executemany("INSERT OR REPLACE INTO closes(date, code, close) VALUES (?, ?, ?)",
+                     [(d, code, p) for d, p in zip(CLOSE_DATES, prices)])
+    conn.commit()
+    conn.close()
 
 
 class Clock:
@@ -70,7 +81,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "seconds_to_next_minute", clock.step)
     monkeypatch.setattr(run.akdata, "trade_days", lambda: DAYS)
     monkeypatch.setattr(run.akdata, "load_universe", lambda today, days: {"600001": "甲"})
-    monkeypatch.setattr(run.tencent, "fetch_5d_returns", lambda codes, today: {c: 5.0 for c in codes})
+    seed_closes(str(dbp), "600001")
+    # 默认永远失败：模拟 K 线接口被 WAF 封锁，同时保证测试不会真的发请求。
+    monkeypatch.setattr(run.tencent, "fetch_kline",
+                        lambda code, session=None: (_ for _ in ()).throw(RuntimeError("WAF 501")))
     monkeypatch.setattr(run.tencent, "fetch_overseas", lambda: {"道琼斯": 0.5})
     feed = {"quotes": {}}
 
@@ -171,12 +185,12 @@ def test_calendar_failure_monday_prev_day_is_friday(env, monkeypatch):
     assert FakeEngine.instances[0].prev_day == date(2026, 9, 25)
 
 
-@pytest.mark.parametrize("target", ["load_universe", "fetch_5d_returns"])
+@pytest.mark.parametrize("target", ["load_universe", "ret5_from_db"])
 def test_universe_failure_runs_sell_only(env, monkeypatch, target):
     def fail(*a):
         raise RuntimeError("akshare down")
 
-    monkeypatch.setattr(run.akdata if target == "load_universe" else run.tencent, target, fail)
+    monkeypatch.setattr(run.akdata if target == "load_universe" else run.closes, target, fail)
     path = env.run()
     eng = FakeEngine.instances[0]
     assert eng.universe == {} and eng.ret5 == {}
@@ -294,3 +308,45 @@ def test_late_start_without_report_writes_it_with_fresh_prices(env, monkeypatch)
     assert loaded == []                                  # 收盘后不再准备股票池
     main_equity_check(env, 10.5)
     assert "600001 甲" in Path(path).read_text(encoding="utf-8")
+
+
+# ---- Task 19：本地收盘价库 ----
+
+def test_insufficient_ret5_coverage_sets_warning_and_skips_buys(env, monkeypatch):
+    monkeypatch.setattr(run.closes, "ret5_from_db", lambda conn, codes, today: {})
+    state: dict = {}
+    env.run(state=state)
+    eng = FakeEngine.instances[0]
+    assert eng.ret5 == {}
+    assert state.get("warning") == "5 日涨幅数据不足，今日只卖不买"
+    assert "5 日涨幅覆盖不足（0/1），今日只卖不买" in env.log_text()
+    assert len(eng.ticks) == 240                          # 只卖不买不代表停跑，照常盯盘
+
+
+def test_report_saves_closes_before_writing_it(env):
+    env.feed["quotes"] = {"600001": quote("600001", pct=2.0, name="甲")}
+    env.run()
+    conn = db.connect(env.db)
+    try:
+        row = conn.execute("SELECT close FROM closes WHERE date=? AND code='600001'",
+                           ("2026-09-23",)).fetchone()
+    finally:
+        conn.close()
+    assert row is not None and row[0] == pytest.approx(10.2)
+    assert "收盘价存库" in env.log_text()
+
+
+def test_backfill_flag_runs_without_jev_key(env, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY")
+    calls = []
+    monkeypatch.setattr(run.tencent, "fetch_kline",
+                        lambda code, session=None: calls.append(code) or [])
+    run.run_backfill(log=env.logs.append)
+    assert "股票池 1 只" in env.log_text()
+    assert "补数" in env.log_text()
+
+
+def test_backfill_flag_holds_runner_lock(env):
+    with hold_run_lock(Path(env.db).parent / "runner.lock"):
+        with pytest.raises(RuntimeError, match="已有另一个交易进程在运行"):
+            run.run_backfill(log=env.logs.append)

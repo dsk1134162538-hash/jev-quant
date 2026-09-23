@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
 import requests
@@ -60,25 +59,15 @@ def five_day_return(rows: list[tuple[str, float]], today: date) -> float | None:
     return round((past[-1] / past[-6] - 1) * 100, 2)
 
 
-def _kline(code: str, session) -> list[tuple[str, float]]:
+def fetch_kline(code: str, session=None) -> list[tuple[str, float]]:
+    """拉一只股票最近的日 K 线，返回 (date_str, close) 列表。接口目前被 WAF 封锁，见 Task 19。"""
+    s = session or requests.Session()
     sym = symbol(code)
-    r = session.get(KLINE_URL, params={"param": f"{sym},day,,,10,qfq"}, timeout=10)
+    r = s.get(KLINE_URL, params={"param": f"{sym},day,,,10,qfq"}, timeout=10)
+    r.raise_for_status()
     data = r.json()["data"][sym]
     rows = data.get("qfqday") or data.get("day") or []
     return [(row[0], float(row[2])) for row in rows]
-
-
-def fetch_5d_returns(codes: list[str], today: date, workers: int = 16) -> dict[str, float]:
-    s = requests.Session()
-
-    def one(code):
-        try:
-            return code, five_day_return(_kline(code, s), today)
-        except Exception:
-            return code, None
-
-    with ThreadPoolExecutor(workers) as pool:
-        return {c: v for c, v in pool.map(one, codes) if v is not None}
 
 
 def parse_index_pcts(text: str) -> dict[str, float]:
