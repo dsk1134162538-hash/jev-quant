@@ -1,0 +1,22 @@
+from datetime import date, datetime
+
+from factories import quote
+from jevq import db
+from jevq.ledger import Ledger
+from jevq.report import write_report
+
+
+def test_report(tmp_path):
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    t = datetime(2026, 9, 23, 14, 50)
+    ledger.buy("main", quote("600001", pct=-1.0), t, "低吸-1.0%")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail) VALUES (?, ?, ?, ?)",
+                 (t.isoformat(), "600002", "reject", "新增减持：2026-09-01 甲:减持公告"))
+    path = write_report(conn, ledger, date(2026, 9, 23), {"600001": 10.0}, "中性", "偏弱", tmp_path)
+    text = path.read_text(encoding="utf-8")
+    assert path.name == "2026-09-23.md"
+    assert "600001" in text and "低吸-1.0%" in text
+    assert "600002" in text and "新增减持" in text
+    assert "外围：中性" in text and "情绪：偏弱" in text
+    assert conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0] == 2
