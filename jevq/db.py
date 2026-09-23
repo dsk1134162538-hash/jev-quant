@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS turnover(ts TEXT PRIMARY KEY, amount REAL);
 CREATE TABLE IF NOT EXISTS equity(date TEXT, account TEXT, value REAL, PRIMARY KEY(date, account));
 CREATE TABLE IF NOT EXISTS closes(date TEXT, code TEXT, close REAL, PRIMARY KEY(date, code));
 CREATE TABLE IF NOT EXISTS concepts(code TEXT, concept TEXT, updated TEXT, PRIMARY KEY(code, concept));
+CREATE TABLE IF NOT EXISTS board_events(
+  date TEXT, code TEXT, name TEXT, first_seal TEXT, bucket TEXT, concept TEXT,
+  next_open_pct REAL, next_close_pct REAL, next_board INTEGER, PRIMARY KEY(date, code));
 """
 
 

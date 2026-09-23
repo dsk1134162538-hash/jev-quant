@@ -2,11 +2,13 @@ from collections import Counter
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 import run
 from factories import quote
 from jevq import db
+from jevq.data import board_events as be
 from jevq.ledger import Ledger
 from jevq.rules.board import Candidate
 from jevq.runlock import hold_run_lock
@@ -132,6 +134,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(run.akdata, "trade_days", lambda: DAYS)
     monkeypatch.setattr(run.akdata, "load_universe", lambda today, days: {"600001": "甲"})
     seed_closes(str(dbp), "600001")
+    # 默认涨停池为空：保证测试不会真的发请求，也不给封板统计留任何行。
+    feed_zt = {"rows": pd.DataFrame(columns=["代码", "名称", "首次封板时间", "连板数"])}
+    monkeypatch.setattr(run.akdata, "fetch_zt_pool", lambda d: feed_zt["rows"])
     # 默认永远失败：模拟 K 线接口被 WAF 封锁，同时保证测试不会真的发请求。
     monkeypatch.setattr(run.tencent, "fetch_kline",
                         lambda code, session=None: (_ for _ in ()).throw(RuntimeError("WAF 501")))
@@ -170,6 +175,7 @@ def env(tmp_path, monkeypatch):
 
     e = Env()
     e.db, e.reports, e.clock, e.feed, e.logs = str(dbp), reports, clock, feed, logs
+    e.feed_zt = feed_zt
     e.run = lambda **kw: run.run_day(log=logs.append, **kw)
     e.log_text = lambda: "\n".join(logs)
     e.boards = SpyBoard.instances
@@ -678,3 +684,67 @@ def test_watch_triggers_multiple_fast_scans_within_one_minute(env):
     per_minute = Counter(t.replace(second=0, microsecond=0) for t in SpyBoard.fast_call_times)
     assert per_minute                                    # on_fast 至少被调用过
     assert max(per_minute.values()) > 1                   # 且同一分钟内不止一次
+
+
+# ---- Task 7：封板时段统计（收盘写报告前调用 fill_next_day / record_day）----
+
+def seed_board_event(dbp, day, code="600001", first_seal="093000"):
+    conn = db.connect(dbp)
+    be.record_day(conn, day, [{"代码": code, "名称": "甲", "首次封板时间": first_seal, "连板数": 1}], {})
+    conn.close()
+
+
+def test_close_step_fills_prev_day_and_records_today_first_boards(env):
+    seed_board_event(env.db, date(2026, 9, 22), code="600001")
+    env.feed["quotes"] = {"600001": quote("600001", pct=2.0, pre_close=10.0,
+                                          ts=datetime(2026, 9, 23, 15, 0))}
+    env.feed_zt["rows"] = pd.DataFrame([
+        {"代码": "600002", "名称": "乙", "首次封板时间": "093500", "连板数": 1},
+    ])
+    env.run()
+    conn = db.connect(env.db)
+    try:
+        filled = conn.execute(
+            "SELECT next_close_pct FROM board_events WHERE date='2026-09-22' AND code='600001'").fetchone()[0]
+        today_codes = [r[0] for r in conn.execute(
+            "SELECT code FROM board_events WHERE date='2026-09-23'").fetchall()]
+    finally:
+        conn.close()
+    assert filled == pytest.approx(2.0)
+    assert today_codes == ["600002"]
+    assert "封板统计回填 1 条" in env.log_text()
+    assert "封板统计记录 1 只首板" in env.log_text()
+
+
+def test_late_start_also_fills_and_records_board_events(env, monkeypatch):
+    hold(env, price=9.9)
+    seed_board_event(env.db, date(2026, 9, 22), code="600001")
+    monkeypatch.setattr(run.akdata, "load_universe", lambda today, days: {})
+    env.feed["quotes"] = {"600001": quote("600001", pct=5.0, name="甲",
+                                          ts=datetime(2026, 9, 23, 15, 10))}
+    env.feed_zt["rows"] = pd.DataFrame([
+        {"代码": "600003", "名称": "丙", "首次封板时间": "140500", "连板数": 1},
+    ])
+    env.clock.t = datetime(2026, 9, 23, 15, 10)
+    env.run()
+    conn = db.connect(env.db)
+    try:
+        filled = conn.execute(
+            "SELECT next_close_pct FROM board_events WHERE date='2026-09-22' AND code='600001'").fetchone()[0]
+        today_codes = [r[0] for r in conn.execute(
+            "SELECT code FROM board_events WHERE date='2026-09-23'").fetchall()]
+    finally:
+        conn.close()
+    assert filled is not None
+    assert today_codes == ["600003"]
+
+
+def test_board_events_failures_do_not_block_report(env, monkeypatch):
+    monkeypatch.setattr(run.akdata, "fetch_zt_pool",
+                        lambda d: (_ for _ in ()).throw(RuntimeError("zt down")))
+    monkeypatch.setattr(run.board_events, "fill_next_day",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("fill down")))
+    path = env.run()
+    assert path is not None and Path(path).exists()
+    assert "封板统计回填失败：RuntimeError('fill down')" in env.log_text()
+    assert "封板统计记录失败：RuntimeError('zt down')" in env.log_text()

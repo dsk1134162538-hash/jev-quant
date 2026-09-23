@@ -91,6 +91,11 @@ def summarize_pools(zt: int, dt: int, zb: int, max_board: int) -> dict:
     return {"涨停家数": zt, "跌停家数": dt, "炸板率%": rate, "最高连板": max_board}
 
 
+def fetch_zt_pool(d: date) -> pd.DataFrame:
+    """涨停池（含首次封板时间、连板数等列），用于收盘后的封板时段统计。"""
+    return _ak(ak.stock_zt_pool_em, date=d.strftime("%Y%m%d"))
+
+
 def fetch_pool_stats(d: date) -> dict:
     ds = d.strftime("%Y%m%d")
     zt = _ak(ak.stock_zt_pool_em, date=ds)

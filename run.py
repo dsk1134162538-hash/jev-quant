@@ -8,7 +8,7 @@ from pathlib import Path
 
 from jevq import db
 from jevq.config import ACCOUNTS, DB_PATH, REPORT_DIR
-from jevq.data import akdata, closes, concepts, tencent
+from jevq.data import akdata, board_events, closes, concepts, tencent
 from jevq.data.notice_store import sync_notices
 from jevq.engine import Engine
 from jevq.judge.jev import JevClient
@@ -273,6 +273,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     names = dict(universe)
     held = held_codes(ledger)
     close_codes = sorted(set(universe) | set(held))
+    quotes: dict = {}
     if close_codes:
         try:
             quotes = tencent.fetch_quotes(close_codes)
@@ -283,6 +284,20 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             log(f"收盘价存库 {saved} 条")
         except Exception as e:
             log(f"收盘价刷新失败，沿用最后快照：{e!r}")
+            quotes = {}
+
+    # 封板时段统计（spec §4.5）：只验证经验，不参与交易，任何一步失败都不能挡住报告写入。
+    try:
+        filled = board_events.fill_next_day(conn, prev_day, quotes, today)
+        log(f"封板统计回填 {filled} 条")
+    except Exception as e:
+        log(f"封板统计回填失败：{e!r}")
+    try:
+        zt_rows = akdata.fetch_zt_pool(today).to_dict("records")
+        recorded = board_events.record_day(conn, today, zt_rows, concept_map)
+        log(f"封板统计记录 {recorded} 只首板")
+    except Exception as e:
+        log(f"封板统计记录失败：{e!r}")
     try:
         path = write_report(conn, ledger, today, prices, overseas, engine.sentiment_label,
                             out_dir=REPORT_DIR, names=names)
