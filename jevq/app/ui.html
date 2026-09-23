@@ -25,13 +25,14 @@
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
   button:disabled { opacity:.45; cursor:default; }
   main { padding:16px 20px; display:grid; gap:16px; }
-  .cards { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:12px; }
+  .cards { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px; margin-bottom:12px; }
   .cards:last-child { margin-bottom:0; }
   .strategy-title { font-size:13px; color:var(--muted); margin:0 0 6px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
   .card h2 { font-size:14px; margin:0 0 8px; color:var(--muted); font-weight:500; }
   .big { font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; }
   .up { color:var(--up); } .down { color:var(--down); }
+  .table-wrap { overflow-x:auto; max-width:100%; }
   table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
   th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
   td.wrap { white-space:normal; }
@@ -44,7 +45,7 @@
   .legend span { margin-right:14px; color:var(--muted); }
   .legend i { display:inline-block; width:10px; height:3px; vertical-align:middle; margin-right:4px; }
   #log { font:12px/1.6 Consolas, monospace; max-height:360px; overflow:auto; white-space:pre-wrap; }
-  .layout { display:grid; grid-template-columns:200px 1fr; gap:16px; }
+  .layout { display:grid; grid-template-columns:200px minmax(0, 1fr); gap:16px; }
   .report-list button { display:block; width:100%; text-align:left; margin-bottom:4px; }
   .md table { margin:8px 0; } .md h1 { font-size:18px; } .md h2 { font-size:15px; margin-top:18px; }
   .md blockquote { color:var(--muted); margin:8px 0; padding-left:10px; border-left:3px solid var(--line); }
@@ -100,8 +101,8 @@ let strategyFilter = null;
 
 function table(headers, rows) {
   if (!rows.length) return '<div class="empty">暂无数据</div>';
-  return `<table><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr>${rows.map((r) =>
-    `<tr>${r.map((c, i) => `<td class="${i === r.length - 1 ? "wrap" : ""}">${c}</td>`).join("")}</tr>`).join("")}</table>`;
+  return `<div class="table-wrap"><table><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr>${rows.map((r) =>
+    `<tr>${r.map((c, i) => `<td class="${i === r.length - 1 ? "wrap" : ""}">${c}</td>`).join("")}</tr>`).join("")}</table></div>`;
 }
 
 function accountCard(a) {
@@ -162,7 +163,7 @@ function mdToHtml(md) {
   return out.join("");
 }
 
-const VERDICT = {pass: "通过", reject: "否决", error: "出错", sentiment: "情绪"};
+const VERDICT = {pass: "通过", reject: "否决", error: "出错", sentiment: "情绪", skip: "跳过"};
 const probsTxt = (p) => p ? Object.entries(p).sort((a, b) => b[1] - a[1])
   .map(([k, v]) => `${esc(k)} ${Number(v).toFixed(2)}`).join(" / ") : "";
 const kv = (o) => `<div class="kv">${Object.entries(o || {}).map(([k, v]) => `<span>${esc(k)} <b>${esc(v)}</b></span>`).join("")}</div>`;
@@ -200,10 +201,12 @@ function renderTrace(d) {
       + (t.news.news.length ? `<ul>${t.news.news.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : '<div class="tag">无新闻，按中性处理</div>')
       + (t.news.probabilities ? `<div class="tag">Jev：${probsTxt(t.news.probabilities)}${t.news.confidence != null ? `（置信度 ${fmt(t.news.confidence)}）` : ""}</div>` : ""));
   }
-  const m = t.market || {};
-  parts.push(`<h4>当时市场：${m.mode === "tail" ? "只在尾盘买" : "盘中可买"}</h4>`);
-  parts.push(marketBlock("市场情绪", m.sentiment, m.sentiment_trace));
-  parts.push(marketBlock("外围", m.overseas, m.overseas_trace));
+  if (t.strategy !== "board") {          // 市场/情绪/外围是低吸的买入条件，扫首板不用，不显示
+    const m = t.market || {};
+    parts.push(`<h4>当时市场：${m.mode === "tail" ? "只在尾盘买" : "盘中可买"}</h4>`);
+    parts.push(marketBlock("市场情绪", m.sentiment, m.sentiment_trace));
+    parts.push(marketBlock("外围", m.overseas, m.overseas_trace));
+  }
   const o = t.outcome || {};
   parts.push(`<h4>结论</h4><div>${o.bought ? `买入 ${o.shares} 股 @ ${fmt(o.price)}` : `未买入（${esc(d.detail)}）`}</div>`);
   return `<div class="detail">${parts.join("")}</div>`;
