@@ -48,6 +48,32 @@ def test_status_surfaces_warning_from_state(paths):
     assert api.status()["warning"] == "5 日涨幅数据不足，今日只卖不买"
 
 
+def test_status_defaults_board_watch_to_empty_list(paths):
+    api = make_api(paths)
+    assert api.status()["board_watch"] == []
+
+
+def test_status_surfaces_board_watch_from_state(paths):
+    api = make_api(paths)
+    api._state["board_watch"] = [{"code": "600001", "name": "股票甲"}]
+    assert api.status()["board_watch"] == [{"code": "600001", "name": "股票甲"}]
+
+
+def test_board_stats_returns_summary(paths):
+    conn = db.connect(paths[0])
+    from datetime import date as d
+    from jevq.data.board_events import fill_next_day, record_day
+    record_day(conn, d(2026, 9, 22), [
+        {"代码": "600001", "名称": "甲", "首次封板时间": "093000", "连板数": 1}], {})
+    fill_next_day(conn, d(2026, 9, 22), {"600001": quote("600001", pct=2.0, open_pct=1.0, pre_close=10.0,
+                                                          ts=datetime(2026, 9, 23, 15, 0))}, d(2026, 9, 23))
+    conn.commit()
+    conn.close()
+    api = make_api(paths)
+    stats = api.board_stats()
+    assert stats == [{"bucket": "早盘", "count": 1, "avg_next_open": 1.0, "avg_next_close": 2.0, "board_rate": 0.0}]
+
+
 def test_fills_decisions_curve(paths):
     conn = db.connect(paths[0])
     Ledger(conn).buy("main", quote("600001", pct=-1.0), T, "低吸")

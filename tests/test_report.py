@@ -24,6 +24,22 @@ def test_report(tmp_path):
     assert "### 低吸" in text and "### 扫首板" in text
 
 
+def test_report_includes_board_bucket_distribution(tmp_path):
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    t = datetime(2026, 9, 23, 14, 50)
+    from jevq.data.board_events import record_day
+    record_day(conn, date(2026, 9, 23), [
+        {"代码": "600001", "名称": "甲", "首次封板时间": "093000", "连板数": 1},
+        {"代码": "600002", "名称": "乙", "首次封板时间": "103500", "连板数": 1},
+    ], {})
+    path = write_report(conn, ledger, date(2026, 9, 23), {}, "中性", "正常", tmp_path)
+    text = path.read_text(encoding="utf-8")
+    assert "## 今日首板时段分布" in text
+    assert "| 早盘 | 1 |" in text
+    assert "| 上午 | 1 |" in text
+
+
 def test_report_shows_names(tmp_path):
     conn = db.connect(":memory:")
     ledger = Ledger(conn)

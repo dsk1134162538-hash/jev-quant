@@ -38,6 +38,13 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
                         (day.isoformat(),)).fetchall()
     lines += ["", "## 主账户检查记录", "", "| 时间 | 代码 | 名称 | 结果 | 原因 |", "|---|---|---|---|---|"]
     lines += [f"| {ts[11:16]} | {code} | {names.get(code, '')} | {verdict} | {detail} |" for ts, code, verdict, detail in rows]
+
+    bucket_rows = conn.execute(
+        "SELECT bucket, COUNT(*) FROM board_events WHERE date=? GROUP BY bucket",
+        (day.isoformat(),)).fetchall()
+    lines += ["", "## 今日首板时段分布", "", "| 时段 | 首板数 |", "|---|---|"]
+    lines += [f"| {bucket} | {count} |" for bucket, count in bucket_rows] or ["| 无 | 0 |"]
+
     lines += ["", "> 成交价取分钟快照，开盘附近会比实盘略好。"]
 
     path = Path(out_dir) / f"{day.isoformat()}.md"

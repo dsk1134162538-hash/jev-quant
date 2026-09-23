@@ -7,7 +7,7 @@ from pathlib import Path
 
 from jevq import db, runlock
 from jevq.config import ACCOUNT_NAMES, ACCOUNT_STRATEGY, ACCOUNTS, DB_PATH, INITIAL_CASH, REPORT_DIR, STRATEGIES
-from jevq.data import tencent
+from jevq.data import board_events, tencent
 from jevq.ledger import Ledger
 
 REPORT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
@@ -99,7 +99,7 @@ class Api:
         background = not running and runlock.is_held(Path(self._db_path).parent / "runner.lock")
         return {"running": running, "background": background, "phase": self._state.get("phase", "未运行"),
                 "overseas": self._state.get("overseas"), "sentiment": self._state.get("sentiment"),
-                "warning": self._state.get("warning"),
+                "warning": self._state.get("warning"), "board_watch": self._state.get("board_watch") or [],
                 "today": date.today().isoformat(), "accounts": accounts}
 
     def _account(self, ledger: Ledger, account: str, prices: dict[str, float],
@@ -197,3 +197,10 @@ class Api:
 
     def logs(self) -> list[str]:
         return list(self._logs)
+
+    def board_stats(self) -> list[dict]:
+        conn = db.connect_readonly(self._db_path)
+        try:
+            return board_events.summary(conn)
+        finally:
+            conn.close()
