@@ -40,6 +40,31 @@ def ret5_from_db(conn, codes: Iterable[str], today: date) -> dict[str, float]:
     return out
 
 
+def prev_closes_from_db(conn, codes: Iterable[str], today: date) -> dict[str, tuple[float | None, float | None]]:
+    """用 closes 表里 date < today 的最近两个不同日期算（昨收、前日收）。缺数据的日期/代码给 None。"""
+    codes = list(codes)
+    if not codes:
+        return {}
+    dates = [r[0] for r in conn.execute(
+        "SELECT DISTINCT date FROM closes WHERE date < ? ORDER BY date DESC LIMIT 2",
+        (today.isoformat(),)).fetchall()]
+    if not dates:
+        return {c: (None, None) for c in codes}
+    latest = dates[0]
+    prev = dates[1] if len(dates) > 1 else None
+    query_dates = [latest] if prev is None else [latest, prev]
+    date_placeholders = ",".join("?" * len(query_dates))
+    code_placeholders = ",".join("?" * len(codes))
+    rows = conn.execute(
+        f"SELECT code, date, close FROM closes WHERE date IN ({date_placeholders}) "
+        f"AND code IN ({code_placeholders})", (*query_dates, *codes)).fetchall()
+    by_code: dict[str, dict[str, float]] = {}
+    for code, d, close in rows:
+        by_code.setdefault(code, {})[d] = close
+    return {c: (by_code.get(c, {}).get(latest), by_code.get(c, {}).get(prev) if prev else None)
+            for c in codes}
+
+
 def backfill_closes(conn, codes: Iterable[str], today: date,
                      fetch_kline: Callable[[str], list[tuple[str, float]]], pause: float = 0.1,
                      max_consecutive_failures: int = 30, deadline: datetime | None = None,
