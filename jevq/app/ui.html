@@ -91,9 +91,9 @@ function renderAccounts(accounts) {
       <h2>${esc(a.name)}</h2>
       <div class="big">${fmt(a.equity)} <span class="${signCls(a.return_pct)}" style="font-size:15px">${a.return_pct > 0 ? "+" : ""}${fmt(a.return_pct)}%</span></div>
       <div class="tag">现金 ${fmt(a.cash)}</div>
-      ${table(["代码", "股数", "成本价", "现价", "盈亏", "买入日"], a.positions.map((p) => [
-        esc(p.code), p.shares, fmt(p.buy_price), fmt(p.price),
-        `<span class="${signCls(p.pnl_pct)}">${p.pnl_pct == null ? "–" : fmt(p.pnl_pct) + "%"}</span>`, esc(p.buy_date)]))}
+      ${table(["代码", "名称", "股数", "成本价", "现价", "盈亏", "买入日"], a.positions.map((p) => [
+        esc(p.code), esc(p.name), p.shares, fmt(p.buy_price), fmt(p.price),
+        `<span class="${signCls(p.pnl_pct)}">${p.pnl_pct == null ? "–" : fmt(p.pnl_pct) + "%"}</span>`, esc(p.buy_date.slice(5))]))}
     </div>`).join("");
 }
 
@@ -136,13 +136,13 @@ async function renderTab() {
   const body = $("tabBody");
   if (tab === "fills") {
     const rows = await api.fills(today);
-    body.innerHTML = table(["时间", "账户", "代码", "方向", "价格", "股数", "费用", "理由"],
-      rows.map((f) => [f.time, esc(f.account), esc(f.code), f.side, fmt(f.price), f.shares, fmt(f.fee), esc(f.reason)]));
+    body.innerHTML = table(["时间", "账户", "代码", "名称", "方向", "价格", "股数", "费用", "理由"],
+      rows.map((f) => [f.time, esc(f.account), esc(f.code), esc(f.name), f.side, fmt(f.price), f.shares, fmt(f.fee), esc(f.reason)]));
   } else if (tab === "decisions") {
     const rows = await api.decisions(today);
     const label = {pass: "通过", reject: "否决", error: "出错", sentiment: "情绪"};
-    body.innerHTML = table(["时间", "代码", "结果", "理由"],
-      rows.map((d) => [d.time, esc(d.code), label[d.verdict] || esc(d.verdict), esc(d.detail)]));
+    body.innerHTML = table(["时间", "代码", "名称", "结果", "理由"],
+      rows.map((d) => [d.time, esc(d.code), esc(d.name), label[d.verdict] || esc(d.verdict), esc(d.detail)]));
   } else if (tab === "reports") {
     const names = await api.reports();
     if (!names.length) { body.innerHTML = '<div class="empty">还没有复盘报告，第一个交易日 15:05 后生成</div>'; return; }

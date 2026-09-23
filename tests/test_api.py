@@ -45,7 +45,7 @@ def test_fills_decisions_curve(paths):
     api = make_api(paths)
     assert api.fills("2026-09-23")[0]["side"] == "买"
     assert api.decisions("2026-09-23") == [
-        {"time": "10:00", "code": "600002", "verdict": "reject", "detail": "新增减持"}]
+        {"time": "10:00", "code": "600002", "name": "", "verdict": "reject", "detail": "新增减持"}]
     assert api.equity_curve() == {"main": [["2026-09-23", 30100.0]], "shadow": []}
 
 
@@ -90,3 +90,28 @@ def test_runner_error_is_logged(paths):
     api.start()
     api._thread.join(2)
     assert any("TYPESAFE_API_KEY" in line for line in api.logs())
+
+
+def test_names_from_state_then_quotes_cache(paths):
+    conn = db.connect(paths[0])
+    ledger = Ledger(conn)
+    ledger.buy("main", quote("600001", pct=-1.0), T, "x")
+    ledger.buy("shadow", quote("600002", pct=-1.0), T, "y")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail) VALUES "
+                 "('2026-09-23T10:00:00', '600001', 'pass', 'ok'), ('2026-09-23T10:00:00', '', 'sentiment', '{}')")
+    conn.commit()
+    conn.close()
+    fetched = []
+
+    def fetch(codes):
+        fetched.append(sorted(codes))
+        return {c: quote(c, pct=0.0, name="行情名" + c[-1]) for c in codes}
+
+    api = make_api(paths, fetch=fetch)
+    api._state["names"] = {"600001": "股票甲"}
+    s = api.status()
+    assert s["accounts"][0]["positions"][0]["name"] == "股票甲"
+    assert s["accounts"][1]["positions"][0]["name"] == "行情名2"
+    assert {f["code"]: f["name"] for f in api.fills("2026-09-23")} == {"600001": "股票甲", "600002": "行情名2"}
+    assert [d["name"] for d in api.decisions("2026-09-23")] == ["", "股票甲"]
+    assert fetched == [["600001", "600002"]]          # status 一次请求同时拿价格和名称；之后命中缓存

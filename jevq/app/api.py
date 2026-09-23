@@ -26,6 +26,7 @@ class Api:
         self._stop = threading.Event()
         self._logs: deque[str] = deque(maxlen=500)
         self._state: dict = {}
+        self._names: dict[str, str] = {}
 
     # ---- 运行控制 ----
     def start(self) -> dict:
@@ -58,6 +59,19 @@ class Api:
         self._logs.append(f"{datetime.now():%H:%M:%S} {msg}")
 
     # ---- 查询 ----
+    def _lookup_names(self, codes, quotes: dict | None = None) -> dict[str, str]:
+        known = {c: q.name for c, q in (quotes or {}).items()}
+        known.update(self._names)
+        known.update(self._state.get("names") or {})      # 股票池名称优先级最高
+        missing = sorted({c for c in codes if c and c not in known})
+        if missing:
+            try:
+                known.update({c: q.name for c, q in self._fetch_quotes(missing).items()})
+            except Exception as e:
+                self._log(f"股票名称获取失败：{e}")
+        self._names.update({c: known[c] for c in codes if c in known})
+        return {c: known.get(c, "") for c in codes}
+
     def status(self) -> dict:
         conn = db.connect(self._db_path)
         try:
@@ -65,24 +79,29 @@ class Api:
             prices = dict(self._state.get("prices") or {})
             held = {p.code for a in ACCOUNTS for p in ledger.positions(a)}
             missing = sorted(held - prices.keys())
+            quotes = {}
             if missing:
                 try:
-                    prices.update({c: q.price for c, q in self._fetch_quotes(missing).items()})
+                    quotes = self._fetch_quotes(missing)
+                    prices.update({c: q.price for c, q in quotes.items()})
                 except Exception as e:
                     self._log(f"持仓行情获取失败：{e}")
-            accounts = [self._account(ledger, a, prices) for a in ACCOUNTS]
+            names = self._lookup_names(held, quotes)
+            accounts = [self._account(ledger, a, prices, names) for a in ACCOUNTS]
         finally:
             conn.close()
         return {"running": self.is_running(), "phase": self._state.get("phase", "未运行"),
                 "overseas": self._state.get("overseas"), "sentiment": self._state.get("sentiment"),
                 "today": date.today().isoformat(), "accounts": accounts}
 
-    def _account(self, ledger: Ledger, account: str, prices: dict[str, float]) -> dict:
+    def _account(self, ledger: Ledger, account: str, prices: dict[str, float],
+                names: dict[str, str]) -> dict:
         value = ledger.equity(account, prices)
         positions = []
         for p in ledger.positions(account):
             price = prices.get(p.code)
-            positions.append({"code": p.code, "shares": p.shares, "buy_price": p.buy_price,
+            positions.append({"code": p.code, "name": names.get(p.code, ""), "shares": p.shares,
+                              "buy_price": p.buy_price,
                               "buy_date": p.buy_date.isoformat(), "price": price,
                               "pnl_pct": None if price is None else round((price / p.buy_price - 1) * 100, 2)})
         return {"id": account, "name": NAMES[account], "equity": value,
@@ -92,12 +111,15 @@ class Api:
     def fills(self, day: str) -> list[dict]:
         conn = db.connect(self._db_path)
         try:
-            return [{"time": f.ts.strftime("%H:%M"), "account": NAMES[f.account], "code": f.code,
-                     "side": "买" if f.side == "buy" else "卖", "price": f.price, "shares": f.shares,
-                     "fee": f.fee, "reason": f.reason}
-                    for f in Ledger(conn).fills_on(date.fromisoformat(day))]
+            fills = Ledger(conn).fills_on(date.fromisoformat(day))
         finally:
             conn.close()
+        names = self._lookup_names({f.code for f in fills})
+        return [{"time": f.ts.strftime("%H:%M"), "account": NAMES[f.account], "code": f.code,
+                 "name": names[f.code],
+                 "side": "买" if f.side == "buy" else "卖", "price": f.price, "shares": f.shares,
+                 "fee": f.fee, "reason": f.reason}
+                for f in fills]
 
     def decisions(self, day: str) -> list[dict]:
         conn = db.connect(self._db_path)
@@ -106,7 +128,9 @@ class Api:
                                 "WHERE substr(ts, 1, 10)=? ORDER BY id DESC LIMIT 300", (day,)).fetchall()
         finally:
             conn.close()
-        return [{"time": ts[11:16], "code": code or "市场", "verdict": verdict, "detail": detail}
+        names = self._lookup_names({code for _, code, _, _ in rows if code})
+        return [{"time": ts[11:16], "code": code or "市场", "name": names.get(code, "") if code else "",
+                 "verdict": verdict, "detail": detail}
                 for ts, code, verdict, detail in rows]
 
     def equity_curve(self) -> dict[str, list]:

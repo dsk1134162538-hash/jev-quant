@@ -65,6 +65,7 @@ def run_day(once: bool = False, stop: threading.Event | None = None,
     state["phase"] = "准备股票池"
     universe = akdata.load_universe(today, days)
     log(f"股票池 {len(universe)} 只")
+    state["names"] = dict(universe)
     ret5 = tencent.fetch_5d_returns(sorted(universe), today)
     log(f"5 日涨幅 {len(ret5)} 只")
 
@@ -112,7 +113,7 @@ def run_day(once: bool = False, stop: threading.Event | None = None,
             return None
 
     prices = {c: q.price for c, q in engine.last_quotes.items()}
-    path = write_report(conn, ledger, today, prices, overseas, engine.sentiment_label)
+    path = write_report(conn, ledger, today, prices, overseas, engine.sentiment_label, names=universe)
     state["phase"] = "已收盘"
     log(f"复盘报告 {path}；" + "，".join(f"{a} {ledger.equity(a, prices):,.2f}" for a in ACCOUNTS))
     return path
