@@ -8,9 +8,15 @@ import akshare as ak
 import pandas as pd
 
 from jevq.config import MIN_LISTED_TRADING_DAYS
+from jevq.data.timeout import call_with_timeout
 
 MAIN_BOARD = ("60", "00")
 NOTICE_ID = re.compile(r"(AN\d+)")
+AK_TIMEOUT = 20.0
+
+
+def _ak(fn, *args, **kwargs):
+    return call_with_timeout(fn, *args, timeout=AK_TIMEOUT, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -30,7 +36,7 @@ class News:
 
 
 def trade_days() -> list[date]:
-    df = ak.tool_trade_date_hist_sina()
+    df = _ak(ak.tool_trade_date_hist_sina)
     return sorted(pd.Timestamp(d).date() for d in df["trade_date"])
 
 
@@ -47,8 +53,8 @@ def filter_universe(rows: Iterable[tuple[str, str, date]], today: date,
 
 
 def load_universe(today: date, days: list[date]) -> dict[str, str]:
-    sh = ak.stock_info_sh_name_code(symbol="主板A股")
-    sz = ak.stock_info_sz_name_code(symbol="A股列表")
+    sh = _ak(ak.stock_info_sh_name_code, symbol="主板A股")
+    sz = _ak(ak.stock_info_sz_name_code, symbol="A股列表")
     sz = sz[sz["板块"] == "主板"]
     rows = [(str(r["证券代码"]).zfill(6), str(r["证券简称"]), pd.Timestamp(r["上市日期"]).date())
             for _, r in sh.iterrows()]
@@ -71,11 +77,11 @@ def notices_from_frame(df: pd.DataFrame) -> list[Notice]:
 
 
 def fetch_notices_for_date(d: date) -> list[Notice]:
-    return notices_from_frame(ak.stock_notice_report(symbol="全部", date=d.strftime("%Y%m%d")))
+    return notices_from_frame(_ak(ak.stock_notice_report, symbol="全部", date=d.strftime("%Y%m%d")))
 
 
 def fetch_news(code: str) -> list[News]:
-    df = ak.stock_news_em(symbol=code)
+    df = _ak(ak.stock_news_em, symbol=code)
     return [News(str(r["新闻标题"]), str(r["新闻内容"]),
                  pd.Timestamp(r["发布时间"]).to_pydatetime()) for _, r in df.iterrows()]
 
@@ -87,8 +93,8 @@ def summarize_pools(zt: int, dt: int, zb: int, max_board: int) -> dict:
 
 def fetch_pool_stats(d: date) -> dict:
     ds = d.strftime("%Y%m%d")
-    zt = ak.stock_zt_pool_em(date=ds)
-    dt = ak.stock_zt_pool_dtgc_em(date=ds)
-    zb = ak.stock_zt_pool_zbgc_em(date=ds)
+    zt = _ak(ak.stock_zt_pool_em, date=ds)
+    dt = _ak(ak.stock_zt_pool_dtgc_em, date=ds)
+    zb = _ak(ak.stock_zt_pool_zbgc_em, date=ds)
     max_board = int(zt["连板数"].max()) if len(zt) else 0
     return summarize_pools(len(zt), len(dt), len(zb), max_board)

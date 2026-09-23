@@ -54,3 +54,19 @@ def test_parse_index_pcts():
 def test_parse_sina_a50():
     text = 'var hq_str_hf_CHA50CFD="14573.730,,14573.000,14574.000,14714.000,14571.000,10:05:50,14654.000,14659.000,765012";'
     assert parse_sina_a50(text) == -0.55
+
+
+def test_fetch_overseas_prints_a50_failure(capsys):
+    from jevq.data.tencent import fetch_overseas
+
+    class R:
+        content = b""
+
+    class S:
+        def get(self, url, **kw):
+            if "sina" in url:
+                raise RuntimeError("a50 down")
+            return R()
+
+    assert fetch_overseas(session=S()) == {}
+    assert "a50 down" in capsys.readouterr().out

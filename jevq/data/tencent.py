@@ -105,6 +105,6 @@ def fetch_overseas(session=None) -> dict[str, float]:
     try:
         r = s.get(SINA_A50_URL, headers={"Referer": "https://finance.sina.com.cn"}, timeout=10)
         out["富时A50期货"] = parse_sina_a50(r.text)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[overseas] 富时A50 获取失败: {e!r}")
     return out
