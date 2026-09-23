@@ -1,3 +1,4 @@
+import json
 import re
 import threading
 from collections import deque
@@ -124,14 +125,33 @@ class Api:
     def decisions(self, day: str) -> list[dict]:
         conn = db.connect(self._db_path)
         try:
-            rows = conn.execute("SELECT ts, code, verdict, detail FROM decisions "
+            rows = conn.execute("SELECT id, ts, code, verdict, detail, trace IS NOT NULL FROM decisions "
                                 "WHERE substr(ts, 1, 10)=? ORDER BY id DESC LIMIT 300", (day,)).fetchall()
         finally:
             conn.close()
-        names = self._lookup_names({code for _, code, _, _ in rows if code})
-        return [{"time": ts[11:16], "code": code or "市场", "name": names.get(code, "") if code else "",
-                 "verdict": verdict, "detail": detail}
-                for ts, code, verdict, detail in rows]
+        names = self._lookup_names({code for _, _, code, _, _, _ in rows if code})
+        return [{"id": did, "time": ts[11:16], "code": code or "市场",
+                 "name": names.get(code, "") if code else "",
+                 "verdict": verdict, "detail": detail, "has_trace": bool(has_trace)}
+                for did, ts, code, verdict, detail, has_trace in rows]
+
+    def decision(self, decision_id: int) -> dict | None:
+        conn = db.connect(self._db_path)
+        try:
+            row = conn.execute("SELECT id, ts, code, verdict, detail, trace FROM decisions WHERE id=?",
+                               (int(decision_id),)).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        did, ts, code, verdict, detail, raw = row
+        try:
+            trace = json.loads(raw) if raw else None
+        except ValueError:
+            trace = None
+        name = self._lookup_names({code})[code] if code else ""
+        return {"id": did, "time": ts[11:16], "code": code or "市场", "name": name,
+                "verdict": verdict, "detail": detail, "trace": trace}
 
     def equity_curve(self) -> dict[str, list]:
         conn = db.connect(self._db_path)

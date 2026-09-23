@@ -1,3 +1,4 @@
+import json
 import threading
 from datetime import datetime
 
@@ -44,9 +45,32 @@ def test_fills_decisions_curve(paths):
     conn.close()
     api = make_api(paths)
     assert api.fills("2026-09-23")[0]["side"] == "买"
-    assert api.decisions("2026-09-23") == [
-        {"time": "10:00", "code": "600002", "name": "", "verdict": "reject", "detail": "新增减持"}]
+    decisions = api.decisions("2026-09-23")
+    assert len(decisions) == 1
+    d = decisions[0]
+    assert d["id"] and d["has_trace"] is False
+    assert {k: v for k, v in d.items() if k not in ("id", "has_trace")} == {
+        "time": "10:00", "code": "600002", "name": "", "verdict": "reject", "detail": "新增减持"}
     assert api.equity_curve() == {"main": [["2026-09-23", 30100.0]], "shadow": []}
+
+
+def test_decision_detail(paths):
+    conn = db.connect(paths[0])
+    trace = {"candidate": {"name": "股票甲", "rank": 1, "of": 3}, "notices": [], "news": None,
+             "market": {"mode": "tail"}, "outcome": {"bought": False, "shares": None, "price": None}}
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, trace) VALUES (?, ?, ?, ?, ?)",
+                 ("2026-09-23T10:00:00", "600001", "pass", "消息面中性", json.dumps(trace, ensure_ascii=False)))
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, trace) VALUES (?, ?, ?, ?, ?)",
+                 ("2026-09-23T10:01:00", "600002", "reject", "x", "{broken"))
+    conn.commit()
+    conn.close()
+    api = make_api(paths)
+    rows = api.decisions("2026-09-23")
+    assert [r["has_trace"] for r in rows] == [True, True]
+    d = api.decision(rows[1]["id"])
+    assert d["code"] == "600001" and d["trace"]["candidate"]["rank"] == 1 and d["time"] == "10:00"
+    assert api.decision(rows[0]["id"])["trace"] is None      # 损坏的 JSON
+    assert api.decision(999) is None
 
 
 def test_reports_and_path_traversal(paths):

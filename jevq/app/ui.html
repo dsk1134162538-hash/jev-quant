@@ -44,6 +44,13 @@
   .report-list button { display:block; width:100%; text-align:left; margin-bottom:4px; }
   .md table { margin:8px 0; } .md h1 { font-size:18px; } .md h2 { font-size:15px; margin-top:18px; }
   .md blockquote { color:var(--muted); margin:8px 0; padding-left:10px; border-left:3px solid var(--line); }
+  .clickable tr[data-id] { cursor:pointer; }
+  .clickable tr[data-id]:hover td { background:color-mix(in srgb, var(--accent) 8%, transparent); }
+  .detail { border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin-bottom:12px; }
+  .detail h3 { margin:0 0 6px; font-size:15px; }
+  .detail h4 { margin:12px 0 4px; font-size:13px; color:var(--muted); font-weight:500; }
+  .detail ul { margin:4px 0; padding-left:18px; }
+  .kv span { margin-right:14px; }
 </style>
 </head>
 <body>
@@ -78,6 +85,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"
 const fmt = (n, d = 2) => n == null ? "–" : Number(n).toLocaleString("zh-CN", {minimumFractionDigits:d, maximumFractionDigits:d});
 const signCls = (n) => n > 0 ? "up" : n < 0 ? "down" : "";
 let api, tab = "fills", today = "";
+let selectedId = null;
 
 function table(headers, rows) {
   if (!rows.length) return '<div class="empty">暂无数据</div>';
@@ -132,6 +140,45 @@ function mdToHtml(md) {
   return out.join("");
 }
 
+const VERDICT = {pass: "通过", reject: "否决", error: "出错", sentiment: "情绪"};
+const probsTxt = (p) => p ? Object.entries(p).sort((a, b) => b[1] - a[1])
+  .map(([k, v]) => `${esc(k)} ${Number(v).toFixed(2)}`).join(" / ") : "";
+const kv = (o) => `<div class="kv">${Object.entries(o || {}).map(([k, v]) => `<span>${esc(k)} <b>${esc(v)}</b></span>`).join("")}</div>`;
+
+function marketBlock(title, label, tr) {
+  if (!tr) return `<h4>${title}</h4><div class="tag">${esc(label || "未知")}（无 Jev 记录，按行情不好处理）</div>`;
+  return `<h4>${title}：${esc(tr.label)}</h4>${kv(tr.inputs)}
+    <div class="tag">Jev：${probsTxt(tr.probabilities)}${tr.confidence != null ? `（置信度 ${fmt(tr.confidence)}）` : ""}</div>`;
+}
+
+function renderTrace(d) {
+  const t = d.trace;
+  const head = `<h3>${esc(d.code)} ${esc(d.name)}　${esc(d.time)}　${VERDICT[d.verdict] || esc(d.verdict)}　<span class="tag">${esc(d.detail)}</span></h3>`;
+  if (!t) return `<div class="detail">${head}<div class="tag">这条记录没有留痕数据</div></div>`;
+  if (!t.candidate) return `<div class="detail">${head}${marketBlock("市场情绪", t.label, t)}</div>`;
+  const c = t.candidate, parts = [head];
+  parts.push(`<h4>为什么被选中</h4><div>当前 ${fmt(c.pct)}%（0~-3% 低吸区间）｜近 5 日 ${fmt(c.ret5)}%｜候选排名 ${c.rank}/${c.of}｜现价 ${fmt(c.price)}</div>`);
+  if (t.notices) {
+    parts.push(`<h4>公告排雷（近 90 天 ${t.notices.length} 条）</h4>` + (t.notices.length ? table(["日期", "标题", "判定", "依据"],
+      t.notices.map((n) => [esc(n.date), esc(n.title),
+        esc(n.label) + (n.mine ? " ❌" : "") + (n.unsure ? " ⚠️拿不准" : ""),
+        n.source === "keyword" ? "标题关键词命中，未调用 Jev"
+          : `Jev：${probsTxt(n.probabilities)}（置信度 ${fmt(n.confidence)}）`])) : '<div class="tag">无公告</div>'));
+  }
+  if (t.news) {
+    parts.push(`<h4>消息面（近 24 小时 ${t.news.news.length} 条）→ ${esc(t.news.label)}</h4>`
+      + (t.news.news.length ? `<ul>${t.news.news.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : '<div class="tag">无新闻，按中性处理</div>')
+      + (t.news.probabilities ? `<div class="tag">Jev：${probsTxt(t.news.probabilities)}${t.news.confidence != null ? `（置信度 ${fmt(t.news.confidence)}）` : ""}</div>` : ""));
+  }
+  const m = t.market || {};
+  parts.push(`<h4>当时市场：${m.mode === "tail" ? "只在尾盘买" : "盘中可买"}</h4>`);
+  parts.push(marketBlock("市场情绪", m.sentiment, m.sentiment_trace));
+  parts.push(marketBlock("外围", m.overseas, m.overseas_trace));
+  const o = t.outcome || {};
+  parts.push(`<h4>结论</h4><div>${o.bought ? `买入 ${o.shares} 股 @ ${fmt(o.price)}` : `未买入（${esc(d.detail)}）`}</div>`);
+  return `<div class="detail">${parts.join("")}</div>`;
+}
+
 async function renderTab() {
   const body = $("tabBody");
   if (tab === "fills") {
@@ -140,9 +187,15 @@ async function renderTab() {
       rows.map((f) => [f.time, esc(f.account), esc(f.code), esc(f.name), f.side, fmt(f.price), f.shares, fmt(f.fee), esc(f.reason)]));
   } else if (tab === "decisions") {
     const rows = await api.decisions(today);
-    const label = {pass: "通过", reject: "否决", error: "出错", sentiment: "情绪"};
-    body.innerHTML = table(["时间", "代码", "名称", "结果", "理由"],
-      rows.map((d) => [d.time, esc(d.code), esc(d.name), label[d.verdict] || esc(d.verdict), esc(d.detail)]));
+    const detail = selectedId != null ? await api.decision(selectedId) : null;
+    body.innerHTML = (detail ? renderTrace(detail) : "") + `<div class="clickable">${table(["", "时间", "代码", "名称", "结果", "理由"],
+      rows.map((d) => [d.has_trace ? "▸" : "", d.time, esc(d.code), esc(d.name), VERDICT[d.verdict] || esc(d.verdict), esc(d.detail)]))}</div>`;
+    body.querySelectorAll(".clickable tr").forEach((tr, i) => {
+      if (i === 0) return;                                   // 表头
+      const d = rows[i - 1];
+      tr.dataset.id = d.id;
+      tr.onclick = () => { selectedId = selectedId === d.id ? null : d.id; renderTab(); };
+    });
   } else if (tab === "reports") {
     const names = await api.reports();
     if (!names.length) { body.innerHTML = '<div class="empty">还没有复盘报告，第一个交易日 15:05 后生成</div>'; return; }
@@ -178,7 +231,7 @@ window.addEventListener("pywebviewready", async () => {
   $("btnStop").onclick = async () => { await api.stop(); refresh(); };
   document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
     document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
-    tab = b.dataset.tab; renderTab();
+    tab = b.dataset.tab; selectedId = null; renderTab();
   });
   await refresh();
   await renderTab();
