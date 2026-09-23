@@ -37,6 +37,21 @@ class FakeJev:
                          "probabilities": {label: self.confidence}, "confidence": self.confidence}}
 
 
+class PartialFailJev:
+    """Succeeds for title1, fails for title2."""
+    def __init__(self):
+        self.calls = 0
+
+    def ask(self, state, questions):
+        self.calls += 1
+        title = state["公告标题"]
+        if "title1" in title:
+            return {"kind": {"type": "choice", "choice": "其他",
+                           "probabilities": {"其他": 0.9}, "confidence": 0.9}}
+        else:  # title2
+            raise JevError("down")
+
+
 def setup(*titles):
     conn = db.connect(":memory:")
     conn.executemany("INSERT INTO notices VALUES (?, ?, ?, ?, ?)",
@@ -84,3 +99,26 @@ def test_jev_failure_is_error_and_not_cached():
 
 def test_no_notices_passes():
     assert NoticeJudge(db.connect(":memory:"), FakeJev({})).check("600001", TODAY)[0] == "pass"
+
+
+def test_partial_batch_failure_caches_successes():
+    """Two ambiguous notices, one succeeds and is cached, one fails.
+    First check returns error but one notice is cached.
+    Second check: previously-failing one succeeds, Jev called only once."""
+    titles = ["ambiguous title1", "ambiguous title2"]
+    conn = setup(*titles)
+
+    # First check: title1 succeeds, title2 fails
+    jev1 = PartialFailJev()
+    verdict1, why1 = NoticeJudge(conn, jev1).check("600001", TODAY)
+    assert verdict1 == "error"
+    # Exactly one notice cached (the successful one)
+    cached_count = conn.execute("SELECT COUNT(*) FROM notice_verdicts").fetchone()[0]
+    assert cached_count == 1
+
+    # Second check: provide a Jev that succeeds for all
+    jev2 = FakeJev({"ambiguous title1": "其他", "ambiguous title2": "其他"})
+    verdict2, _ = NoticeJudge(conn, jev2).check("600001", TODAY)
+    assert verdict2 == "pass"
+    # Should have called Jev only once (for title2, since title1 is cached)
+    assert jev2.calls == 1

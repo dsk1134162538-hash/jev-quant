@@ -54,11 +54,14 @@ class NoticeJudge:
         if pending:
             with ThreadPoolExecutor(self.workers) as pool:
                 results = list(pool.map(self._ask, pending))
+            # Save successful results immediately, then check for failures
+            for n, result in zip(pending, results):
+                if result is not None:
+                    label, conf = result
+                    verdicts[n.id] = (label, conf)
+                    self._save(n.id, label, conf, "jev")
             if any(r is None for r in results):
                 return "error", "Jev 不可用"
-            for n, (label, conf) in zip(pending, results):
-                verdicts[n.id] = (label, conf)
-                self._save(n.id, label, conf, "jev")
 
         for n in notices:
             label, conf = verdicts[n.id]
