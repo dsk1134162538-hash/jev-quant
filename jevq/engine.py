@@ -21,6 +21,7 @@ class Engine:
         self.universe, self.ret5, self.prev_day, self.overseas = universe, ret5, prev_day, overseas
         self.overseas_trace = overseas_trace
         self.rejected: set[str] = set()
+        self._rejected_day: date | None = None
         self.fail_streak = 0
         self.halted = False
         self.last_quotes: dict[str, Quote] = {}
@@ -29,6 +30,8 @@ class Engine:
         self._sentiment_at: datetime | None = None
 
     def tick(self, now: datetime) -> list[Fill]:
+        if self._rejected_day != now.date():
+            self._restore_rejected(now.date())
         quotes = self._fetch(now)
         if quotes is None:
             return []
@@ -40,6 +43,14 @@ class Engine:
         fills += self._buy_shadow(ranked, now)
         fills += self._buy_main(ranked, now, mode)
         return fills
+
+    def _restore_rejected(self, day: date):
+        """重启后恢复当日已否决/出错的股票，避免重复问 Jev。"""
+        rows = self.conn.execute(
+            "SELECT DISTINCT code FROM decisions WHERE verdict IN ('reject', 'error') "
+            "AND code != '' AND substr(ts, 1, 10) = ?", (day.isoformat(),)).fetchall()
+        self.rejected = {r[0] for r in rows}
+        self._rejected_day = day
 
     def _fetch(self, now: datetime) -> dict[str, Quote] | None:
         held = {p.code for a in ACCOUNTS for p in self.ledger.positions(a)}
@@ -66,7 +77,7 @@ class Engine:
                 q = quotes.get(pos.code)
                 if q is None:
                     continue
-                d = decide_sell(pos, q, now)
+                d = decide_sell(pos, q, now, self.prev_day)
                 if d.sell and (f := self.ledger.sell(account, pos, q, now, d.reason)):
                     fills.append(f)
         return fills

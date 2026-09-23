@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from jevq.config import (EOD_SELL, LOW_OPEN, MARKET_OPEN, REBOUND, STOP_LOSS,
                          TAKE_PROFIT, ZERO_LINE)
@@ -15,9 +15,12 @@ class SellDecision:
 HOLD = SellDecision(False)
 
 
-def decide_sell(pos: Position, q: Quote, now: datetime) -> SellDecision:
+def decide_sell(pos: Position, q: Quote, now: datetime,
+                prev_trade_day: date | None = None) -> SellDecision:
     if pos.buy_date >= now.date() or now.time() < MARKET_OPEN:
         return HOLD
+    if prev_trade_day is not None and pos.buy_date < prev_trade_day:
+        return SellDecision(True, "隔夜超期")      # 错过了 N+1 日：开盘即卖，不再等条件
     pct, op = q.pct, q.open_pct
     if pct <= STOP_LOSS or op <= STOP_LOSS:
         return SellDecision(True, "止损")

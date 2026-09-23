@@ -224,3 +224,43 @@ def test_rejected_decision_trace_has_no_news():
     t = json.loads(eng.conn.execute("SELECT trace FROM decisions WHERE code='600002'").fetchone()[0])
     assert t["notices"][0]["label"] == "新增减持" and t["news"] is None
     assert t["outcome"]["bought"] is False
+
+
+class JevErrorJudge(RaisingJudge):
+    def check(self, code, *args):
+        self.calls.append(code)
+        from jevq.judge.jev import JevError
+        raise JevError("down")
+
+
+def test_jev_error_from_judge_becomes_error_verdict_not_exception():
+    notice = JevErrorJudge()
+    eng, ledger, _ = make(qs(**{"600002": -1.0}), notice=notice)
+    eng.tick(at(10, 0))
+    row = eng.conn.execute("SELECT verdict FROM decisions WHERE code='600002'").fetchone()
+    assert row[0] == "error"
+    assert not ledger.holds("main", "600002")
+
+
+def test_stale_position_sold_at_open():
+    eng, ledger, feed = make(qs(**{"600001": 0.0}))
+    ledger.buy("main", quote("600001", pct=-1.0), datetime(2026, 9, 21, 10, 0), "old")
+    feed["quotes"] = {"600001": quote("600001", pct=0.0, open_pct=0.0)}
+    fills = eng.tick(at(9, 31))                           # engine prev_day = 09-22, buy_date 09-21
+    assert [(f.code, f.side, f.reason) for f in fills if f.account == "main" and f.side == "sell"] == [
+        ("600001", "sell", "隔夜超期")]
+
+
+def test_rejected_restored_from_todays_decisions():
+    notice = Judge()
+    eng, ledger, _ = make(qs(**{"600002": -1.0, "600003": -1.0}), notice=notice)
+    eng.conn.executemany("INSERT INTO decisions(ts, code, verdict, detail) VALUES (?, ?, ?, ?)", [
+        ("2026-09-23T09:40:00", "600002", "reject", "x"),
+        ("2026-09-23T09:41:00", "600003", "error", "x"),
+        ("2026-09-22T10:00:00", "600001", "reject", "昨天的"),
+        ("2026-09-23T09:42:00", "", "error", "市场"),
+    ])
+    eng.conn.commit()
+    eng.tick(at(10, 0))
+    assert notice.calls == []
+    assert eng.rejected == {"600002", "600003"}

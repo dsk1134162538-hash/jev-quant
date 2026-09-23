@@ -83,3 +83,21 @@ def test_eod_liquidation_low_open_no_trigger():
     """At 14:55, low-open position with no trigger must be liquidated."""
     d = run(-1.0, -1.5, low_pct=-1.5, when=at(14, 55))
     assert d.sell and d.reason == "尾盘清仓"
+
+
+def test_stale_position_sells_at_open_even_when_flat():
+    d = decide_sell(position(buy_date=date(2026, 9, 22)), quote(pct=0.0, open_pct=0.0), at(9, 31),
+                    prev_trade_day=date(2026, 9, 23))
+    assert d.sell and d.reason == "隔夜超期"
+
+
+def test_normal_overnight_position_unaffected_by_prev_trade_day():
+    d = decide_sell(position(buy_date=date(2026, 9, 23)), quote(pct=0.0, open_pct=0.0), at(9, 31),
+                    prev_trade_day=date(2026, 9, 23))
+    assert not d.sell
+
+
+def test_stale_position_still_respects_before_open_guard():
+    d = decide_sell(position(buy_date=date(2026, 9, 22)), quote(pct=0.0, open_pct=0.0), at(9, 25),
+                    prev_trade_day=date(2026, 9, 23))
+    assert not d.sell
