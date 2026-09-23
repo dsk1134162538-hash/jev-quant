@@ -71,3 +71,15 @@ def test_eod_specific_trigger_takes_priority():
     """At 14:55, specific triggers (e.g. 摸到+1%) take priority over EOD liquidation."""
     d = run(1.0, 0.5, when=at(14, 55))
     assert d.sell and d.reason == "摸到+1%"
+
+
+def test_eod_liquidation_flat_open_below_plus_one():
+    """At 14:55, flat-open position below +1% must be liquidated."""
+    d = run(0.5, 0.5, low_pct=0.5, when=at(14, 55))
+    assert d.sell and d.reason == "尾盘清仓"
+
+
+def test_eod_liquidation_low_open_no_trigger():
+    """At 14:55, low-open position with no trigger must be liquidated."""
+    d = run(-1.0, -1.5, low_pct=-1.5, when=at(14, 55))
+    assert d.sell and d.reason == "尾盘清仓"

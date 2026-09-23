@@ -24,11 +24,13 @@ def decide_sell(pos: Position, q: Quote, now: datetime) -> SellDecision:
     if op >= TAKE_PROFIT:
         return SellDecision(True, "高开止盈")
     if op > LOW_OPEN:
-        return SellDecision(True, "摸到+1%") if pct >= TAKE_PROFIT else HOLD
-    if pct >= ZERO_LINE:
-        return SellDecision(True, "回到0轴")
-    if round(pct - q.low_pct, 2) >= REBOUND:
-        return SellDecision(True, "反弹")
+        if pct >= TAKE_PROFIT:
+            return SellDecision(True, "摸到+1%")
+    else:
+        if pct >= ZERO_LINE:
+            return SellDecision(True, "回到0轴")
+        if round(pct - q.low_pct, 2) >= REBOUND:
+            return SellDecision(True, "反弹")
     if now.time() >= EOD_SELL:
         return SellDecision(True, "尾盘清仓")
     return HOLD
