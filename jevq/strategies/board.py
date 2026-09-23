@@ -2,8 +2,11 @@ import json
 from datetime import date, datetime
 
 from jevq.models import Fill, Quote
-from jevq.rules.board import EXIT_PCT, SCAN_WINDOWS, WATCH_MAX, Candidate, scan_trigger, watch_candidates
+from jevq.rules.board import (EXIT_PCT, SCAN_WINDOWS, WATCH_MAX, Candidate, in_scan_window, scan_trigger,
+                              watch_candidates)
 from jevq.rules.board_sell import decide_board_sell
+
+SEALED_SKIP = "快照已封死，视为排队未买到"
 
 
 class BoardStrategy:
@@ -26,6 +29,7 @@ class BoardStrategy:
         self.watch: dict[str, Candidate] = {}
         self.verdicts: dict[str, tuple[str, str, dict]] = {}
         self.rejected: set[str] = set()
+        self.sealed_logged: set[str] = set()     # 当日已记过「快照已封死」的票，每只每天只记一次
         self._rejected_day: date | None = None
 
     def has_watch(self) -> bool:
@@ -43,14 +47,21 @@ class BoardStrategy:
         return fills
 
     def _restore_rejected(self, day: date):
-        """重启后恢复当日已否决/出错的票，避免重复问 Jev（同 Engine._restore_rejected）。"""
+        """重启后恢复当日已否决/出错的票，避免重复问 Jev（同 Engine._restore_rejected）；
+        顺带恢复当日已记过「快照已封死」的票，重启后不重复记。"""
         rows = self.conn.execute(
             "SELECT DISTINCT code FROM decisions WHERE strategy='board' AND verdict IN ('reject', 'error') "
             "AND code != '' AND substr(ts, 1, 10) = ?", (day.isoformat(),)).fetchall()
         self.rejected = {r[0] for r in rows}
+        rows = self.conn.execute(
+            "SELECT DISTINCT code FROM decisions WHERE strategy='board' AND verdict='skip' AND detail=? "
+            "AND substr(ts, 1, 10) = ?", (SEALED_SKIP, day.isoformat())).fetchall()
+        self.sealed_logged = {r[0] for r in rows}
         self._rejected_day = day
 
     def on_fast(self, now: datetime) -> list[Fill]:
+        if self._rejected_day != now.date():
+            self._restore_rejected(now.date())
         if not self.watch:
             return []
         try:
@@ -80,6 +91,7 @@ class BoardStrategy:
                             self.verdicts[code] = ("pass", detail, trace)
                             self._log(now, code, "pass", detail, trace)
                 except Exception as e:
+                    self.conn.rollback()
                     print(f"[board] {now:%H:%M} 主账户扫板买入 {code} 出错: {e!r}")
 
                 try:
@@ -87,11 +99,13 @@ class BoardStrategy:
                         if f := self.ledger.buy(shadow, q, now, f"影子｜扫板{q.pct}%"):
                             fills.append(f)
                 except Exception as e:
+                    self.conn.rollback()
                     print(f"[board] {now:%H:%M} 影子账户扫板买入 {code} 出错: {e!r}")
 
-                if sealed and entry is not None:
-                    entry[2]["sealed_at_snapshot"] = True
+                if sealed and q.ts.date() >= now.date():
+                    self._note_sealed(code, q, now, entry)
             except Exception as e:
+                self.conn.rollback()
                 print(f"[board] {now:%H:%M} 快扫 {code} 出错: {e!r}")
         return fills
 
@@ -107,6 +121,7 @@ class BoardStrategy:
                     if d.sell and (f := self.ledger.sell(account, pos, q, now, d.reason)):
                         fills.append(f)
                 except Exception as e:
+                    self.conn.rollback()
                     print(f"[board] {now:%H:%M} 卖出 {account}/{pos.code} 出错: {e!r}")
         return fills
 
@@ -125,8 +140,9 @@ class BoardStrategy:
                 if cand.code in self.watch or cand.code in self.rejected:
                     continue
                 self.watch[cand.code] = cand
-        # 未判断过的观察池票：只要主账户有空位就补判断（无论是新进的还是之前满仓时跳过的）。
-        if self.ledger.free_slots(self.accounts[0]) > 0:
+        # 未判断过的观察池票：扫板窗口内、主账户有空位才补判断（无论是新进的、之前满仓时跳过的，
+        # 还是窗口外进池的）。窗口外买不了，问 Jev 只是白花调用；进窗口的第一分钟会补上。
+        if in_scan_window(now.time(), self.windows) and self.ledger.free_slots(self.accounts[0]) > 0:
             for code, cand in list(self.watch.items()):
                 if code in self.verdicts:
                     continue
@@ -136,6 +152,7 @@ class BoardStrategy:
                 try:
                     self._judge(cand, q, now)
                 except Exception as e:
+                    self.conn.rollback()
                     print(f"[board] {now:%H:%M} 判断 {code} 出错: {e!r}")
 
     def _judge(self, cand: Candidate, q: Quote, now: datetime):
@@ -145,18 +162,37 @@ class BoardStrategy:
         if verdict == "pass":
             verdict, why = self._check(self.news_judge, cand.code, q.name, now)
             news_trace = getattr(self.news_judge, "last_trace", None)
-        trace = {"strategy": "board",
-                 "candidate": {"name": q.name, "price": q.price, "pct": q.pct,
-                               "ret5": self.ret5.get(cand.code), "concept": cand.concept,
-                               "heat": cand.heat, "score": cand.score, "ranks": cand.ranks},
-                 "notices": notice_trace, "news": news_trace,
-                 "outcome": {"bought": False, "shares": None, "price": None}}
+        trace = self._trace(cand, q)
+        trace["notices"], trace["news"] = notice_trace, news_trace
         self.verdicts[cand.code] = (verdict, why, trace)
         self._log(now, cand.code, verdict, why, trace)
         if verdict in ("reject", "error"):
             self.watch.pop(cand.code, None)
             self.verdicts.pop(cand.code, None)
             self.rejected.add(cand.code)
+
+    def _trace(self, cand: Candidate, q: Quote) -> dict:
+        return {"strategy": "board",
+                "candidate": {"name": q.name, "price": q.price, "pct": q.pct,
+                              "ret5": self.ret5.get(cand.code), "concept": cand.concept,
+                              "heat": cand.heat, "score": cand.score, "ranks": cand.ranks},
+                "notices": None, "news": None, "sealed_at_snapshot": False,
+                "outcome": {"bought": False, "shares": None, "price": None}}
+
+    def _note_sealed(self, code: str, q: Quote, now: datetime, entry):
+        """快扫时已封死涨停：视为排队没买到。标到留痕里，并记一条 skip 决策（每只每天一次）方便复盘。"""
+        if entry is not None:
+            entry[2]["sealed_at_snapshot"] = True
+        if code in self.sealed_logged:
+            return
+        if entry is not None:
+            trace = entry[2]
+        else:
+            cand = self.watch.get(code) or Candidate(code, "", 0, 0, {})
+            trace = self._trace(cand, q)
+            trace["sealed_at_snapshot"] = True
+        self._log(now, code, "skip", SEALED_SKIP, trace)
+        self.sealed_logged.add(code)
 
     @staticmethod
     def _check(judge, *args) -> tuple[str, str]:

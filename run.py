@@ -17,6 +17,7 @@ from jevq.judge.news import NewsJudge
 from jevq.judge.notices import NoticeJudge
 from jevq.ledger import Ledger
 from jevq.report import write_report
+from jevq.rules.board import in_scan_window
 from jevq.runlock import hold_run_lock
 from jevq.strategies.board import BoardStrategy
 
@@ -276,7 +277,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         elif not in_session(t.time()):
             state["phase"] = "休市等待"
 
-        if board.has_watch() and in_session(now().time()):
+        if _should_fast_scan(board, now().time()):
             stopped = _fast_scan(board, stop, log, state)
         else:
             stopped = stop.wait(seconds_to_next_minute())
@@ -360,6 +361,12 @@ def _safe_board_minute(board: BoardStrategy, quotes: dict, t: datetime, conn,
         return []
 
 
+def _should_fast_scan(board: BoardStrategy | None, t: time) -> bool:
+    """只在扫板窗口内（默认 09:30–10:30）、观察池非空时跑 3 秒快扫；窗口外买不了，照常按分钟节拍走。"""
+    return (board is not None and board.has_watch() and in_session(t)
+            and in_scan_window(t, board.windows))
+
+
 def _fast_scan(board: BoardStrategy, stop: threading.Event, log: Callable[[str], None],
                state: dict) -> bool:
     """观察池非空时的 3 秒扫板循环。返回是否被 stop 打断。
@@ -374,7 +381,7 @@ def _fast_scan(board: BoardStrategy, stop: threading.Event, log: Callable[[str],
     deadline = t0 + timedelta(seconds=_seconds_to_boundary(t0))   # 用不带副作用的纯公式算，
     # 不走 seconds_to_next_minute()：那个是外层「没有观察池」分支专用的等待入口，测试会把它
     # 换成一个会顺手拨表的假实现，这里借用会把 deadline 算错。
-    while board.has_watch() and in_session(now().time()):
+    while _should_fast_scan(board, now().time()):
         remain = (deadline - now()).total_seconds()
         if remain <= 0:
             return False

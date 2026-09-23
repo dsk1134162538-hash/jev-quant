@@ -846,3 +846,14 @@ def test_board_gets_prev_prev_closes_from_calendar(env):
     env.run()
     assert env.boards[0].enabled is True
     assert env.boards[0].prev_prev_closes == {"600001": 10.0}     # 09-21 的收盘价
+
+
+def test_fast_scan_only_inside_scan_windows(env):
+    from datetime import time as dtime
+    seed_concepts(env.db)
+    cand = Candidate("600001", "题材A", 3, 1, {"pct": 1, "amount": 1, "ret5": 1})
+    SpyBoard.force_watch = {"600001": cand}               # 观察池全天非空
+    env.run()
+    assert SpyBoard.fast_call_times                         # 09:30–10:30 有快扫
+    assert all(dtime(9, 30) <= t.time() < dtime(10, 30) for t in SpyBoard.fast_call_times)
+    assert len(FakeEngine.instances[0].ticks) == 240

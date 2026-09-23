@@ -449,3 +449,122 @@ def test_judge_exception_becomes_error_and_rejected():
     assert row[0] == "error"
     assert "判断异常" in row[1]
     assert row[2] == "board"
+
+
+# ---- final fix wave ----
+
+def test_judge_waits_for_scan_window_then_judges_unjudged_watch_entries():
+    from datetime import time as dtime
+    notice = Judge()
+    conn = db.connect(":memory:")
+    strat = BoardStrategy(conn, Ledger(conn), notice, Judge(), lambda codes: {}, UNIVERSE, RET5, CONCEPT_MAP,
+                          PREV_CLOSES, PREV_DAY, windows=[(dtime(13, 0), dtime(14, 0))])
+    quotes = hot_quotes()
+    code = leader_code(quotes)
+
+    strat.on_minute(quotes, at(11, 0))                  # 窗口外：观察池照常维护，但不问 Jev
+    assert code in strat.watch
+    assert notice.calls == []
+
+    strat.on_minute(quotes, at(13, 0))                  # 进窗口的第一分钟补判断
+    assert notice.calls == [code]
+
+
+def test_judge_not_called_outside_default_window():
+    notice = Judge()
+    strat, conn, _ = make(notice=notice)
+    strat.on_minute(hot_quotes(), at(11, 0))
+    assert strat.watch and notice.calls == []
+
+
+def _decision_rows(conn, code):
+    return conn.execute("SELECT verdict, detail, strategy, trace FROM decisions WHERE code=? ORDER BY id",
+                        (code,)).fetchall()
+
+
+def test_bought_decision_trace_records_not_sealed():
+    notice = Judge()
+    quotes = hot_quotes()
+    code = leader_code(quotes)
+    trigger = quote(code, pct=9.2, pre_close=10.0, ts=DAY)
+    strat, conn, ledger = make(notice=notice, fetch_quotes=lambda codes: {code: trigger})
+    strat.on_minute(quotes, at(9, 35))
+    strat.on_fast(at(9, 35))
+    assert ledger.holds("board_main", code)
+    last = _decision_rows(conn, code)[-1]
+    assert last[1].startswith("扫板")
+    assert json.loads(last[3])["sealed_at_snapshot"] is False
+
+
+def test_sealed_snapshot_logged_once_per_stock_per_day_even_after_restart():
+    sealed = quote("600001", pct=10.0, pre_close=10.0, ts=DAY)
+    strat, conn, ledger = make(fetch_quotes=lambda codes: {"600001": sealed})
+    strat.watch = {"600001": Candidate("600001", "AI", 3, 4, {"pct": 1, "amount": 1, "ret5": 1})}
+    strat.verdicts = {"600001": ("pass", "ok", {"strategy": "board", "candidate": {"concept": "AI"},
+                                                "outcome": {"bought": False}})}
+    strat.on_fast(at(9, 35))
+    strat.on_fast(at(9, 36))
+    rows = [r for r in _decision_rows(conn, "600001") if r[0] == "skip"]
+    assert len(rows) == 1
+    assert rows[0][1] == "快照已封死，视为排队未买到" and rows[0][2] == "board"
+    assert json.loads(rows[0][3])["sealed_at_snapshot"] is True
+
+    # 重启：新实例、同一个库，恢复当日状态后不再重复记
+    strat2 = BoardStrategy(conn, ledger, Judge(), Judge(), lambda codes: {"600001": sealed}, UNIVERSE, RET5,
+                           CONCEPT_MAP, PREV_CLOSES, PREV_DAY)
+    strat2.on_minute({}, at(9, 37))
+    strat2.watch = {"600001": Candidate("600001", "AI", 3, 4, {})}
+    strat2.on_fast(at(9, 37))
+    assert len([r for r in _decision_rows(conn, "600001") if r[0] == "skip"]) == 1
+    assert "600001" not in strat2.rejected               # skip 不是否决
+
+
+def test_sealed_snapshot_logged_for_unjudged_watch_entry_with_candidate_trace():
+    sealed = quote("600001", pct=10.0, pre_close=10.0, ts=DAY)
+    strat, conn, _ = make(fetch_quotes=lambda codes: {"600001": sealed})
+    strat.watch = {"600001": Candidate("600001", "AI", 3, 4, {"pct": 1, "amount": 1, "ret5": 1})}
+    strat.on_fast(at(9, 35))
+    rows = _decision_rows(conn, "600001")
+    assert [r[0] for r in rows] == ["skip"]
+    trace = json.loads(rows[0][3])
+    assert trace["strategy"] == "board" and trace["candidate"]["concept"] == "AI"
+    assert trace["sealed_at_snapshot"] is True
+
+
+def test_sell_exception_rolls_back_half_written_rows():
+    strat, conn, ledger = make()
+    yesterday = DAY.replace(day=DAY.day - 1)
+    ledger.buy("board_main", quote("600001", pct=8.0, ts=at(14, 0, yesterday)), at(10, 0, yesterday), "m")
+    ledger.buy("board_shadow", quote("600002", pct=8.0, ts=at(14, 0, yesterday)), at(10, 0, yesterday), "m")
+    real_sell = ledger.sell
+
+    def flaky_sell(account, pos, q, ts, reason):
+        if pos.code == "600001":
+            conn.execute("INSERT INTO turnover VALUES ('half-written', 1)")
+            raise RuntimeError("boom")
+        return real_sell(account, pos, q, ts, reason)
+
+    ledger.sell = flaky_sell
+    blow = {c: quote(c, pct=5.0, open_pct=10.0, pre_close=10.0, ts=at(10, 0)) for c in ("600001", "600002")}
+    strat.on_minute(blow, at(10, 0))
+    assert not ledger.holds("board_shadow", "600002")      # 另一只照常卖出（并提交）
+    assert conn.execute("SELECT COUNT(*) FROM turnover").fetchone()[0] == 0   # 半截写入没被顺带提交
+
+
+def test_on_fast_buy_exception_rolls_back_half_written_rows():
+    q1 = quote("600001", pct=9.2, pre_close=10.0, ts=DAY)
+    strat, conn, ledger = make(fetch_quotes=lambda codes: {"600001": q1})
+    strat.watch = {"600001": Candidate("600001", "AI", 3, 4, {})}
+    strat.verdicts = {"600001": ("pass", "ok", {"outcome": {"bought": False}})}
+    real_buy = ledger.buy
+
+    def flaky_buy(account, q, ts, reason):
+        if account == "board_main":
+            conn.execute("INSERT INTO turnover VALUES ('half-written', 1)")
+            raise RuntimeError("boom")
+        return real_buy(account, q, ts, reason)
+
+    ledger.buy = flaky_buy
+    strat.on_fast(at(9, 35))
+    assert ledger.holds("board_shadow", "600001")
+    assert conn.execute("SELECT COUNT(*) FROM turnover").fetchone()[0] == 0
