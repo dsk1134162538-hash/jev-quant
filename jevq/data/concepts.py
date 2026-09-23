@@ -29,6 +29,12 @@ def refresh_concepts(conn, today: date, fetch_list=fetch_concept_list, fetch_mem
                      deadline: datetime | None = None, stop: threading.Event | None = None,
                      log=print) -> int:
     """deadline/stop 到点就中断（不算失败），跑了多少算多少——凑不够一半就照旧保留旧数据。"""
+    if deadline is not None and datetime.now() >= deadline:
+        log("题材刷新时间已过，跳过")
+        return 0
+    if stop is not None and stop.is_set():
+        log("收到停止指令，跳过题材刷新")
+        return 0
     try:
         boards = fetch_list()
     except Exception as e:

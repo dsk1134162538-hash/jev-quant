@@ -20,18 +20,25 @@ def bucket_of(first_seal: str) -> str:
     return "尾盘"
 
 
-def record_day(conn, day: date, zt_rows: list[dict], concept_map: dict[str, list[str]]) -> int:
-    """只收当日首板（连板数 == 1），写入 board_events。已存在的记录（同 date+code）不覆盖，
-    避免重复调用把已回填的 next_* 字段清空。"""
-    rows = []
+def record_day(conn, day: date, zt_rows: list[dict], concept_map: dict[str, list[str]], log=print) -> int:
+    """只收当日主板首板（代码 60/00 开头、连板数 == 1），写入 board_events。已存在的记录（同 date+code）
+    不覆盖，避免重复调用把已回填的 next_* 字段清空。单行数据有问题只跳过这一行，数量记日志。"""
+    rows, bad = [], 0
     for r in zt_rows:
-        if int(r["连板数"]) != 1:
-            continue
-        code = str(r["代码"]).zfill(6)
-        first_seal = str(r["首次封板时间"]).zfill(6)
-        concepts = concept_map.get(code) or []
-        rows.append((day.isoformat(), code, str(r["名称"]), first_seal,
-                    bucket_of(first_seal), concepts[0] if concepts else ""))
+        try:
+            code = str(r["代码"]).zfill(6)
+            if not code.startswith(("60", "00")):
+                continue
+            if int(r["连板数"]) != 1:
+                continue
+            first_seal = str(r["首次封板时间"]).zfill(6)
+            concepts = concept_map.get(code) or []
+            rows.append((day.isoformat(), code, str(r["名称"]), first_seal,
+                        bucket_of(first_seal), concepts[0] if concepts else ""))
+        except Exception:
+            bad += 1
+    if bad:
+        log(f"封板统计跳过 {bad} 行坏数据")
     if not rows:
         return 0
     with conn:

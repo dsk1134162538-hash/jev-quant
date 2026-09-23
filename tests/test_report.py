@@ -53,3 +53,19 @@ def test_report_shows_names(tmp_path):
     assert "| 600001 | 股票甲 |" in text
     assert "| 600002 | 股票乙 |" in text
     assert "600001 股票甲" in text                   # 持仓列
+
+
+def test_report_check_table_has_strategy_column(tmp_path):
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    t = datetime(2026, 9, 23, 9, 50).isoformat()
+    conn.executemany("INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES (?, ?, ?, ?, ?)", [
+        (t, "600002", "reject", "低吸否决", "lowbuy"),
+        (t, "600003", "skip", "快照已封死，视为排队未买到", "board"),
+        (t, "600004", "reject", "旧记录", None),
+    ])
+    text = write_report(conn, ledger, date(2026, 9, 23), {}, "中性", "正常", tmp_path).read_text(encoding="utf-8")
+    assert "| 时间 | 策略 | 代码 | 名称 | 结果 | 原因 |" in text
+    assert "| 09:50 | 低吸 | 600002 |" in text
+    assert "| 09:50 | 扫首板 | 600003 |" in text
+    assert "| 09:50 | 低吸 | 600004 |" in text                 # 老记录没有 strategy，算低吸

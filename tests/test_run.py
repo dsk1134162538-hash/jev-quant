@@ -857,3 +857,12 @@ def test_fast_scan_only_inside_scan_windows(env):
     assert SpyBoard.fast_call_times                         # 09:30–10:30 有快扫
     assert all(dtime(9, 30) <= t.time() < dtime(10, 30) for t in SpyBoard.fast_call_times)
     assert len(FakeEngine.instances[0].ticks) == 240
+
+
+def test_once_mode_concept_refresh_deadline_is_ten_minutes_from_now(env, monkeypatch):
+    monkeypatch.setattr(run.concepts, "needs_refresh", lambda conn, today: True)
+    calls = []
+    monkeypatch.setattr(run.concepts, "refresh_concepts", lambda conn, today, **kw: calls.append(kw) or 0)
+    env.clock.t = datetime(2026, 9, 23, 13, 40)
+    env.run(once=True)
+    assert calls[0]["deadline"] == datetime(2026, 9, 23, 13, 50)

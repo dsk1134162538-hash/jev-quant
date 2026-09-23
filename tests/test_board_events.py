@@ -167,3 +167,25 @@ def test_summary_aggregates_by_bucket_only_filled_rows():
 def test_summary_empty_table_returns_empty_list():
     c = conn()
     assert summary(c) == []
+
+
+def test_record_day_skips_bad_rows_and_counts_them_in_log():
+    c = conn()
+    logs = []
+    rows = [
+        {"代码": "600001", "名称": "甲", "首次封板时间": "093000", "连板数": 1},
+        {"代码": "600002", "名称": "乙", "首次封板时间": None, "连板数": 1},       # 坏行：没有封板时间
+        {"代码": "600003", "名称": "丙", "首次封板时间": "094500", "连板数": "x"},  # 坏行：连板数不是数
+        {"代码": "000004", "名称": "丁", "首次封板时间": "100000", "连板数": 1},
+    ]
+    assert record_day(c, TODAY, rows, {}, log=logs.append) == 2
+    assert sorted(r[0] for r in c.execute("SELECT code FROM board_events")) == ["000004", "600001"]
+    assert any("跳过 2 行" in m for m in logs)
+
+
+def test_record_day_only_keeps_main_board_codes():
+    c = conn()
+    rows = [{"代码": code, "名称": "x", "首次封板时间": "093000", "连板数": 1}
+            for code in ("600001", "000002", "300003", "688004", "830005")]
+    assert record_day(c, TODAY, rows, {}) == 2
+    assert sorted(r[0] for r in c.execute("SELECT code FROM board_events")) == ["000002", "600001"]

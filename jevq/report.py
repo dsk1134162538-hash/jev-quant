@@ -33,11 +33,12 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
         lines.append(f"| {f.ts:%H:%M} | {ACCOUNT_NAMES[f.account]} | {f.code} | {names.get(f.code, '')} | {side} | {f.price:.2f} "
                      f"| {f.shares} | {f.fee:.2f} | {f.reason} |")
 
-    rows = conn.execute("SELECT ts, code, verdict, detail FROM decisions "
+    rows = conn.execute("SELECT ts, strategy, code, verdict, detail FROM decisions "
                         "WHERE substr(ts, 1, 10)=? AND code != '' ORDER BY id",
                         (day.isoformat(),)).fetchall()
-    lines += ["", "## 主账户检查记录", "", "| 时间 | 代码 | 名称 | 结果 | 原因 |", "|---|---|---|---|---|"]
-    lines += [f"| {ts[11:16]} | {code} | {names.get(code, '')} | {verdict} | {detail} |" for ts, code, verdict, detail in rows]
+    lines += ["", "## 主账户检查记录", "", "| 时间 | 策略 | 代码 | 名称 | 结果 | 原因 |", "|---|---|---|---|---|---|"]
+    lines += [f"| {ts[11:16]} | {STRATEGIES.get(sid or 'lowbuy', {}).get('name', sid)} | {code} "
+              f"| {names.get(code, '')} | {verdict} | {detail} |" for ts, sid, code, verdict, detail in rows]
 
     bucket_rows = conn.execute(
         "SELECT bucket, COUNT(*) FROM board_events WHERE date=? GROUP BY bucket",

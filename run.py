@@ -183,7 +183,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         state["phase"] = "刷新题材"
         try:
             if concepts.needs_refresh(conn, today):
-                deadline = datetime.combine(today, time(9, 25))
+                deadline = (now() + timedelta(minutes=10)) if once \
+                    else datetime.combine(today, time(9, 25))
                 concepts.refresh_concepts(conn, today, deadline=deadline, stop=stop, log=log)
         except Exception as e:
             log(f"题材刷新失败：{e!r}")
@@ -310,7 +311,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         log(f"封板统计回填失败：{e!r}")
     try:
         zt_rows = akdata.fetch_zt_pool(today).to_dict("records")
-        recorded = board_events.record_day(conn, today, zt_rows, concept_map)
+        recorded = board_events.record_day(conn, today, zt_rows, concept_map, log=log)
         log(f"封板统计记录 {recorded} 只首板")
     except Exception as e:
         log(f"封板统计记录失败：{e!r}")

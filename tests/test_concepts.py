@@ -88,3 +88,12 @@ def test_deadline_stops_remaining_boards_but_keeps_progress_so_far():
     # 只拉到 1/2，刚好够一半，照常写库；第二块板因为到点被跳过，从没调用过
     assert n == 1
     assert load_concepts(conn) == {"600001": ["板块0"]}
+
+
+def test_deadline_passed_on_entry_skips_list_fetch():
+    conn = db.connect(":memory:")
+    calls = []
+    n = refresh_concepts(conn, TODAY, fetch_list=lambda: calls.append(1) or [("gn_0", "c0")],
+                         fetch_members=lambda label: ["600001"], pause=0,
+                         deadline=datetime.now() - timedelta(seconds=1))
+    assert n == 0 and calls == []
