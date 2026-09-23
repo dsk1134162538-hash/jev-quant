@@ -4,7 +4,6 @@ from datetime import date, datetime, timedelta
 
 from jevq.config import (ACCOUNTS, MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE,
                          SENTIMENT_REFRESH_MIN)
-from jevq.judge.jev import JevError
 from jevq.ledger import Ledger, affordable_shares
 from jevq.models import Fill, Quote
 from jevq.rules.buy import buy_mode, buy_window_open, rank_candidates
@@ -160,8 +159,6 @@ class Engine:
     def _check(judge, *args) -> tuple[str, str]:
         try:
             return judge.check(*args)
-        except JevError:
-            raise
         except Exception as e:
             return "error", f"判断异常：{e!r}"
 

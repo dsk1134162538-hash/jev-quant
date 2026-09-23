@@ -32,7 +32,11 @@ class JevClient:
                 error = repr(e)
                 continue
             if r.status_code == 200:
-                answers = r.json()["answers"]
+                try:
+                    answers = r.json()["answers"]
+                except (ValueError, KeyError, TypeError) as e:
+                    error = f"响应格式错误：{e!r}"
+                    continue
                 self._log(body, answers, None)
                 return answers
             error = f"HTTP {r.status_code}: {r.text[:200]}"

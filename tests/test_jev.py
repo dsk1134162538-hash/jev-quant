@@ -71,3 +71,30 @@ def test_score_label():
     ans = {"type": "score", "score": 1.05, "legend": {"0": "偏空", "1": "中性", "2": "偏多"},
            "probabilities": {"0": 0.0, "1": 0.95, "2": 0.05}, "confidence": 0.92}
     assert score_label(ans) == "中性"
+
+
+class BadJson(Resp):
+    def json(self):
+        raise ValueError("not json")
+
+
+@pytest.mark.parametrize("bad", [Resp(200, {}), Resp(200, None), BadJson(200, {})])
+def test_malformed_200_retried_then_error(bad):
+    s = FakeSession(bad, bad)
+    with pytest.raises(JevError, match="响应格式错误"):
+        JevClient("k", session=s).ask("s", Q)
+    assert len(s.calls) == 2
+
+
+def test_malformed_200_then_ok():
+    s = FakeSession(Resp(200, {}), OK)
+    assert JevClient("k", session=s).ask("s", Q)["q"]["noul"] == 0.9
+    assert len(s.calls) == 2
+
+
+def test_malformed_200_logged_as_error():
+    conn = db.connect(":memory:")
+    with pytest.raises(JevError):
+        JevClient("k", session=FakeSession(Resp(200, {}), Resp(200, {})), conn=conn).ask("s", Q)
+    (err,) = conn.execute("SELECT error FROM jev_calls").fetchone()
+    assert "响应格式错误" in err
