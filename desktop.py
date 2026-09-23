@@ -3,16 +3,20 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-os.chdir(ROOT)
-# pythonw 没有控制台，sys.stdout/stderr 为 None；akshare 的 tqdm 进度条一写就崩
-if sys.stdout is None:
-    sys.stdout = open(os.devnull, "w", encoding="utf-8")
-if sys.stderr is None:
-    sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 import webview  # noqa: E402
 
 from jevq.app.api import Api  # noqa: E402
+
+
+def bootstrap() -> None:
+    """仅在作为脚本运行时执行的有副作用的初始化：切换 cwd 到仓库根目录，
+    并把 pythonw 下为 None 的 stdout/stderr 重定向到 devnull（akshare 的 tqdm 进度条一写就崩）。"""
+    os.chdir(ROOT)
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 
 def main():
@@ -28,4 +32,5 @@ def main():
 
 
 if __name__ == "__main__":
+    bootstrap()
     main()

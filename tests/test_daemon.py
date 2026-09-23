@@ -1,8 +1,18 @@
+import importlib
+import os
 import threading
 from datetime import date, datetime, timedelta
 
 import daemon
+import desktop
 from jevq.runlock import hold_run_lock
+
+
+def test_importing_daemon_and_desktop_does_not_change_cwd():
+    before = os.getcwd()
+    importlib.reload(daemon)
+    importlib.reload(desktop)
+    assert os.getcwd() == before
 
 WED_0800 = datetime(2026, 9, 23, 8, 0)      # 2026-09-23 是周三
 WED_1000 = datetime(2026, 9, 23, 10, 0)

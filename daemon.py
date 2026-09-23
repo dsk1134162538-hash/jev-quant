@@ -5,19 +5,24 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-os.chdir(ROOT)
-# pythonw 没有控制台，sys.stdout/stderr 为 None；重定向到日志文件而不是 devnull，便于排错
-(ROOT / "data").mkdir(parents=True, exist_ok=True)
-if sys.stdout is None:
-    sys.stdout = open(ROOT / "data" / "daemon.log", "a", encoding="utf-8", buffering=1)
-if sys.stderr is None:
-    sys.stderr = open(ROOT / "data" / "daemon.log", "a", encoding="utf-8", buffering=1)
 
 import run  # noqa: E402
 from jevq.config import DB_PATH  # noqa: E402
 from jevq.runlock import DAEMON_LOCK_NAME, hold_run_lock  # noqa: E402
 
 START = time(8, 50)
+LOG_DIR = Path("data")
+
+
+def bootstrap() -> None:
+    """仅在作为脚本运行时执行的有副作用的初始化：切换 cwd 到仓库根目录，
+    创建 data/ 目录，并把 pythonw 下为 None 的 stdout/stderr 重定向到日志文件。"""
+    os.chdir(ROOT)
+    (ROOT / "data").mkdir(parents=True, exist_ok=True)
+    if sys.stdout is None:
+        sys.stdout = open(ROOT / "data" / "daemon.log", "a", encoding="utf-8", buffering=1)
+    if sys.stderr is None:
+        sys.stderr = open(ROOT / "data" / "daemon.log", "a", encoding="utf-8", buffering=1)
 
 
 def plan_next_run(now: datetime, last_run: date | None) -> datetime:
@@ -39,7 +44,7 @@ def plan_next_run(now: datetime, last_run: date | None) -> datetime:
 
 
 def file_log(msg: str) -> None:
-    path = ROOT / "data" / f"run-{date.today():%Y%m%d}.log"
+    path = LOG_DIR / f"run-{date.today():%Y%m%d}.log"
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(f"{datetime.now():%H:%M:%S} {msg}\n")
@@ -70,4 +75,5 @@ def main(runner=run.run_day, clock=datetime.now, stop=None) -> int:
 
 
 if __name__ == "__main__":
+    bootstrap()
     sys.exit(main())
