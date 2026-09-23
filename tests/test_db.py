@@ -14,6 +14,7 @@ def test_migrates_old_schema(tmp_path):
     conn = db.connect(path)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(decisions)")}
     assert "trace" in cols
+    assert "strategy" in cols
     assert "probs" in {r[1] for r in conn.execute("PRAGMA table_info(notice_verdicts)")}
     assert conn.execute("SELECT code, trace FROM decisions").fetchone() == ("600001", None)
     db.connect(path)                                   # 再次连接不报错（迁移幂等）

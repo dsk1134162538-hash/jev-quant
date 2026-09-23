@@ -19,7 +19,9 @@ def test_report(tmp_path):
     assert "600001" in text and "低吸-1.0%" in text
     assert "600002" in text and "新增减持" in text
     assert "外围：中性" in text and "情绪：偏弱" in text
-    assert conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0] == 2
+    # 四个账户（低吸 main/shadow + 扫首板 board_main/board_shadow）各写一行净值记录
+    assert conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0] == 4
+    assert "### 低吸" in text and "### 扫首板" in text
 
 
 def test_report_shows_names(tmp_path):

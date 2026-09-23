@@ -30,10 +30,14 @@ def test_status_marks_positions_to_fetched_prices(paths):
     conn.close()
     api = make_api(paths, fetch=lambda codes: {"600001": quote("600001", pct=1.0)})
     s = api.status()
-    main, shadow = s["accounts"]
+    main, shadow, board_main, board_shadow = s["accounts"]
     assert main["id"] == "main" and main["positions"][0]["price"] == 10.1
     assert main["positions"][0]["pnl_pct"] == round((10.1 / 9.9 - 1) * 100, 2)
+    assert main["strategy"] == "lowbuy" and main["strategy_name"] == "低吸"
     assert shadow["equity"] == 30000 and shadow["positions"] == []
+    assert board_main["id"] == "board_main" and board_main["strategy"] == "board"
+    assert board_main["strategy_name"] == "扫首板"
+    assert board_shadow["id"] == "board_shadow" and board_shadow["strategy"] == "board"
     assert s["running"] is False and s["phase"] == "未运行"
     assert s["warning"] is None
 
@@ -60,7 +64,26 @@ def test_fills_decisions_curve(paths):
     assert d["id"] and d["has_trace"] is False
     assert {k: v for k, v in d.items() if k not in ("id", "has_trace")} == {
         "time": "10:00", "code": "600002", "name": "", "verdict": "reject", "detail": "新增减持"}
-    assert api.equity_curve() == {"main": [["2026-09-23", 30100.0]], "shadow": []}
+    assert api.equity_curve() == {"main": [["2026-09-23", 30100.0]], "shadow": [],
+                                  "board_main": [], "board_shadow": []}
+
+
+def test_decisions_filtered_by_strategy(paths):
+    conn = db.connect(paths[0])
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES "
+                 "('2026-09-23T10:00:00', '600002', 'reject', '新增减持', 'lowbuy')")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES "
+                 "('2026-09-23T10:01:00', '300001', 'pass', '首板', 'board')")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail) VALUES "
+                 "('2026-09-23T10:02:00', '600003', 'reject', '旧数据无 strategy')")
+    conn.commit()
+    conn.close()
+    api = make_api(paths)
+    board = api.decisions("2026-09-23", "board")
+    assert [d["code"] for d in board] == ["300001"]
+    lowbuy = api.decisions("2026-09-23", "lowbuy")
+    assert sorted(d["code"] for d in lowbuy) == ["600002", "600003"]     # NULL 视为 lowbuy
+    assert len(api.decisions("2026-09-23")) == 3
 
 
 def test_decision_detail(paths):
@@ -169,13 +192,13 @@ def test_query_methods_never_open_write_connection(paths, monkeypatch):
     assert len(api.fills("2026-09-23")) == 1
     rows = api.decisions("2026-09-23")
     assert api.decision(rows[0]["id"])["code"] == "600002"
-    assert api.equity_curve() == {"main": [], "shadow": []}
+    assert api.equity_curve() == {"main": [], "shadow": [], "board_main": [], "board_shadow": []}
 
 
 def test_api_init_creates_fresh_db(paths):
     api = make_api(paths)
     s = api.status()
-    assert [a["equity"] for a in s["accounts"]] == [30000, 30000]
+    assert [a["equity"] for a in s["accounts"]] == [30000, 30000, 30000, 30000]
 
 
 def test_status_background_true_when_another_handle_holds_runner_lock(paths):

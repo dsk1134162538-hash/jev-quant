@@ -6,12 +6,11 @@ from datetime import date, datetime
 from pathlib import Path
 
 from jevq import db, runlock
-from jevq.config import ACCOUNTS, DB_PATH, INITIAL_CASH, REPORT_DIR
+from jevq.config import ACCOUNT_NAMES, ACCOUNT_STRATEGY, ACCOUNTS, DB_PATH, INITIAL_CASH, REPORT_DIR, STRATEGIES
 from jevq.data import tencent
 from jevq.ledger import Ledger
 
 REPORT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
-NAMES = {"main": "主账户(Jev)", "shadow": "影子账户"}
 
 
 class Api:
@@ -113,9 +112,11 @@ class Api:
                               "buy_price": p.buy_price,
                               "buy_date": p.buy_date.isoformat(), "price": price,
                               "pnl_pct": None if price is None else round((price / p.buy_price - 1) * 100, 2)})
-        return {"id": account, "name": NAMES[account], "equity": value,
+        strategy = ACCOUNT_STRATEGY[account]
+        return {"id": account, "name": ACCOUNT_NAMES[account], "equity": value,
                 "cash": round(ledger.cash(account), 2),
-                "return_pct": round((value / INITIAL_CASH - 1) * 100, 2), "positions": positions}
+                "return_pct": round((value / INITIAL_CASH - 1) * 100, 2), "positions": positions,
+                "strategy": strategy, "strategy_name": STRATEGIES[strategy]["name"]}
 
     def fills(self, day: str) -> list[dict]:
         conn = db.connect_readonly(self._db_path)
@@ -124,17 +125,24 @@ class Api:
         finally:
             conn.close()
         names = self._lookup_names({f.code for f in fills})
-        return [{"time": f.ts.strftime("%H:%M"), "account": NAMES[f.account], "code": f.code,
+        return [{"time": f.ts.strftime("%H:%M"), "account": ACCOUNT_NAMES[f.account], "code": f.code,
                  "name": names[f.code],
                  "side": "买" if f.side == "buy" else "卖", "price": f.price, "shares": f.shares,
                  "fee": f.fee, "reason": f.reason}
                 for f in fills]
 
-    def decisions(self, day: str) -> list[dict]:
+    def decisions(self, day: str, strategy: str | None = None) -> list[dict]:
         conn = db.connect_readonly(self._db_path)
         try:
-            rows = conn.execute("SELECT id, ts, code, verdict, detail, trace IS NOT NULL FROM decisions "
-                                "WHERE substr(ts, 1, 10)=? ORDER BY id DESC LIMIT 300", (day,)).fetchall()
+            if strategy is None:
+                rows = conn.execute(
+                    "SELECT id, ts, code, verdict, detail, trace IS NOT NULL FROM decisions "
+                    "WHERE substr(ts, 1, 10)=? ORDER BY id DESC LIMIT 300", (day,)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, ts, code, verdict, detail, trace IS NOT NULL FROM decisions "
+                    "WHERE substr(ts, 1, 10)=? AND COALESCE(strategy, 'lowbuy')=? ORDER BY id DESC LIMIT 300",
+                    (day, strategy)).fetchall()
         finally:
             conn.close()
         names = self._lookup_names({code for _, _, code, _, _, _ in rows if code})

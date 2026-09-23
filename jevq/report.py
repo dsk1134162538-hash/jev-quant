@@ -2,10 +2,8 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 
-from jevq.config import ACCOUNTS, INITIAL_CASH, REPORT_DIR
+from jevq.config import ACCOUNT_NAMES, INITIAL_CASH, REPORT_DIR, STRATEGIES
 from jevq.ledger import Ledger
-
-NAMES = {"main": "主账户(Jev)", "shadow": "影子账户"}
 
 
 def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: dict[str, float],
@@ -15,21 +13,24 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
     fills = ledger.fills_on(day)
     lines = [f"# 复盘 {day.isoformat()}", "",
              f"外围：{overseas or '未知'}　情绪：{sentiment or '未知'}", "",
-             "## 净值", "", "| 账户 | 净值 | 累计收益 | 今日费用 | 持仓 |", "|---|---|---|---|---|"]
-    for a in ACCOUNTS:
-        value = ledger.equity(a, prices)
-        conn.execute("INSERT OR REPLACE INTO equity VALUES (?, ?, ?)", (day.isoformat(), a, value))
-        fee = sum(f.fee for f in fills if f.account == a)
-        held = "、".join(f"{p.code} {names.get(p.code, '')}".strip() for p in ledger.positions(a)) or "空仓"
-        lines.append(f"| {NAMES[a]} | {value:,.2f} | {(value / INITIAL_CASH - 1) * 100:+.2f}% "
-                     f"| {fee:.2f} | {held} |")
+             "## 净值"]
+    for strategy in STRATEGIES.values():
+        lines += ["", f"### {strategy['name']}", "",
+                  "| 账户 | 净值 | 累计收益 | 今日费用 | 持仓 |", "|---|---|---|---|---|"]
+        for a in strategy["accounts"]:
+            value = ledger.equity(a, prices)
+            conn.execute("INSERT OR REPLACE INTO equity VALUES (?, ?, ?)", (day.isoformat(), a, value))
+            fee = sum(f.fee for f in fills if f.account == a)
+            held = "、".join(f"{p.code} {names.get(p.code, '')}".strip() for p in ledger.positions(a)) or "空仓"
+            lines.append(f"| {ACCOUNT_NAMES[a]} | {value:,.2f} | {(value / INITIAL_CASH - 1) * 100:+.2f}% "
+                         f"| {fee:.2f} | {held} |")
     conn.commit()
 
     lines += ["", "## 成交", "", "| 时间 | 账户 | 代码 | 名称 | 方向 | 价格 | 股数 | 费用 | 理由 |",
               "|---|---|---|---|---|---|---|---|---|"]
     for f in fills:
         side = "买" if f.side == "buy" else "卖"
-        lines.append(f"| {f.ts:%H:%M} | {NAMES[f.account]} | {f.code} | {names.get(f.code, '')} | {side} | {f.price:.2f} "
+        lines.append(f"| {f.ts:%H:%M} | {ACCOUNT_NAMES[f.account]} | {f.code} | {names.get(f.code, '')} | {side} | {f.price:.2f} "
                      f"| {f.shares} | {f.fee:.2f} | {f.reason} |")
 
     rows = conn.execute("SELECT ts, code, verdict, detail FROM decisions "

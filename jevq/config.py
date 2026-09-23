@@ -45,4 +45,15 @@ JEV_TIMEOUT = 5.0
 
 DB_PATH = "data/jevq.sqlite"
 REPORT_DIR = "reports"
-ACCOUNTS = ("main", "shadow")
+
+# 策略与账户
+STRATEGIES = {
+    "lowbuy": {"name": "低吸", "accounts": ("main", "shadow")},
+    "board": {"name": "扫首板", "accounts": ("board_main", "board_shadow")},
+}
+ACCOUNTS = STRATEGIES["lowbuy"]["accounts"] + STRATEGIES["board"]["accounts"]
+ACCOUNT_NAMES = {
+    "main": "低吸·主(Jev)", "shadow": "低吸·影子",
+    "board_main": "首板·主(Jev)", "board_shadow": "首板·影子",
+}
+ACCOUNT_STRATEGY = {a: sid for sid, s in STRATEGIES.items() for a in s["accounts"]}

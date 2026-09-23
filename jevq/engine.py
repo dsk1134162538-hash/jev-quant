@@ -3,7 +3,7 @@ import sqlite3
 from datetime import date, datetime, timedelta
 
 from jevq.config import (ACCOUNTS, MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE,
-                         SENTIMENT_REFRESH_MIN)
+                         SENTIMENT_REFRESH_MIN, STRATEGIES)
 from jevq.ledger import Ledger, affordable_shares
 from jevq.models import Fill, Quote
 from jevq.rules.buy import buy_mode, buy_window_open, rank_candidates
@@ -14,8 +14,10 @@ class Engine:
     def __init__(self, conn: sqlite3.Connection, ledger: Ledger, notice_judge, news_judge,
                  market_judge, fetch_quotes, fetch_pools, universe: dict[str, str],
                  ret5: dict[str, float], prev_day: date, overseas: str | None,
-                 overseas_trace: dict | None = None):
+                 overseas_trace: dict | None = None,
+                 accounts: tuple[str, str] = STRATEGIES["lowbuy"]["accounts"]):
         self.conn, self.ledger = conn, ledger
+        self.accounts = accounts
         self.notice_judge, self.news_judge, self.market_judge = notice_judge, news_judge, market_judge
         self.fetch_quotes, self.fetch_pools = fetch_quotes, fetch_pools
         self.universe, self.ret5, self.prev_day, self.overseas = universe, ret5, prev_day, overseas
@@ -75,7 +77,7 @@ class Engine:
     def _sells(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         fills = []
         stale_codes = set()
-        for account in ACCOUNTS:
+        for account in self.accounts:
             for pos in self.ledger.positions(account):
                 q = quotes.get(pos.code)
                 if q is None:
@@ -127,24 +129,26 @@ class Engine:
         return stats
 
     def _buy_shadow(self, ranked: list[Quote], now: datetime) -> list[Fill]:
+        shadow = self.accounts[1]
         fills = []
         for q in ranked:
-            if self.ledger.free_slots("shadow") <= 0:
+            if self.ledger.free_slots(shadow) <= 0:
                 break
-            if f := self.ledger.buy("shadow", q, now, f"影子｜低吸{q.pct}%｜5日{self.ret5[q.code]}%"):
+            if f := self.ledger.buy(shadow, q, now, f"影子｜低吸{q.pct}%｜5日{self.ret5[q.code]}%"):
                 fills.append(f)
         return fills
 
     def _buy_main(self, ranked: list[Quote], now: datetime, mode: str) -> list[Fill]:
+        main = self.accounts[0]
         fills, checked, errors = [], 0, 0
         for rank, q in enumerate(ranked, 1):
-            if self.ledger.free_slots("main") <= 0 or checked >= MAX_CHECKS_PER_TICK:
+            if self.ledger.free_slots(main) <= 0 or checked >= MAX_CHECKS_PER_TICK:
                 break
-            if q.code in self.rejected or self.ledger.holds("main", q.code):
+            if q.code in self.rejected or self.ledger.holds(main, q.code):
                 continue
             if errors >= MAX_ERRORS_PER_TICK:
                 break
-            if affordable_shares(min(self.ledger.cash("main"), MAX_PER_TRADE), q.price) == 0:
+            if affordable_shares(min(self.ledger.cash(main), MAX_PER_TRADE), q.price) == 0:
                 continue
             checked += 1
             verdict, why = self._check(self.notice_judge, q.code, now.date())
@@ -153,7 +157,8 @@ class Engine:
             if verdict == "pass":
                 verdict, why = self._check(self.news_judge, q.code, q.name, now)
                 news_trace = getattr(self.news_judge, "last_trace", None)
-            trace = {"candidate": {"name": q.name, "price": q.price, "pct": q.pct,
+            trace = {"strategy": "lowbuy",
+                     "candidate": {"name": q.name, "price": q.price, "pct": q.pct,
                                    "ret5": self.ret5[q.code], "rank": rank, "of": len(ranked)},
                      "notices": notice_trace, "news": news_trace,
                      "market": {"mode": mode, "sentiment": self.sentiment_label,
@@ -167,7 +172,7 @@ class Engine:
                     # Spec §7: Jev 超时/报错 → 重试一次（JevClient 内部已重试）；仍失败 → 该股当日不买。
                     errors += 1
                 continue
-            f = self.ledger.buy("main", q, now, f"低吸{q.pct}%｜5日{self.ret5[q.code]}%｜{why}")
+            f = self.ledger.buy(main, q, now, f"低吸{q.pct}%｜5日{self.ret5[q.code]}%｜{why}")
             if f:
                 trace["outcome"] = {"bought": True, "shares": f.shares, "price": f.price}
                 fills.append(f)
@@ -182,7 +187,8 @@ class Engine:
             return "error", f"判断异常：{e!r}"
 
     def _log(self, now: datetime, code: str, verdict: str, detail: str, trace: dict | None = None):
-        self.conn.execute("INSERT INTO decisions(ts, code, verdict, detail, trace) VALUES (?, ?, ?, ?, ?)",
-                          (now.isoformat(timespec="seconds"), code, verdict, detail,
-                           None if trace is None else json.dumps(trace, ensure_ascii=False)))
+        self.conn.execute(
+            "INSERT INTO decisions(ts, code, verdict, detail, trace, strategy) VALUES (?, ?, ?, ?, ?, ?)",
+            (now.isoformat(timespec="seconds"), code, verdict, detail,
+             None if trace is None else json.dumps(trace, ensure_ascii=False), "lowbuy"))
         self.conn.commit()

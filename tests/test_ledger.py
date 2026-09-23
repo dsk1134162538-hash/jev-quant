@@ -104,3 +104,10 @@ def test_ledger_init_false_does_not_create_cash_rows():
     conn = db.connect(":memory:")
     Ledger(conn, init=False)
     assert conn.execute("SELECT COUNT(*) FROM cash").fetchone()[0] == 0
+
+
+def test_new_ledger_seeds_all_four_accounts(ledger):
+    assert ledger.cash("main") == 30000
+    assert ledger.cash("shadow") == 30000
+    assert ledger.cash("board_main") == 30000
+    assert ledger.cash("board_shadow") == 30000

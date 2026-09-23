@@ -205,13 +205,27 @@ def test_max_checks_per_tick_caps_judge_calls(monkeypatch):
 def test_main_decision_trace():
     eng, ledger, _ = make(qs(**{"600001": -1.0, "600002": -2.0}))
     eng.tick(at(10, 0))
-    rows = eng.conn.execute("SELECT code, trace FROM decisions WHERE code != '' ORDER BY id").fetchall()
-    traces = {code: json.loads(t) for code, t in rows}
+    rows = eng.conn.execute("SELECT code, verdict, strategy, trace FROM decisions WHERE code != '' ORDER BY id").fetchall()
+    assert all(strategy == "lowbuy" for _, _, strategy, _ in rows)
+    traces = {code: json.loads(t) for code, _, _, t in rows}
     t = traces["600002"]
+    assert t["strategy"] == "lowbuy"
     assert t["candidate"]["rank"] == 1 and t["candidate"]["of"] == 2 and t["candidate"]["ret5"] == 15.0
     assert t["market"]["mode"] == "intraday" and t["market"]["sentiment"] == "正常"
     assert t["outcome"]["bought"] is True and t["outcome"]["shares"] > 0
     assert t["notices"] is None and t["news"] is None     # 测试替身没有 last_trace
+
+
+def test_board_account_position_not_sold_but_still_quoted():
+    """Engine 默认只管理低吸账户；board_main 的持仓即使满足卖出条件也不由这个 Engine 卖出，
+    但每分钟仍要取到它的行情（供后续扫首板 Engine 复用同一次快照）。"""
+    eng, ledger, feed = make(qs(**{"600001": -1.0}))
+    ledger.buy("board_main", quote("700001", pct=-1.0), at(10, 0), "manual")
+    feed["quotes"] = {**feed["quotes"], "700001": quote("700001", pct=1.5, open_pct=1.5)}
+    fills = eng.tick(at(9, 31, datetime(2026, 9, 24)))
+    assert not any(f.code == "700001" for f in fills)
+    assert ledger.holds("board_main", "700001")
+    assert "700001" in eng.last_quotes
 
 
 def test_rejected_decision_trace_has_no_news():

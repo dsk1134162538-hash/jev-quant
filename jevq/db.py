@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS closes(date TEXT, code TEXT, close REAL, PRIMARY KEY(
 """
 
 
-MIGRATIONS = [("decisions", "trace", "TEXT"), ("notice_verdicts", "probs", "TEXT")]
+MIGRATIONS = [("decisions", "trace", "TEXT"), ("notice_verdicts", "probs", "TEXT"),
+              ("decisions", "strategy", "TEXT")]
 
 
 def _migrate(conn: sqlite3.Connection):
