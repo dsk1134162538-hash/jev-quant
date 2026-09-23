@@ -40,29 +40,33 @@ def ret5_from_db(conn, codes: Iterable[str], today: date) -> dict[str, float]:
     return out
 
 
-def prev_closes_from_db(conn, codes: Iterable[str], today: date) -> dict[str, tuple[float | None, float | None]]:
-    """用 closes 表里 date < today 的最近两个不同日期算（昨收、前日收）。缺数据的日期/代码给 None。"""
+def prev_closes_from_db(conn, codes: Iterable[str], today: date, prev_day: date,
+                        prev_prev_day: date | None = None) -> dict[str, float | None]:
+    """首板判断用的前日收（上一交易日的再前一个交易日的收盘价），code → 收盘价，缺的给 None。
+
+    昨收不从库里取（直接用实时行情的 pre_close，永远是对的），库里只取前日收。
+    对齐校验：库里 date < today 的最新日期必须就是 prev_day（昨天收盘价存上了），否则说明
+    中间漏了一天，第二新的日期就不是前日，返回 {}，由调用方停掉扫首板买入。
+    给了 prev_prev_day 时第二新的日期也必须等于它，否则前日收全给 None（没有首板，宁可不买）。
+    """
     codes = list(codes)
     if not codes:
         return {}
     dates = [r[0] for r in conn.execute(
         "SELECT DISTINCT date FROM closes WHERE date < ? ORDER BY date DESC LIMIT 2",
         (today.isoformat(),)).fetchall()]
-    if not dates:
-        return {c: (None, None) for c in codes}
-    latest = dates[0]
-    prev = dates[1] if len(dates) > 1 else None
-    query_dates = [latest] if prev is None else [latest, prev]
-    date_placeholders = ",".join("?" * len(query_dates))
-    code_placeholders = ",".join("?" * len(codes))
-    rows = conn.execute(
-        f"SELECT code, date, close FROM closes WHERE date IN ({date_placeholders}) "
-        f"AND code IN ({code_placeholders})", (*query_dates, *codes)).fetchall()
-    by_code: dict[str, dict[str, float]] = {}
-    for code, d, close in rows:
-        by_code.setdefault(code, {})[d] = close
-    return {c: (by_code.get(c, {}).get(latest), by_code.get(c, {}).get(prev) if prev else None)
-            for c in codes}
+    if not dates or dates[0] != prev_day.isoformat():
+        return {}
+    second = dates[1] if len(dates) > 1 else None
+    if prev_prev_day is not None and second != prev_prev_day.isoformat():
+        second = None
+    if second is None:
+        return {c: None for c in codes}
+    placeholders = ",".join("?" * len(codes))
+    rows = dict(conn.execute(
+        f"SELECT code, close FROM closes WHERE date = ? AND code IN ({placeholders})",
+        (second, *codes)).fetchall())
+    return {c: rows.get(c) for c in codes}
 
 
 def backfill_closes(conn, codes: Iterable[str], today: date,

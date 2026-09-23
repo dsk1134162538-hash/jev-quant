@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 
 from jevq import db
-from jevq.data.closes import backfill_closes, ret5_from_db, save_closes
+from jevq.data.closes import backfill_closes, prev_closes_from_db, ret5_from_db, save_closes
 
 DATES = ["2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17",
          "2026-09-18", "2026-09-21", "2026-09-22"]
@@ -141,3 +141,28 @@ def test_backfill_deadline_already_passed_processes_nothing():
                         deadline=datetime.now() - timedelta(seconds=1))
     assert calls == []
     assert n == 0
+
+
+# ---- prev_closes_from_db（前日收，给首板判断用）----
+
+def test_prev_closes_returns_close_of_day_before_prev_day():
+    c = conn()
+    seed(c, "600001")
+    assert prev_closes_from_db(c, ["600001", "600009"], TODAY, date(2026, 9, 22)) ==         {"600001": 10.5, "600009": None}
+
+
+def test_prev_closes_empty_when_latest_date_is_not_prev_day():
+    c = conn()
+    seed(c, "600001", dates=DATES[:-1], prices=[10.0] * 6)       # 最新只到 09-21，昨天 09-22 没存
+    assert prev_closes_from_db(c, ["600001"], TODAY, date(2026, 9, 22)) == {}
+
+
+def test_prev_closes_empty_table_is_empty():
+    assert prev_closes_from_db(conn(), ["600001"], TODAY, date(2026, 9, 22)) == {}
+
+
+def test_prev_closes_none_when_second_date_is_not_prev_prev_day():
+    c = conn()
+    seed(c, "600001", dates=["2026-09-18", "2026-09-22"], prices=[9.0, 9.5])   # 09-21 缺
+    assert prev_closes_from_db(c, ["600001"], TODAY, date(2026, 9, 22), date(2026, 9, 21)) ==         {"600001": None}
+    assert prev_closes_from_db(c, ["600001"], TODAY, date(2026, 9, 22)) == {"600001": 9.0}

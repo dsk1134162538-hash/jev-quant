@@ -29,8 +29,8 @@ class Judge:
 UNIVERSE = {c: f"股票{c}" for c in ["600001", "600002", "600003", "600004"]}
 CONCEPT_MAP = {"600001": ["AI"], "600002": ["AI"], "600003": ["AI"], "600004": []}
 RET5 = {"600001": 5.0, "600002": 10.0, "600003": 1.0, "600004": 1.0}
-# 首板条件：昨收 < round(前日收 * 1.1, 2)
-PREV_CLOSES = {c: (9.5, 9.0) for c in ["600001", "600002", "600003"]}
+# 首板条件：昨收（行情 pre_close=10.0）< round(前日收 * 1.1, 2)
+PREV_CLOSES = {c: 9.5 for c in ["600001", "600002", "600003"]}
 
 
 def hot_quotes(now=DAY):
@@ -219,8 +219,8 @@ def test_prev_closes_from_db_returns_latest_two_of_three_days():
     save_closes(conn, date(2026, 9, 19), {"600001": 8.5})
     save_closes(conn, date(2026, 9, 22), {"600001": 9.0})
 
-    result = prev_closes_from_db(conn, ["600001"], date(2026, 9, 23))
-    assert result == {"600001": (9.0, 8.5)}
+    result = prev_closes_from_db(conn, ["600001"], date(2026, 9, 23), PREV_DAY)
+    assert result == {"600001": 8.5}
 
 
 # ---- fix round 1 ----------------------------------------------------------
@@ -386,7 +386,7 @@ def test_watch_max_caps_total_size_across_concepts():
     concept_map = {"600001": ["AI"], "600002": ["AI"], "600003": ["AI"],
                    "700001": ["BIO"], "700002": ["BIO"], "700003": ["BIO"]}
     ret5 = {c: 5.0 for c in universe}
-    prev_closes = {c: (9.5, 9.0) for c in universe}
+    prev_closes = {c: 9.5 for c in universe}
     conn = db.connect(":memory:")
     ledger = Ledger(conn)
     strat = BoardStrategy(conn, ledger, Judge(), Judge(), lambda codes: {}, universe, ret5,

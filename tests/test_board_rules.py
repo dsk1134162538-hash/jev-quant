@@ -48,10 +48,10 @@ def test_watch_candidates_filters():
     quotes = {"600001": q("600001", 8.5, amount=9e8), "600002": q("600002", 6), "600003": q("600003", 5.5)}
     cmap = {c: ["机器人"] for c in quotes}
     ret5 = {c: 1.0 for c in quotes}
-    prev = {"600001": (10.5, 10.0)}
+    prev = {"600001": 9.5}                                       # 前日收；昨收取行情 pre_close=10.0
     got = watch_candidates(quotes, cmap, ret5, prev, TODAY)
     assert [c.code for c in got] == ["600001"] and got[0].heat == 3
-    prev_limit = {"600001": (11.0, 10.0)}                      # 昨日涨停 → 不是首板
+    prev_limit = {"600001": 9.0}                               # 昨收 10.0 >= 9.9 → 昨日涨停，不是首板
     assert watch_candidates(quotes, cmap, ret5, prev_limit, TODAY) == []
     sealed = dict(quotes, **{"600001": q("600001", 10.0, amount=9e8)})   # 已封死
     assert watch_candidates(sealed, cmap, ret5, prev, TODAY) == []
@@ -63,3 +63,26 @@ def test_scan_trigger_window_and_sealed():
     assert not scan_trigger(q("600001", 8.9), datetime(2026, 9, 24, 9, 45))
     assert not scan_trigger(q("600001", 10.0), datetime(2026, 9, 24, 9, 45))   # 已封死
     assert not scan_trigger(q("600001", 9.5), datetime(2026, 9, 24, 13, 30))   # 窗口外
+
+
+def _touched_limit(code, pct):
+    from dataclasses import replace
+    x = q(code, pct, amount=9e8)
+    return replace(x, high=x.limit_up)
+
+
+def test_already_touched_limit_is_not_scanned_again():
+    broke = _touched_limit("600001", 9.5)                       # 摸过 11.00 又回落到 10.95
+    assert broke.price == 10.95 and broke.high == broke.limit_up
+    assert not scan_trigger(broke, datetime(2026, 9, 24, 9, 45))
+    quotes = {"600001": broke, "600002": q("600002", 6), "600003": q("600003", 5.5)}
+    cmap = {c: ["机器人"] for c in quotes}
+    assert watch_candidates(quotes, cmap, {c: 1.0 for c in quotes}, {"600001": 9.5}, TODAY) == []
+
+
+def test_first_board_uses_live_pre_close_not_db_yesterday():
+    # 行情 pre_close=10.0，前日收 9.0 → 昨天其实涨停了（10.0 >= 9.9），就算库里没有昨收也要排除
+    quotes = {"600001": q("600001", 8.5, amount=9e8), "600002": q("600002", 6), "600003": q("600003", 5.5)}
+    cmap = {c: ["机器人"] for c in quotes}
+    assert watch_candidates(quotes, cmap, {c: 1.0 for c in quotes}, {"600001": 9.0}, TODAY) == []
+    assert watch_candidates(quotes, cmap, {c: 1.0 for c in quotes}, {}, TODAY) == []   # 缺前日收 → 保守不算

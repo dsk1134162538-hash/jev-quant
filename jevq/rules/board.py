@@ -62,9 +62,10 @@ def leader(concept: str, members: list[str], quotes: dict[str, Quote], ret5: dic
 
 
 def watch_candidates(quotes: dict[str, Quote], concept_map: dict[str, list[str]], ret5: dict[str, float],
-                     prev_closes: dict[str, tuple[float | None, float | None]], today) -> list[Candidate]:
-    """每个热点题材取龙头；满足：涨幅 ≥ ENTER_PCT、未封死、首板。按热度降序、龙头分升序，去重后最多 WATCH_MAX。
-    prev_closes: code → (昨收, 前日收)。"""
+                     prev_prev_closes: dict[str, float | None], today) -> list[Candidate]:
+    """每个热点题材取龙头；满足：涨幅 ≥ ENTER_PCT、今天还没摸过涨停（只扫第一次冲板）、首板。
+    按热度降序、龙头分升序，去重后最多 WATCH_MAX。
+    首板判断的昨收用实时行情的 pre_close，prev_prev_closes 只提供前日收（code → 收盘价）。"""
     out: dict[str, Candidate] = {}
     hot = hot_concepts(quotes, concept_map, today)
     for concept, members in sorted(hot.items(), key=lambda kv: -len(kv[1])):
@@ -72,8 +73,7 @@ def watch_candidates(quotes: dict[str, Quote], concept_map: dict[str, list[str]]
         if cand is None or cand.code in out:
             continue
         q = quotes[cand.code]
-        pc, ppc = prev_closes.get(cand.code, (None, None))
-        if q.pct < ENTER_PCT or q.price >= q.limit_up or not is_first_board(pc, ppc):
+        if q.pct < ENTER_PCT or q.high >= q.limit_up                 or not is_first_board(q.pre_close, prev_prev_closes.get(cand.code)):
             continue
         out[cand.code] = cand
     return sorted(out.values(), key=lambda c: (-c.heat, c.score))[:WATCH_MAX]
@@ -84,6 +84,7 @@ def in_scan_window(t: time, windows: list[tuple[time, time]] = SCAN_WINDOWS) -> 
 
 
 def scan_trigger(q: Quote, now: datetime, windows: list[tuple[time, time]] = SCAN_WINDOWS) -> bool:
-    """扫板买点：窗口内、行情当日、涨幅 ≥ TRIGGER_PCT、价格未到涨停价（已封死视为排队，不成交）。"""
+    """扫板买点：窗口内、行情当日、涨幅 ≥ TRIGGER_PCT、今天最高价还没到涨停价。
+    已封死视为排队不成交；摸过涨停又回落的（炸过板）不再扫，只扫第一次冲板。"""
     return (in_scan_window(now.time(), windows) and q.ts.date() >= now.date() and not q.suspended
-            and q.pct >= TRIGGER_PCT and q.price < q.limit_up)
+            and q.pct >= TRIGGER_PCT and q.price < q.limit_up and q.high < q.limit_up)

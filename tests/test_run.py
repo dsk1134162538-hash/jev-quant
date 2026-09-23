@@ -610,7 +610,7 @@ def test_load_concepts_failure_disables_board_and_logs(env, monkeypatch):
 def test_prev_closes_failure_disables_board_and_logs(env, monkeypatch):
     seed_concepts(env.db)
     monkeypatch.setattr(run.closes, "prev_closes_from_db",
-                        lambda conn, codes, today: (_ for _ in ()).throw(RuntimeError("db locked")))
+                        lambda *a: (_ for _ in ()).throw(RuntimeError("db locked")))
     path = env.run()
     assert "昨收/前日收读取失败" in env.log_text()
     assert env.boards[0].enabled is False
@@ -824,3 +824,25 @@ def test_board_gets_empty_quotes_when_minute_fetch_failed(env, monkeypatch):
     finally:
         conn.close()
     assert sells == 0
+
+
+def test_missing_yesterday_close_disables_board_with_warning(env, monkeypatch):
+    seed_concepts(env.db)
+    conn = db.connect(env.db)
+    conn.execute("DELETE FROM closes WHERE date='2026-09-22'")     # 昨天（prev_day）没存收盘价
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(run.closes, "ret5_from_db", lambda conn, codes, today: {"600001": 5.0})
+    state: dict = {}
+    path = env.run(state=state)
+    assert env.boards[0].enabled is False
+    assert "昨日收盘价缺失，扫首板今日只卖不买" in state.get("warning", "")
+    assert "昨日收盘价缺失，扫首板今日只卖不买" in env.log_text()
+    assert path is not None and len(FakeEngine.instances[0].ticks) == 240
+
+
+def test_board_gets_prev_prev_closes_from_calendar(env):
+    seed_concepts(env.db)
+    env.run()
+    assert env.boards[0].enabled is True
+    assert env.boards[0].prev_prev_closes == {"600001": 10.0}     # 09-21 的收盘价

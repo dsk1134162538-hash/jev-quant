@@ -13,14 +13,14 @@ class BoardStrategy:
 
     def __init__(self, conn, ledger, notice_judge, news_judge, fetch_quotes, universe: dict[str, str],
                  ret5: dict[str, float], concept_map: dict[str, list[str]],
-                 prev_closes: dict[str, tuple[float | None, float | None]], prev_day: date,
+                 prev_prev_closes: dict[str, float | None], prev_day: date,
                  accounts: tuple[str, str] = ("board_main", "board_shadow"),
                  windows: list = SCAN_WINDOWS, enabled: bool = True):
         self.conn, self.ledger = conn, ledger
         self.notice_judge, self.news_judge = notice_judge, news_judge
         self.fetch_quotes = fetch_quotes
         self.universe, self.ret5, self.concept_map = universe, ret5, concept_map
-        self.prev_closes, self.prev_day = prev_closes, prev_day
+        self.prev_prev_closes, self.prev_day = prev_prev_closes, prev_day   # 前日收，首板判断用
         self.accounts, self.windows, self.enabled = accounts, windows, enabled
         self.stale_before: date | None = prev_day
         self.watch: dict[str, Candidate] = {}
@@ -119,7 +119,7 @@ class BoardStrategy:
                 self.verdicts.pop(code, None)
         if len(self.watch) < WATCH_MAX:
             uni_quotes = {c: q for c, q in quotes.items() if c in self.universe}
-            for cand in watch_candidates(uni_quotes, self.concept_map, self.ret5, self.prev_closes, today):
+            for cand in watch_candidates(uni_quotes, self.concept_map, self.ret5, self.prev_prev_closes, today):
                 if len(self.watch) >= WATCH_MAX:
                     break
                 if cand.code in self.watch or cand.code in self.rejected:

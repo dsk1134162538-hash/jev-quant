@@ -176,7 +176,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     # 一旦刷新变慢就会把第一笔 09:30 的 tick 往后拖。晚启动（late）不选股票、
     # 不判断，也就不需要题材数据，直接跳过，BoardStrategy 也不构造。
     concept_map: dict[str, list[str]] = {}
-    prev_closes: dict = {}
+    prev_prev_closes: dict = {}
     board_enabled = False
     if not late:
         state["phase"] = "刷新题材"
@@ -192,15 +192,17 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             log(f"题材读取失败，扫首板今日只卖不买：{e!r}")
             concept_map = {}
         if not concept_map:
-            msg = "题材数据缺失，扫首板今日只卖不买"
-            log(msg)
-            state["warning"] = f"{state['warning']}；{msg}" if state.get("warning") else msg
+            _warn(state, log, "题材数据缺失，扫首板今日只卖不买")
         board_enabled = bool(concept_map) and bool(ret5)   # 扫首板排名要用 ret5，覆盖率不够也只卖不买
         try:
-            prev_closes = closes.prev_closes_from_db(conn, universe, today)
+            prev_prev_day = max((d for d in days if d < prev_day), default=None) if days else None
+            prev_prev_closes = closes.prev_closes_from_db(conn, universe, today, prev_day, prev_prev_day)
+            if universe and not prev_prev_closes:
+                board_enabled = False
+                _warn(state, log, "昨日收盘价缺失，扫首板今日只卖不买")
         except Exception as e:
             log(f"昨收/前日收读取失败，扫首板今日只卖不买：{e!r}")
-            prev_closes = {}
+            prev_prev_closes = {}
             board_enabled = False
 
     state["phase"] = "等待 09:15"
@@ -229,7 +231,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     board = None
     if not late:
         board = BoardStrategy(conn, ledger, notice_judge, news_judge, tencent.fetch_quotes, universe, ret5,
-                              concept_map, prev_closes, prev_day, enabled=board_enabled)
+                              concept_map, prev_prev_closes, prev_day, enabled=board_enabled)
         # 「隔夜超期」只管 runner 错过了上一交易日的情况：昨天跑过，说明持仓昨天已经按规则处理过
         # （封死涨停隔夜的票就是规则允许留下的），今天照常按同一套规则判断，不在开盘一刀切卖掉。
         try:
@@ -321,6 +323,12 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         state["phase"] = "已收盘"
     log(f"复盘报告 {path}；" + "，".join(f"{a} {ledger.equity(a, prices):,.2f}" for a in ACCOUNTS))
     return path
+
+
+def _warn(state: dict, log: Callable[[str], None], msg: str) -> None:
+    """记日志，并追加到面板顶部的告警（多条用「；」连起来）。"""
+    log(msg)
+    state["warning"] = f"{state['warning']}；{msg}" if state.get("warning") else msg
 
 
 def _safe_tick(engine: Engine, conn, t: datetime, log: Callable[[str], None]) -> list:
