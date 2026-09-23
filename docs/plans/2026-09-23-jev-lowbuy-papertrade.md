@@ -6,7 +6,7 @@
 
 **Architecture:** 数据层（腾讯行情 + AKShare）→ 判断层（Jev HTTP API）→ 规则层（纯函数）→ 账本（SQLite）→ 引擎每分钟跑一轮 → 收盘写复盘报告。规则和账本不依赖网络，全部用单元测试覆盖；数据层和判断层通过注入的 fetch 函数或 session 做离线测试。
 
-**Tech Stack:** Python 3.12、requests、pandas、akshare 1.18.x、sqlite3（标准库）、pytest
+**Tech Stack:** Python 3.12、requests、pandas、akshare 1.18.x、sqlite3（标准库）、pytest、pywebview（桌面窗口）
 
 **Spec:** `docs/specs/2026-09-23-jev-lowbuy-papertrade-design.md`
 
@@ -31,7 +31,9 @@ jev-quant/
   requirements.txt
   pytest.ini
   .gitignore
-  run.py                     # 每日调度入口
+  run.py                     # 每日调度入口（run_day）
+  desktop.py                 # 桌面窗口入口（pythonw）
+  install_shortcut.py        # 创建桌面快捷方式
   jevq/
     __init__.py
     config.py                # 全部常量
@@ -40,6 +42,10 @@ jev-quant/
     ledger.py                # 模拟盘账本、费用、整手
     engine.py                # 每分钟一轮的编排
     report.py                # 复盘报告
+    app/
+      __init__.py
+      api.py                 # 暴露给窗口前端的 Python 方法
+      ui.html                # 面板页面
     rules/
       __init__.py
       sell.py                # decide_sell
@@ -68,6 +74,7 @@ jev-quant/
     test_news_market.py
     test_engine.py
     test_report.py
+    test_api.py
 ```
 
 判断层 `check()` 统一返回 `(verdict, reason)`，其中 verdict ∈ `{"pass", "reject", "error"}`：`reject` 当日不再检查，`error`（Jev 或数据失败）下一轮重试。
@@ -108,9 +115,10 @@ testpaths = tests
 ```
 .venv/
 __pycache__/
-data/
-reports/
+/data/
+/reports/
 *.sqlite
+.superpowers/
 ```
 
 `jevq/__init__.py`、`jevq/rules/__init__.py`、`jevq/data/__init__.py`、`jevq/judge/__init__.py`：空文件。
@@ -617,7 +625,7 @@ CREATE TABLE IF NOT EXISTS equity(date TEXT, account TEXT, value REAL, PRIMARY K
 def connect(path: str) -> sqlite3.Connection:
     if path != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
+    conn = sqlite3.connect(path, check_same_thread=False, timeout=15)
     conn.executescript(SCHEMA)
     return conn
 ```
@@ -2183,7 +2191,7 @@ git commit -m "feat: per-minute engine with main and shadow accounts"
 - Consumes: `Ledger.equity`、`Ledger.fills_on`、`decisions` 表、`Engine` 及其依赖
 - Produces:
   - `write_report(conn, ledger, day: date, prices: dict[str, float], overseas: str | None, sentiment: str | None, out_dir=REPORT_DIR) -> Path`：写 `equity` 表并生成 `reports/YYYY-MM-DD.md`
-  - `run.py`：`python run.py` 跑完整个交易日；`python run.py --once` 立即跑一轮，用于冒烟测试
+  - `run.py`：`run_day(once=False, stop: threading.Event | None = None, log=print, state: dict | None = None) -> Path | None`（Task 13 的桌面面板在线程里调用它）；`python run.py` 跑完整个交易日；`python run.py --once` 立即跑一轮，用于冒烟测试
 
 - [ ] **Step 1: 写失败的报告测试**
 
@@ -2279,8 +2287,10 @@ Expected: passed
 import argparse
 import os
 import sys
-import time as systime
+import threading
+from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 
 from jevq import db
 from jevq.config import ACCOUNTS, DB_PATH
@@ -2303,31 +2313,34 @@ def in_session(t: time) -> bool:
     return any(a <= t < b for a, b in SESSIONS)
 
 
-def wait_until(t: time):
+def wait_until(t: time, stop: threading.Event) -> bool:
+    """等到时刻 t；被 stop 打断返回 False。"""
     while datetime.now().time() < t:
-        systime.sleep(5)
+        if stop.wait(5):
+            return False
+    return True
 
 
-def sleep_to_next_minute():
+def seconds_to_next_minute() -> float:
     now = datetime.now()
     nxt = (now + timedelta(minutes=1)).replace(second=2, microsecond=0)
-    systime.sleep(max(1.0, (nxt - now).total_seconds()))
+    return max(1.0, (nxt - now).total_seconds())
 
 
-def main(argv=None):
-    p = argparse.ArgumentParser()
-    p.add_argument("--once", action="store_true", help="立即跑一轮后退出（冒烟测试）")
-    args = p.parse_args(argv)
-
+def run_day(once: bool = False, stop: threading.Event | None = None,
+            log: Callable[[str], None] = print, state: dict | None = None) -> Path | None:
+    """跑一个交易日。stop 被置位时尽快退出（不写报告）；state 供桌面面板读取运行状态。"""
+    stop = stop or threading.Event()
+    state = state if state is not None else {}
     key = os.environ.get("TYPESAFE_API_KEY")
     if not key:
-        sys.exit("缺少环境变量 TYPESAFE_API_KEY")
+        raise RuntimeError("缺少环境变量 TYPESAFE_API_KEY")
 
     today = date.today()
     days = akdata.trade_days()
-    if today not in days and not args.once:
-        print(f"{today} 非交易日，退出")
-        return
+    if today not in days and not once:
+        log(f"{today} 非交易日，退出")
+        return None
     prev_day = max(d for d in days if d < today)
 
     conn = db.connect(DB_PATH)
@@ -2335,30 +2348,35 @@ def main(argv=None):
     jev = JevClient(key, conn=conn)
     market = MarketJudge(jev)
 
+    state["phase"] = "准备股票池"
     universe = akdata.load_universe(today, days)
-    print(f"[run] 股票池 {len(universe)} 只")
+    log(f"股票池 {len(universe)} 只")
     ret5 = tencent.fetch_5d_returns(sorted(universe), today)
-    print(f"[run] 5 日涨幅 {len(ret5)} 只")
+    log(f"5 日涨幅 {len(ret5)} 只")
 
-    if not args.once:
-        wait_until(time(9, 15))
+    state["phase"] = "等待 09:15"
+    if not once and not wait_until(time(9, 15), stop):
+        return None
     try:
         overseas_pcts = tencent.fetch_overseas()
     except Exception as e:
-        print(f"[run] 外围失败: {e!r}")
+        log(f"外围失败: {e!r}")
         overseas_pcts = {}
     overseas = market.overseas(overseas_pcts)
-    print(f"[run] 外围 {overseas_pcts} → {overseas}")
+    state["overseas"] = overseas
+    log(f"外围 {overseas_pcts} → {overseas}")
 
-    print(f"[run] 公告同步 {sync_notices(conn, today)} 条")
+    state["phase"] = "同步公告"
+    log(f"公告同步 {sync_notices(conn, today)} 条")
 
     engine = Engine(conn, ledger, NoticeJudge(conn, jev), NewsJudge(conn, jev), market,
                     tencent.fetch_quotes, akdata.fetch_pool_stats, universe, ret5, prev_day, overseas)
 
-    if args.once:
+    if once:
         fills = engine.tick(datetime.now())
-        print(f"[run] 情绪 {engine.sentiment_label}，成交 {fills}")
-        return
+        state.update(sentiment=engine.sentiment_label, prices={c: q.price for c, q in engine.last_quotes.items()})
+        log(f"情绪 {engine.sentiment_label}，成交 {fills}")
+        return None
 
     resynced = False
     while datetime.now().time() < REPORT_AT:
@@ -2367,14 +2385,33 @@ def main(argv=None):
             sync_notices(conn, today)
             resynced = True
         if in_session(now.time()):
+            state["phase"] = "盘中"
             for f in engine.tick(now):
-                print(f"[fill] {f.ts:%H:%M} {f.account} {f.side} {f.code} {f.price} x{f.shares} {f.reason}")
-        sleep_to_next_minute()
+                log(f"{f.ts:%H:%M} {f.account} {'买' if f.side == 'buy' else '卖'} {f.code} "
+                    f"{f.price} x{f.shares} {f.reason}")
+            state.update(sentiment=engine.sentiment_label,
+                         prices={c: q.price for c, q in engine.last_quotes.items()})
+        else:
+            state["phase"] = "休市等待"
+        if stop.wait(seconds_to_next_minute()):
+            log("收到停止指令，未生成当日报告")
+            return None
 
     prices = {c: q.price for c, q in engine.last_quotes.items()}
     path = write_report(conn, ledger, today, prices, overseas, engine.sentiment_label)
-    print(f"[run] 复盘报告 {path}；" + "，".join(
-        f"{a} {ledger.equity(a, prices):,.2f}" for a in ACCOUNTS))
+    state["phase"] = "已收盘"
+    log(f"复盘报告 {path}；" + "，".join(f"{a} {ledger.equity(a, prices):,.2f}" for a in ACCOUNTS))
+    return path
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser()
+    p.add_argument("--once", action="store_true", help="立即跑一轮后退出（冒烟测试）")
+    args = p.parse_args(argv)
+    try:
+        run_day(once=args.once)
+    except RuntimeError as e:
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":
@@ -2399,6 +2436,571 @@ Expected: 全部 passed
 git add jevq/report.py run.py run.bat tests/test_report.py
 git commit -m "feat: daily report and scheduler entrypoint"
 ```
+
+---
+
+### Task 13: 桌面客户端（独立窗口面板）
+
+在 Task 11 之后、Task 12 之前执行。
+
+**Files:**
+- Create: `jevq/app/__init__.py`, `jevq/app/api.py`, `jevq/app/ui.html`, `desktop.py`, `install_shortcut.py`
+- Modify: `requirements.txt`（加 `pywebview`）
+- Test: `tests/test_api.py`
+
+**Interfaces:**
+- Consumes: `run.run_day(once, stop, log, state)`、`Ledger`、`db.connect`、`tencent.fetch_quotes`、表 `decisions` / `equity`、`reports/*.md`
+- Produces:
+  - `Api(db_path=DB_PATH, report_dir=REPORT_DIR, runner=None, fetch_quotes=tencent.fetch_quotes)`，暴露给前端的方法：`start() -> dict`、`stop() -> dict`、`is_running() -> bool`、`status() -> dict`、`fills(day: str) -> list[dict]`、`decisions(day: str) -> list[dict]`、`equity_curve() -> dict[str, list]`、`reports() -> list[str]`、`report(name: str) -> str`、`logs() -> list[str]`
+  - `desktop.py`：`pythonw desktop.py` 打开窗口
+  - `install_shortcut.py`：在桌面创建「Jev低吸模拟盘」快捷方式
+
+设计要点：
+- 窗口用 pywebview（Windows 下走 WebView2，本机已装 149.x），前端是本地 `ui.html`，通过 `window.pywebview.api.*` 直接调用 Python，不起 HTTP 服务。
+- 交易循环跑在 `Api` 的后台线程里；「停止」置位 `threading.Event`，`run_day` 在一分钟内退出。关窗口时也会停止。
+- 面板每次查询都新开 SQLite 连接，只读取数据；交易线程用自己的连接写入。`db.connect` 设了 `timeout=15`，读写冲突时会等锁，不会直接报错。
+- `pythonw` 没有控制台，`sys.stdout/stderr` 是 `None`，akshare 的进度条一写就会崩，所以 `desktop.py` 启动时先重定向到 `os.devnull`。
+
+- [ ] **Step 1: 安装依赖**
+
+`requirements.txt` 末尾加一行：
+```
+pywebview
+```
+Run: `.venv/Scripts/python -m pip install -q pywebview`
+
+- [ ] **Step 2: 写失败的测试**
+
+`tests/test_api.py`:
+```python
+import threading
+from datetime import datetime
+
+import pytest
+
+from factories import quote
+from jevq import db
+from jevq.app.api import Api
+from jevq.ledger import Ledger
+
+T = datetime(2026, 9, 23, 14, 50)
+
+
+@pytest.fixture
+def paths(tmp_path):
+    return str(tmp_path / "t.sqlite"), tmp_path / "reports"
+
+
+def make_api(paths, runner=None, fetch=None):
+    return Api(db_path=paths[0], report_dir=str(paths[1]),
+               runner=runner or (lambda **kw: None), fetch_quotes=fetch or (lambda codes: {}))
+
+
+def test_status_marks_positions_to_fetched_prices(paths):
+    conn = db.connect(paths[0])
+    Ledger(conn).buy("main", quote("600001", pct=-1.0), T, "x")
+    conn.close()
+    api = make_api(paths, fetch=lambda codes: {"600001": quote("600001", pct=1.0)})
+    s = api.status()
+    main, shadow = s["accounts"]
+    assert main["id"] == "main" and main["positions"][0]["price"] == 10.1
+    assert main["positions"][0]["pnl_pct"] == round((10.1 / 9.9 - 1) * 100, 2)
+    assert shadow["equity"] == 30000 and shadow["positions"] == []
+    assert s["running"] is False and s["phase"] == "未运行"
+
+
+def test_fills_decisions_curve(paths):
+    conn = db.connect(paths[0])
+    Ledger(conn).buy("main", quote("600001", pct=-1.0), T, "低吸")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail) "
+                 "VALUES ('2026-09-23T10:00:00', '600002', 'reject', '新增减持')")
+    conn.execute("INSERT INTO equity VALUES ('2026-09-23', 'main', 30100)")
+    conn.commit()
+    conn.close()
+    api = make_api(paths)
+    assert api.fills("2026-09-23")[0]["side"] == "买"
+    assert api.decisions("2026-09-23") == [
+        {"time": "10:00", "code": "600002", "verdict": "reject", "detail": "新增减持"}]
+    assert api.equity_curve() == {"main": [["2026-09-23", 30100.0]], "shadow": []}
+
+
+def test_reports_and_path_traversal(paths):
+    rep = paths[1]
+    rep.mkdir()
+    (rep / "2026-09-23.md").write_text("# 复盘", encoding="utf-8")
+    (rep / "notes.txt").write_text("x", encoding="utf-8")
+    api = make_api(paths)
+    assert api.reports() == ["2026-09-23.md"]
+    assert api.report("2026-09-23.md") == "# 复盘"
+    with pytest.raises(ValueError):
+        api.report("../jevq/config.py")
+
+
+def test_start_stop_runs_runner_in_thread(paths):
+    started = threading.Event()
+
+    def runner(stop, log, state):
+        state["phase"] = "盘中"
+        log("hello")
+        started.set()
+        stop.wait(5)
+
+    api = make_api(paths, runner=runner)
+    assert api.start()["ok"]
+    assert started.wait(2)
+    assert api.is_running() and api.status()["phase"] == "盘中"
+    assert api.start()["ok"] is False
+    api.stop()
+    api._thread.join(2)
+    assert not api.is_running()
+    logs = api.logs()
+    assert any("hello" in line for line in logs) and any("运行结束" in line for line in logs)
+
+
+def test_runner_error_is_logged(paths):
+    def runner(stop, log, state):
+        raise RuntimeError("缺少环境变量 TYPESAFE_API_KEY")
+
+    api = make_api(paths, runner=runner)
+    api.start()
+    api._thread.join(2)
+    assert any("TYPESAFE_API_KEY" in line for line in api.logs())
+```
+
+- [ ] **Step 3: 运行，确认失败**
+
+Run: `.venv/Scripts/python -m pytest tests/test_api.py -v`
+Expected: FAIL，`ModuleNotFoundError: No module named 'jevq.app'`
+
+- [ ] **Step 4: 实现 Api**
+
+`jevq/app/__init__.py`：空文件。
+
+`jevq/app/api.py`:
+```python
+import re
+import threading
+from collections import deque
+from datetime import date, datetime
+from pathlib import Path
+
+from jevq import db
+from jevq.config import ACCOUNTS, DB_PATH, INITIAL_CASH, REPORT_DIR
+from jevq.data import tencent
+from jevq.ledger import Ledger
+
+REPORT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
+NAMES = {"main": "主账户(Jev)", "shadow": "影子账户"}
+
+
+class Api:
+    """暴露给 pywebview 前端的方法；下划线开头的成员不会暴露给 JS。"""
+
+    def __init__(self, db_path: str = DB_PATH, report_dir: str = REPORT_DIR,
+                 runner=None, fetch_quotes=tencent.fetch_quotes):
+        if runner is None:
+            from run import run_day as runner
+        self._db_path, self._report_dir = db_path, Path(report_dir)
+        self._runner, self._fetch_quotes = runner, fetch_quotes
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._logs: deque[str] = deque(maxlen=500)
+        self._state: dict = {}
+
+    # ---- 运行控制 ----
+    def start(self) -> dict:
+        if self.is_running():
+            return {"ok": False, "msg": "已经在运行"}
+        self._stop = threading.Event()
+        self._state.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return {"ok": True, "msg": "已启动"}
+
+    def stop(self) -> dict:
+        self._stop.set()
+        return {"ok": True, "msg": "正在停止"}
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _run(self):
+        self._log("开始运行")
+        try:
+            self._runner(stop=self._stop, log=self._log, state=self._state)
+        except Exception as e:
+            self._log(f"出错：{e}")
+        finally:
+            self._state["phase"] = "未运行"
+            self._log("运行结束")
+
+    def _log(self, msg: str):
+        self._logs.append(f"{datetime.now():%H:%M:%S} {msg}")
+
+    # ---- 查询 ----
+    def status(self) -> dict:
+        conn = db.connect(self._db_path)
+        try:
+            ledger = Ledger(conn)
+            prices = dict(self._state.get("prices") or {})
+            held = {p.code for a in ACCOUNTS for p in ledger.positions(a)}
+            missing = sorted(held - prices.keys())
+            if missing:
+                try:
+                    prices.update({c: q.price for c, q in self._fetch_quotes(missing).items()})
+                except Exception as e:
+                    self._log(f"持仓行情获取失败：{e}")
+            accounts = [self._account(ledger, a, prices) for a in ACCOUNTS]
+        finally:
+            conn.close()
+        return {"running": self.is_running(), "phase": self._state.get("phase", "未运行"),
+                "overseas": self._state.get("overseas"), "sentiment": self._state.get("sentiment"),
+                "today": date.today().isoformat(), "accounts": accounts}
+
+    def _account(self, ledger: Ledger, account: str, prices: dict[str, float]) -> dict:
+        value = ledger.equity(account, prices)
+        positions = []
+        for p in ledger.positions(account):
+            price = prices.get(p.code)
+            positions.append({"code": p.code, "shares": p.shares, "buy_price": p.buy_price,
+                              "buy_date": p.buy_date.isoformat(), "price": price,
+                              "pnl_pct": None if price is None else round((price / p.buy_price - 1) * 100, 2)})
+        return {"id": account, "name": NAMES[account], "equity": value,
+                "cash": round(ledger.cash(account), 2),
+                "return_pct": round((value / INITIAL_CASH - 1) * 100, 2), "positions": positions}
+
+    def fills(self, day: str) -> list[dict]:
+        conn = db.connect(self._db_path)
+        try:
+            return [{"time": f.ts.strftime("%H:%M"), "account": NAMES[f.account], "code": f.code,
+                     "side": "买" if f.side == "buy" else "卖", "price": f.price, "shares": f.shares,
+                     "fee": f.fee, "reason": f.reason}
+                    for f in Ledger(conn).fills_on(date.fromisoformat(day))]
+        finally:
+            conn.close()
+
+    def decisions(self, day: str) -> list[dict]:
+        conn = db.connect(self._db_path)
+        try:
+            rows = conn.execute("SELECT ts, code, verdict, detail FROM decisions "
+                                "WHERE substr(ts, 1, 10)=? ORDER BY id DESC LIMIT 300", (day,)).fetchall()
+        finally:
+            conn.close()
+        return [{"time": ts[11:16], "code": code or "市场", "verdict": verdict, "detail": detail}
+                for ts, code, verdict, detail in rows]
+
+    def equity_curve(self) -> dict[str, list]:
+        conn = db.connect(self._db_path)
+        try:
+            rows = conn.execute("SELECT date, account, value FROM equity ORDER BY date").fetchall()
+        finally:
+            conn.close()
+        out: dict[str, list] = {a: [] for a in ACCOUNTS}
+        for d, a, v in rows:
+            out[a].append([d, v])
+        return out
+
+    def reports(self) -> list[str]:
+        if not self._report_dir.exists():
+            return []
+        return sorted((p.name for p in self._report_dir.glob("*.md") if REPORT_NAME.match(p.name)),
+                      reverse=True)
+
+    def report(self, name: str) -> str:
+        if not REPORT_NAME.match(name):
+            raise ValueError(f"非法报告名：{name}")
+        return (self._report_dir / name).read_text(encoding="utf-8")
+
+    def logs(self) -> list[str]:
+        return list(self._logs)
+```
+
+- [ ] **Step 5: 运行，确认通过**
+
+Run: `.venv/Scripts/python -m pytest tests/test_api.py -v`
+Expected: 5 passed
+
+- [ ] **Step 6: 写前端页面**
+
+`jevq/app/ui.html`:
+```html
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Jev 低吸模拟盘</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2129; --muted:#86909c; --line:#e5e6eb;
+          --up:#d93026; --down:#1a9e5c; --accent:#3370ff; --shadow:#8f5cf7; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#17181a; --card:#232429; --text:#e8e9eb; --muted:#8a8f98; --line:#34363c;
+            --up:#f5584a; --down:#2fbf71; --accent:#5b8cff; --shadow:#a98bff; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 "Microsoft YaHei UI", system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:16px; padding:14px 20px; background:var(--card); border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0 12px 0 0; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); display:inline-block; margin-right:6px; }
+  .dot.on { background:var(--down); box-shadow:0 0 0 3px color-mix(in srgb, var(--down) 25%, transparent); }
+  .tag { color:var(--muted); }
+  .tag b { color:var(--text); font-weight:600; }
+  .spacer { flex:1; }
+  button { border:1px solid var(--line); background:var(--card); color:var(--text); padding:6px 16px; border-radius:6px; cursor:pointer; font:inherit; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.45; cursor:default; }
+  main { padding:16px 20px; display:grid; gap:16px; }
+  .cards { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card h2 { font-size:14px; margin:0 0 8px; color:var(--muted); font-weight:500; }
+  .big { font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .up { color:var(--up); } .down { color:var(--down); }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  td.wrap { white-space:normal; }
+  th { color:var(--muted); font-weight:500; }
+  .tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:10px; }
+  .tabs button { border:none; border-radius:0; border-bottom:2px solid transparent; background:none; padding:8px 14px; }
+  .tabs button.active { border-bottom-color:var(--accent); color:var(--accent); }
+  .empty { color:var(--muted); padding:16px 8px; }
+  #curve svg { width:100%; height:180px; display:block; }
+  .legend span { margin-right:14px; color:var(--muted); }
+  .legend i { display:inline-block; width:10px; height:3px; vertical-align:middle; margin-right:4px; }
+  #log { font:12px/1.6 Consolas, monospace; max-height:360px; overflow:auto; white-space:pre-wrap; }
+  .layout { display:grid; grid-template-columns:200px 1fr; gap:16px; }
+  .report-list button { display:block; width:100%; text-align:left; margin-bottom:4px; }
+  .md table { margin:8px 0; } .md h1 { font-size:18px; } .md h2 { font-size:15px; margin-top:18px; }
+  .md blockquote { color:var(--muted); margin:8px 0; padding-left:10px; border-left:3px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Jev 低吸模拟盘</h1>
+  <span><span id="dot" class="dot"></span><span id="phase">未运行</span></span>
+  <span class="tag">外围 <b id="overseas">–</b></span>
+  <span class="tag">情绪 <b id="sentiment">–</b></span>
+  <span class="spacer"></span>
+  <button id="btnStart" class="primary">开始运行</button>
+  <button id="btnStop" disabled>停止</button>
+</header>
+<main>
+  <section class="cards" id="accounts"></section>
+  <section class="card" id="curve">
+    <h2>净值曲线 <span class="legend"><span><i style="background:var(--accent)"></i>主账户(Jev)</span><span><i style="background:var(--shadow)"></i>影子账户</span></span></h2>
+    <div id="curveBody"></div>
+  </section>
+  <section class="card">
+    <div class="tabs">
+      <button data-tab="fills" class="active">今日成交</button>
+      <button data-tab="decisions">Jev 判断</button>
+      <button data-tab="reports">复盘报告</button>
+      <button data-tab="logs">运行日志</button>
+    </div>
+    <div id="tabBody"></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = (n, d = 2) => n == null ? "–" : Number(n).toLocaleString("zh-CN", {minimumFractionDigits:d, maximumFractionDigits:d});
+const signCls = (n) => n > 0 ? "up" : n < 0 ? "down" : "";
+let api, tab = "fills", today = "";
+
+function table(headers, rows) {
+  if (!rows.length) return '<div class="empty">暂无数据</div>';
+  return `<table><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr>${rows.map((r) =>
+    `<tr>${r.map((c, i) => `<td class="${i === r.length - 1 ? "wrap" : ""}">${c}</td>`).join("")}</tr>`).join("")}</table>`;
+}
+
+function renderAccounts(accounts) {
+  $("accounts").innerHTML = accounts.map((a) => `
+    <div class="card">
+      <h2>${esc(a.name)}</h2>
+      <div class="big">${fmt(a.equity)} <span class="${signCls(a.return_pct)}" style="font-size:15px">${a.return_pct > 0 ? "+" : ""}${fmt(a.return_pct)}%</span></div>
+      <div class="tag">现金 ${fmt(a.cash)}</div>
+      ${table(["代码", "股数", "成本价", "现价", "盈亏", "买入日"], a.positions.map((p) => [
+        esc(p.code), p.shares, fmt(p.buy_price), fmt(p.price),
+        `<span class="${signCls(p.pnl_pct)}">${p.pnl_pct == null ? "–" : fmt(p.pnl_pct) + "%"}</span>`, esc(p.buy_date)]))}
+    </div>`).join("");
+}
+
+function renderCurve(curve) {
+  const series = [["main", "var(--accent)"], ["shadow", "var(--shadow)"]];
+  const all = series.flatMap(([k]) => curve[k] || []);
+  if (all.length < 2) { $("curveBody").innerHTML = '<div class="empty">收盘后生成第一条记录，满两天开始画线</div>'; return; }
+  const dates = [...new Set(all.map((p) => p[0]))].sort();
+  const vals = all.map((p) => p[1]).concat([30000]);
+  const lo = Math.min(...vals), hi = Math.max(...vals), W = 1000, H = 180, pad = 10;
+  const x = (d) => pad + (dates.indexOf(d) / Math.max(1, dates.length - 1)) * (W - 2 * pad);
+  const y = (v) => H - pad - ((v - lo) / Math.max(1, hi - lo)) * (H - 2 * pad);
+  const lines = series.map(([k, color]) => `<polyline fill="none" stroke="${color}" stroke-width="2"
+      points="${(curve[k] || []).map((p) => `${x(p[0])},${y(p[1])}`).join(" ")}"/>`).join("");
+  $("curveBody").innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <line x1="0" x2="${W}" y1="${y(30000)}" y2="${y(30000)}" stroke="var(--line)" stroke-dasharray="4 4"/>${lines}</svg>
+    <div class="tag">${esc(dates[0])} → ${esc(dates[dates.length - 1])}　虚线为初始资金 30,000</div>`;
+}
+
+function mdToHtml(md) {
+  const out = []; let rows = [];
+  const flush = () => { if (rows.length) { out.push(table(rows[0], rows.slice(1))); rows = []; } };
+  for (const line of md.split("\n")) {
+    if (line.startsWith("|")) {
+      const cells = line.split("|").slice(1, -1).map((c) => esc(c.trim()));
+      if (!cells.every((c) => /^-+$/.test(c))) rows.push(cells);
+      continue;
+    }
+    flush();
+    if (line.startsWith("## ")) out.push(`<h2>${esc(line.slice(3))}</h2>`);
+    else if (line.startsWith("# ")) out.push(`<h1>${esc(line.slice(2))}</h1>`);
+    else if (line.startsWith("> ")) out.push(`<blockquote>${esc(line.slice(2))}</blockquote>`);
+    else if (line.trim()) out.push(`<p>${esc(line)}</p>`);
+  }
+  flush();
+  return out.join("");
+}
+
+async function renderTab() {
+  const body = $("tabBody");
+  if (tab === "fills") {
+    const rows = await api.fills(today);
+    body.innerHTML = table(["时间", "账户", "代码", "方向", "价格", "股数", "费用", "理由"],
+      rows.map((f) => [f.time, esc(f.account), esc(f.code), f.side, fmt(f.price), f.shares, fmt(f.fee), esc(f.reason)]));
+  } else if (tab === "decisions") {
+    const rows = await api.decisions(today);
+    const label = {pass: "通过", reject: "否决", error: "出错", sentiment: "情绪"};
+    body.innerHTML = table(["时间", "代码", "结果", "理由"],
+      rows.map((d) => [d.time, esc(d.code), label[d.verdict] || esc(d.verdict), esc(d.detail)]));
+  } else if (tab === "reports") {
+    const names = await api.reports();
+    if (!names.length) { body.innerHTML = '<div class="empty">还没有复盘报告，第一个交易日 15:05 后生成</div>'; return; }
+    body.innerHTML = `<div class="layout"><div class="report-list">${names.map((n) =>
+      `<button data-report="${esc(n)}">${esc(n.replace(".md", ""))}</button>`).join("")}</div><div class="md" id="md"></div></div>`;
+    body.querySelectorAll("[data-report]").forEach((b) =>
+      b.onclick = async () => { $("md").innerHTML = mdToHtml(await api.report(b.dataset.report)); });
+    body.querySelector("[data-report]").click();
+  } else {
+    const lines = await api.logs();
+    body.innerHTML = `<div id="log">${lines.length ? esc(lines.join("\n")) : "暂无日志"}</div>`;
+    $("log").scrollTop = 1e9;
+  }
+}
+
+async function refresh() {
+  const s = await api.status();
+  today = s.today;
+  $("dot").className = "dot" + (s.running ? " on" : "");
+  $("phase").textContent = s.running ? s.phase : "未运行";
+  $("overseas").textContent = s.overseas || "–";
+  $("sentiment").textContent = s.sentiment || "–";
+  $("btnStart").disabled = s.running;
+  $("btnStop").disabled = !s.running;
+  renderAccounts(s.accounts);
+  renderCurve(await api.equity_curve());
+  if (tab !== "reports") await renderTab();
+}
+
+window.addEventListener("pywebviewready", async () => {
+  api = window.pywebview.api;
+  $("btnStart").onclick = async () => { await api.start(); refresh(); };
+  $("btnStop").onclick = async () => { await api.stop(); refresh(); };
+  document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
+    tab = b.dataset.tab; renderTab();
+  });
+  await refresh();
+  await renderTab();
+  setInterval(refresh, 5000);
+});
+</script>
+</body>
+</html>
+```
+
+- [ ] **Step 7: 写启动入口和快捷方式脚本**
+
+`desktop.py`:
+```python
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+os.chdir(ROOT)
+# pythonw 没有控制台，sys.stdout/stderr 为 None；akshare 的 tqdm 进度条一写就崩
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+import webview  # noqa: E402
+
+from jevq.app.api import Api  # noqa: E402
+
+
+def main():
+    api = Api()
+    window = webview.create_window("Jev 低吸模拟盘", str(ROOT / "jevq" / "app" / "ui.html"),
+                                   js_api=api, width=1280, height=820, min_size=(960, 640))
+
+    def on_closing(*_):
+        api.stop()
+
+    window.events.closing += on_closing
+    webview.start()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+`install_shortcut.py`:
+```python
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+NAME = "Jev低吸模拟盘"
+
+
+def main():
+    target = ROOT / ".venv" / "Scripts" / "pythonw.exe"
+    script = ROOT / "desktop.py"
+    ps = ("$ws = New-Object -ComObject WScript.Shell;"
+          "$d = [Environment]::GetFolderPath('Desktop');"
+          f"$l = $ws.CreateShortcut(\"$d\\{NAME}.lnk\");"
+          f"$l.TargetPath = '{target}';"
+          f"$l.Arguments = '\"{script}\"';"
+          f"$l.WorkingDirectory = '{ROOT}';"
+          "$l.Save(); Write-Output \"$d\\" + NAME + ".lnk\"")
+    out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                         check=True, capture_output=True, text=True)
+    print("已创建快捷方式：", out.stdout.strip())
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 8: 全量回归**
+
+Run: `.venv/Scripts/python -m pytest -q`
+Expected: 全部 passed
+
+- [ ] **Step 9: 启动冒烟（不需要 Jev Key）**
+
+Run: `.venv/Scripts/python -c "import subprocess,time,sys; p=subprocess.Popen([r'.venv\Scripts\pythonw.exe','desktop.py']); time.sleep(8); alive=p.poll() is None; p.kill(); print('alive', alive); sys.exit(0 if alive else 1)"`
+Expected: `alive True`（窗口 8 秒内没有崩溃）
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add requirements.txt jevq/app desktop.py install_shortcut.py tests/test_api.py
+git commit -m "feat: desktop panel with pywebview"
+```
+
+- [ ] **Step 11: 创建桌面快捷方式（controller 执行，不由 implementer 执行）**
+
+Run: `.venv/Scripts/python install_shortcut.py`
+Expected: 打印桌面上 `Jev低吸模拟盘.lnk` 的路径
 
 ---
 
