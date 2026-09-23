@@ -112,6 +112,10 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     universe, ret5 = {}, {}
     if late:
         log("已过收盘，直接生成复盘报告")
+        try:
+            universe = akdata.load_universe(today, days)
+        except Exception as e:
+            log(f"晚启动股票池加载失败，收盘价只存持仓：{e!r}")
     elif not sell_only:
         state["phase"] = "准备股票池"
         try:
@@ -200,7 +204,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             quotes = tencent.fetch_quotes(close_codes)
             prices.update({c: q.price for c, q in quotes.items()})
             names = {**{c: q.name for c, q in quotes.items()}, **names}
-            saved = closes.save_closes(conn, today, {c: q.price for c, q in quotes.items()})
+            today_prices = {c: q.price for c, q in quotes.items() if q.ts.date() == today}
+            saved = closes.save_closes(conn, today, today_prices)
             log(f"收盘价存库 {saved} 条")
         except Exception as e:
             log(f"收盘价刷新失败，沿用最后快照：{e!r}")

@@ -300,14 +300,56 @@ def test_late_start_without_report_writes_it_with_fresh_prices(env, monkeypatch)
     hold(env, price=9.9)
     loaded = []
     monkeypatch.setattr(run.akdata, "load_universe", lambda today, days: loaded.append(1) or {})
-    env.feed["quotes"] = {"600001": quote("600001", pct=5.0, name="甲")}
+    env.feed["quotes"] = {"600001": quote("600001", pct=5.0, name="甲",
+                                          ts=datetime(2026, 9, 23, 15, 10))}
     env.clock.t = datetime(2026, 9, 23, 15, 10)
     path = env.run()
     assert path is not None and Path(path).exists()
     assert all(not e.ticks for e in FakeEngine.instances)
-    assert loaded == []                                  # 收盘后不再准备股票池
+    assert loaded == [1]                                 # 晚启动也要加载股票池，为了给收盘价补全库存数据
     main_equity_check(env, 10.5)
     assert "600001 甲" in Path(path).read_text(encoding="utf-8")
+
+
+def test_late_start_saves_closes_for_universe_codes(env, monkeypatch):
+    hold(env, price=9.9)
+    monkeypatch.setattr(run.akdata, "load_universe",
+                        lambda today, days: {"600001": "甲", "600002": "乙"})
+    env.feed["quotes"] = {
+        "600001": quote("600001", pct=5.0, name="甲", ts=datetime(2026, 9, 23, 15, 10)),
+        "600002": quote("600002", pct=1.0, name="乙", ts=datetime(2026, 9, 23, 15, 10)),
+    }
+    env.clock.t = datetime(2026, 9, 23, 15, 10)
+    env.run()
+    conn = db.connect(env.db)
+    try:
+        codes = {r[0] for r in conn.execute(
+            "SELECT code FROM closes WHERE date='2026-09-23'").fetchall()}
+    finally:
+        conn.close()
+    assert codes == {"600001", "600002"}                 # 不止持仓，全股票池也要存
+
+
+def test_late_start_universe_load_failure_falls_back_to_held_only(env, monkeypatch):
+    hold(env, price=9.9)
+
+    def fail(today, days):
+        raise RuntimeError("akshare down")
+
+    monkeypatch.setattr(run.akdata, "load_universe", fail)
+    env.feed["quotes"] = {"600001": quote("600001", pct=5.0, name="甲",
+                                          ts=datetime(2026, 9, 23, 15, 10))}
+    env.clock.t = datetime(2026, 9, 23, 15, 10)
+    path = env.run()
+    assert path is not None
+    assert "晚启动股票池加载失败，收盘价只存持仓" in env.log_text()
+    conn = db.connect(env.db)
+    try:
+        codes = {r[0] for r in conn.execute(
+            "SELECT code FROM closes WHERE date='2026-09-23'").fetchall()}
+    finally:
+        conn.close()
+    assert codes == {"600001"}
 
 
 # ---- Task 19：本地收盘价库 ----
@@ -324,7 +366,8 @@ def test_insufficient_ret5_coverage_sets_warning_and_skips_buys(env, monkeypatch
 
 
 def test_report_saves_closes_before_writing_it(env):
-    env.feed["quotes"] = {"600001": quote("600001", pct=2.0, name="甲")}
+    env.feed["quotes"] = {"600001": quote("600001", pct=2.0, name="甲",
+                                          ts=datetime(2026, 9, 23, 15, 0))}
     env.run()
     conn = db.connect(env.db)
     try:
@@ -334,6 +377,20 @@ def test_report_saves_closes_before_writing_it(env):
         conn.close()
     assert row is not None and row[0] == pytest.approx(10.2)
     assert "收盘价存库" in env.log_text()
+
+
+def test_stale_quote_is_not_saved_to_closes(env):
+    # ts 是昨天的行情（比如刷新失败沿用的快照），不能当成今天的收盘价存库。
+    env.feed["quotes"] = {"600001": quote("600001", pct=2.0, name="甲",
+                                          ts=datetime(2026, 9, 22, 15, 0))}
+    env.run()
+    conn = db.connect(env.db)
+    try:
+        row = conn.execute("SELECT close FROM closes WHERE date=? AND code='600001'",
+                           ("2026-09-23",)).fetchone()
+    finally:
+        conn.close()
+    assert row is None
 
 
 def test_backfill_flag_runs_without_jev_key(env, monkeypatch):

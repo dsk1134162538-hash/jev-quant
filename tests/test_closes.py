@@ -81,7 +81,7 @@ def test_backfill_skips_codes_already_full():
 
     def fetch(code):
         calls.append(code)
-        return []
+        return [("2026-09-22", 10.0)]
 
     n = backfill_closes(c, ["600001", "600002"], TODAY, fetch, pause=0)
     assert calls == ["600002"]
@@ -94,9 +94,24 @@ def test_backfill_writes_rows_before_today_only():
     def fetch(code):
         return [("2026-09-20", 10.0), ("2026-09-21", 10.1), (TODAY.isoformat(), 99.0)]
 
-    backfill_closes(c, ["600001"], TODAY, fetch, pause=0)
+    n = backfill_closes(c, ["600001"], TODAY, fetch, pause=0)
     rows = sorted(c.execute("SELECT date, close FROM closes WHERE code='600001'").fetchall())
     assert rows == [("2026-09-20", 10.0), ("2026-09-21", 10.1)]
+    assert n == 1
+
+
+def test_backfill_call_that_writes_nothing_is_not_counted():
+    c = conn()
+    calls = []
+
+    def fetch(code):
+        calls.append(code)
+        return [(TODAY.isoformat(), 99.0)]   # 全部是 today 及以后的行，一条都写不进去
+
+    n = backfill_closes(c, ["600001"], TODAY, fetch, pause=0)
+    assert calls == ["600001"]
+    assert n == 0
+    assert c.execute("SELECT COUNT(*) FROM closes").fetchone()[0] == 0
 
 
 def test_backfill_stops_after_consecutive_failures(capsys):

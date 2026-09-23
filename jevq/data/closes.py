@@ -44,7 +44,7 @@ def backfill_closes(conn, codes: Iterable[str], today: date,
                      fetch_kline: Callable[[str], list[tuple[str, float]]], pause: float = 0.1,
                      max_consecutive_failures: int = 30, deadline: datetime | None = None,
                      log=print) -> int:
-    """给收盘价不足 6 条的 code 逐只串行补数。返回成功补到数据的 code 数。"""
+    """给收盘价不足 6 条的 code 逐只串行补数。返回实际写入了新收盘价的 code 数（fetch 成功但一行都没写进去的不算）。"""
     codes = list(codes)
     if not codes:
         return 0
@@ -74,6 +74,6 @@ def backfill_closes(conn, codes: Iterable[str], today: date,
         if rows:
             conn.executemany("INSERT OR REPLACE INTO closes(date, code, close) VALUES (?, ?, ?)", rows)
             conn.commit()
-        done += 1
+            done += 1
         time.sleep(pause)
     return done
