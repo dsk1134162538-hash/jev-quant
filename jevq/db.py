@@ -39,6 +39,12 @@ def connect(path: str) -> sqlite3.Connection:
     if path != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False, timeout=15)
+    if path != ":memory:":
+        conn.execute("PRAGMA journal_mode=WAL")      # 读写互不阻塞：面板读的时候交易进程照样能写
     conn.executescript(SCHEMA)
     _migrate(conn)
     return conn
+
+
+def connect_readonly(path: str) -> sqlite3.Connection:
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=15, check_same_thread=False)

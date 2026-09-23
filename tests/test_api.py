@@ -141,3 +141,29 @@ def test_names_from_state_then_quotes_cache(paths):
     assert {f["code"]: f["name"] for f in api.fills("2026-09-23")} == {"600001": "股票甲", "600002": "行情名2"}
     assert [d["name"] for d in api.decisions("2026-09-23")] == ["", "股票甲"]
     assert fetched == [["600001", "600002"]]          # status 一次请求同时拿价格和名称；之后命中缓存
+
+
+def test_query_methods_never_open_write_connection(paths, monkeypatch):
+    conn = db.connect(paths[0])
+    Ledger(conn).buy("main", quote("600001", pct=-1.0), T, "x")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail) "
+                 "VALUES ('2026-09-23T10:00:00', '600002', 'reject', 'x')")
+    conn.commit()
+    conn.close()
+    api = make_api(paths)
+
+    def boom(*a, **kw):
+        raise AssertionError("query method opened a write connection")
+
+    monkeypatch.setattr(db, "connect", boom)
+    assert api.status()["accounts"][0]["positions"][0]["code"] == "600001"
+    assert len(api.fills("2026-09-23")) == 1
+    rows = api.decisions("2026-09-23")
+    assert api.decision(rows[0]["id"])["code"] == "600002"
+    assert api.equity_curve() == {"main": [], "shadow": []}
+
+
+def test_api_init_creates_fresh_db(paths):
+    api = make_api(paths)
+    s = api.status()
+    assert [a["equity"] for a in s["accounts"]] == [30000, 30000]

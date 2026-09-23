@@ -28,6 +28,11 @@ class Api:
         self._logs: deque[str] = deque(maxlen=500)
         self._state: dict = {}
         self._names: dict[str, str] = {}
+        conn = db.connect(self._db_path)           # 仅此一次写：建库、建表、建现金行；之后查询全走只读连接
+        try:
+            Ledger(conn)
+        finally:
+            conn.close()
 
     # ---- 运行控制 ----
     def start(self) -> dict:
@@ -74,9 +79,9 @@ class Api:
         return {c: known.get(c, "") for c in codes}
 
     def status(self) -> dict:
-        conn = db.connect(self._db_path)
+        conn = db.connect_readonly(self._db_path)
         try:
-            ledger = Ledger(conn)
+            ledger = Ledger(conn, init=False)
             prices = dict(self._state.get("prices") or {})
             held = {p.code for a in ACCOUNTS for p in ledger.positions(a)}
             missing = sorted(held - prices.keys())
@@ -110,9 +115,9 @@ class Api:
                 "return_pct": round((value / INITIAL_CASH - 1) * 100, 2), "positions": positions}
 
     def fills(self, day: str) -> list[dict]:
-        conn = db.connect(self._db_path)
+        conn = db.connect_readonly(self._db_path)
         try:
-            fills = Ledger(conn).fills_on(date.fromisoformat(day))
+            fills = Ledger(conn, init=False).fills_on(date.fromisoformat(day))
         finally:
             conn.close()
         names = self._lookup_names({f.code for f in fills})
@@ -123,7 +128,7 @@ class Api:
                 for f in fills]
 
     def decisions(self, day: str) -> list[dict]:
-        conn = db.connect(self._db_path)
+        conn = db.connect_readonly(self._db_path)
         try:
             rows = conn.execute("SELECT id, ts, code, verdict, detail, trace IS NOT NULL FROM decisions "
                                 "WHERE substr(ts, 1, 10)=? ORDER BY id DESC LIMIT 300", (day,)).fetchall()
@@ -140,7 +145,7 @@ class Api:
             decision_id = int(decision_id)
         except (TypeError, ValueError):
             return None
-        conn = db.connect(self._db_path)
+        conn = db.connect_readonly(self._db_path)
         try:
             row = conn.execute("SELECT id, ts, code, verdict, detail, trace FROM decisions WHERE id=?",
                                (decision_id,)).fetchone()
@@ -158,7 +163,7 @@ class Api:
                 "verdict": verdict, "detail": detail, "trace": trace}
 
     def equity_curve(self) -> dict[str, list]:
-        conn = db.connect(self._db_path)
+        conn = db.connect_readonly(self._db_path)
         try:
             rows = conn.execute("SELECT date, account, value FROM equity ORDER BY date").fetchall()
         finally:
