@@ -1,0 +1,94 @@
+import re
+from bisect import bisect_left, bisect_right
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import date, datetime
+
+import akshare as ak
+import pandas as pd
+
+from jevq.config import MIN_LISTED_TRADING_DAYS
+
+MAIN_BOARD = ("60", "00")
+NOTICE_ID = re.compile(r"(AN\d+)")
+
+
+@dataclass(frozen=True)
+class Notice:
+    id: str
+    code: str
+    title: str
+    type: str
+    date: str
+
+
+@dataclass(frozen=True)
+class News:
+    title: str
+    content: str
+    published: datetime
+
+
+def trade_days() -> list[date]:
+    df = ak.tool_trade_date_hist_sina()
+    return sorted(pd.Timestamp(d).date() for d in df["trade_date"])
+
+
+def filter_universe(rows: Iterable[tuple[str, str, date]], today: date,
+                    days: list[date]) -> dict[str, str]:
+    out = {}
+    for code, name, listed in rows:
+        if not code.startswith(MAIN_BOARD) or "ST" in name.upper():
+            continue
+        if bisect_right(days, today) - bisect_left(days, listed) < MIN_LISTED_TRADING_DAYS:
+            continue
+        out[code] = name
+    return out
+
+
+def load_universe(today: date, days: list[date]) -> dict[str, str]:
+    sh = ak.stock_info_sh_name_code(symbol="主板A股")
+    sz = ak.stock_info_sz_name_code(symbol="A股列表")
+    sz = sz[sz["板块"] == "主板"]
+    rows = [(str(r["证券代码"]).zfill(6), str(r["证券简称"]), pd.Timestamp(r["上市日期"]).date())
+            for _, r in sh.iterrows()]
+    rows += [(str(r["A股代码"]).zfill(6), str(r["A股简称"]).replace(" ", ""),
+              pd.Timestamp(r["A股上市日期"]).date()) for _, r in sz.iterrows()]
+    return filter_universe(rows, today, days)
+
+
+def notices_from_frame(df: pd.DataFrame) -> list[Notice]:
+    out = []
+    for _, r in df.iterrows():
+        code = str(r["代码"]).zfill(6)
+        if not code.startswith(MAIN_BOARD):
+            continue
+        title = str(r["公告标题"])
+        m = NOTICE_ID.search(str(r["网址"]))
+        nid = m.group(1) if m else f"{code}:{title}"
+        out.append(Notice(nid, code, title, str(r["公告类型"]), str(r["公告日期"])[:10]))
+    return out
+
+
+def fetch_notices_for_date(d: date) -> list[Notice]:
+    return notices_from_frame(ak.stock_notice_report(symbol="全部", date=d.strftime("%Y%m%d")))
+
+
+def fetch_news(code: str) -> list[News]:
+    df = ak.stock_news_em(symbol=code)
+    return [News(str(r["新闻标题"]), str(r["新闻内容"]),
+                 pd.Timestamp(r["发布时间"]).to_pydatetime()) for _, r in df.iterrows()]
+
+
+def summarize_pools(zt: int, dt: int, zb: int, max_board: int) -> dict:
+    rate = round(zb / (zt + zb) * 100, 1) if zt + zb else 0.0
+    return {"涨停家数": zt, "跌停家数": dt, "炸板率%": rate, "最高连板": max_board}
+
+
+def fetch_pool_stats(d: date) -> dict:
+    ds = d.strftime("%Y%m%d")
+    zt = ak.stock_zt_pool_em(date=ds)
+    dt = ak.stock_zt_pool_dtgc_em(date=ds)
+    zb = ak.stock_zt_pool_zbgc_em(date=ds)
+    max_board = int(zt["连板数"].max()) if len(zt) else 0
+    return summarize_pools(len(zt), len(dt), len(zb), max_board)
