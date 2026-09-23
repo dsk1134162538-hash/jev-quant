@@ -3170,6 +3170,122 @@ git commit -m "feat: pluggable jev provider (typesafe or cloudflare workers ai)"
 
 ---
 
+### Task 15: 显示股票名称
+
+用户要求面板和复盘报告里显示股票名称。在 Task 13 之后执行。
+
+**Files:**
+- Modify: `run.py`, `jevq/app/api.py`, `jevq/app/ui.html`, `jevq/report.py`
+- Test: `tests/test_api.py`, `tests/test_report.py`
+
+**Interfaces:**
+- Consumes: `run_day` 的 `universe: dict[str, str]`（code → name）、`tencent.fetch_quotes`（`Quote.name`）
+- Produces:
+  - `run_day` 在加载股票池后执行 `state["names"] = dict(universe)`
+  - `Api` 的 `status()` 持仓项、`fills()` 每项、`decisions()` 每项都新增 `"name"` 字段；名称来源依次为：`self._state["names"]` → 实例内缓存 `self._names` → 对缺失代码调用一次 `self._fetch_quotes(missing)` 取 `Quote.name` 并写入缓存；仍取不到则为 `""`。`decisions()` 中 code 为空（市场级记录）时 name 为 `""`。
+  - `write_report(conn, ledger, day, prices, overseas, sentiment, out_dir=REPORT_DIR, names: dict[str, str] | None = None)`：成交表在「代码」后加「名称」列；检查记录表同样加「名称」列；持仓列写成 `代码 名称`。`run_day` 调用时传 `names=universe`。
+  - `ui.html`：持仓、成交、Jev 判断三张表在「代码」后加「名称」列；持仓的「买入日」只显示 `MM-DD`（`p.buy_date.slice(5)`）。名称一律经 `esc()` 转义。
+
+- [ ] **Step 1: 写失败的测试**
+
+`tests/test_api.py` 追加：
+```python
+def test_names_from_state_then_quotes_cache(paths):
+    conn = db.connect(paths[0])
+    ledger = Ledger(conn)
+    ledger.buy("main", quote("600001", pct=-1.0), T, "x")
+    ledger.buy("shadow", quote("600002", pct=-1.0), T, "y")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail) VALUES "
+                 "('2026-09-23T10:00:00', '600001', 'pass', 'ok'), ('2026-09-23T10:00:00', '', 'sentiment', '{}')")
+    conn.commit()
+    conn.close()
+    fetched = []
+
+    def fetch(codes):
+        fetched.append(sorted(codes))
+        return {c: quote(c, pct=0.0, name="行情名" + c[-1]) for c in codes}
+
+    api = make_api(paths, fetch=fetch)
+    api._state["names"] = {"600001": "股票甲"}
+    s = api.status()
+    assert s["accounts"][0]["positions"][0]["name"] == "股票甲"
+    assert s["accounts"][1]["positions"][0]["name"] == "行情名2"
+    assert {f["code"]: f["name"] for f in api.fills("2026-09-23")} == {"600001": "股票甲", "600002": "行情名2"}
+    assert [d["name"] for d in api.decisions("2026-09-23")] == ["", "股票甲"]
+    assert fetched == [["600001", "600002"]]          # status 一次请求同时拿价格和名称；之后命中缓存
+```
+
+`tests/test_report.py` 追加：
+```python
+def test_report_shows_names(tmp_path):
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    t = datetime(2026, 9, 23, 14, 50)
+    ledger.buy("main", quote("600001", pct=-1.0), t, "低吸")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail) VALUES (?, ?, ?, ?)",
+                 (t.isoformat(), "600002", "reject", "新增减持"))
+    path = write_report(conn, ledger, date(2026, 9, 23), {"600001": 10.0}, "中性", "正常", tmp_path,
+                        names={"600001": "股票甲", "600002": "股票乙"})
+    text = path.read_text(encoding="utf-8")
+    assert "| 600001 | 股票甲 |" in text
+    assert "| 600002 | 股票乙 |" in text
+    assert "600001 股票甲" in text                   # 持仓列
+```
+
+- [ ] **Step 2: 运行，确认失败**
+
+Run: `.venv/Scripts/python -m pytest tests/test_api.py tests/test_report.py -v`
+Expected: 新增的两个测试 FAIL（KeyError 'name' / TypeError unexpected keyword 'names'）
+
+- [ ] **Step 3: 实现**
+
+`jevq/app/api.py`：
+- `__init__` 增加 `self._names: dict[str, str] = {}`
+- 新增私有方法：
+```python
+    def _lookup_names(self, codes, quotes: dict | None = None) -> dict[str, str]:
+        known = {c: q.name for c, q in (quotes or {}).items()}
+        known.update(self._names)
+        known.update(self._state.get("names") or {})      # 股票池名称优先级最高
+        missing = sorted({c for c in codes if c and c not in known})
+        if missing:
+            try:
+                known.update({c: q.name for c, q in self._fetch_quotes(missing).items()})
+            except Exception as e:
+                self._log(f"股票名称获取失败：{e}")
+        self._names.update({c: known[c] for c in codes if c in known})
+        return {c: known.get(c, "") for c in codes}
+```
+- `status()`：把原来对 `missing` 价格的请求结果保存为 `quotes`（失败时为 `{}`），之后调用 `names = self._lookup_names(held, quotes)`，并把 `names` 传给 `_account(ledger, a, prices, names)`；`_account` 的持仓项加 `"name": names.get(p.code, "")`。
+- `fills()`：先取 `fills` 列表，`names = self._lookup_names({f.code for f in fills})`，每项加 `"name": names[f.code]`。
+- `decisions()`：`names = self._lookup_names({code for _, code, _, _ in rows if code})`，每项加 `"name": names.get(code, "") if code else ""`。
+
+`jevq/report.py`：`write_report` 签名末尾加 `names: dict[str, str] | None = None`，函数开头 `names = names or {}`；
+- 持仓列：`held = "、".join(f"{p.code} {names.get(p.code, '')}".strip() for p in ledger.positions(a)) or "空仓"`
+- 成交表头改为 `| 时间 | 账户 | 代码 | 名称 | 方向 | 价格 | 股数 | 费用 | 理由 |`，分隔行 9 列，行内在代码后插入 `{names.get(f.code, '')}`
+- 检查记录表头改为 `| 时间 | 代码 | 名称 | 结果 | 原因 |`，分隔行 5 列，行内在代码后插入 `{names.get(code, '')}`
+
+`run.py`：在 `log(f"股票池 {len(universe)} 只")` 之后加 `state["names"] = dict(universe)`；`write_report(...)` 调用末尾加 `names=universe`。
+
+`jevq/app/ui.html`：
+- 持仓表头改为 `["代码", "名称", "股数", "成本价", "现价", "盈亏", "买入日"]`，行内在代码后加 `esc(p.name)`，买入日改为 `esc(p.buy_date.slice(5))`
+- 成交表头改为 `["时间", "账户", "代码", "名称", "方向", "价格", "股数", "费用", "理由"]`，代码后加 `esc(f.name)`
+- Jev 判断表头改为 `["时间", "代码", "名称", "结果", "理由"]`，代码后加 `esc(d.name)`
+
+- [ ] **Step 4: 运行，确认通过**
+
+Run: `.venv/Scripts/python -m pytest -q`
+Expected: 全部 passed
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add run.py jevq/app/api.py jevq/app/ui.html jevq/report.py tests/test_api.py tests/test_report.py
+git commit -m "feat: show stock names in panel and daily report"
+```
+
+---
+
 ### Task 12: 真实环境冒烟（需要 Jev API Key）
 
 **前置：** 用户在自己的终端设置好 Jev 凭证（Claude 不写入任何凭证），二选一：
