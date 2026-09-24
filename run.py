@@ -184,6 +184,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     # 不判断，也就不需要题材数据，直接跳过，BoardStrategy 也不构造。
     concept_map: dict[str, list[str]] = {}
     prev_prev_closes: dict = {}
+    recent_limit_ups: set[str] = set()
     board_enabled = False
     if not late:
         state["phase"] = "刷新题材"
@@ -212,6 +213,12 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             log(f"昨收/前日收读取失败，扫首板今日只卖不买：{e!r}")
             prev_prev_closes = {}
             board_enabled = False
+        try:
+            recent_limit_ups = closes.recent_limit_up_codes(conn, universe, today)
+            log(f"近 10 日涨停过的股票 {len(recent_limit_ups)} 只，扫首板排除")
+        except Exception as e:
+            log(f"近 10 日涨停查询失败，扫首板本项过滤跳过：{e!r}")
+            recent_limit_ups = set()
 
     state["phase"] = "等待 09:15"
     if not once and not late and not wait_until(time(9, 15), stop):
@@ -239,7 +246,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     board = None
     if not late:
         board = BoardStrategy(conn, ledger, notice_judge, news_judge, tencent.fetch_quotes, universe, ret5,
-                              concept_map, prev_prev_closes, prev_day, enabled=board_enabled)
+                              concept_map, prev_prev_closes, prev_day, enabled=board_enabled,
+                              recent_limit_ups=recent_limit_ups)
         # 「隔夜超期」只管 runner 错过了上一交易日的情况：昨天跑过，说明持仓昨天已经按规则处理过
         # （封死涨停隔夜的票就是规则允许留下的），今天照常按同一套规则判断，不在开盘一刀切卖掉。
         try:

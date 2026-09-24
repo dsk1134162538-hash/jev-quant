@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent
 
 import run  # noqa: E402
 from jevq.config import DB_PATH  # noqa: E402
-from jevq.runlock import DAEMON_LOCK_NAME, hold_run_lock  # noqa: E402
+from jevq.runlock import DAEMON_LOCK_NAME, HELD_MSG, hold_run_lock  # noqa: E402
 
 START = time(8, 50)
 LOG_DIR = Path("data")
@@ -63,15 +63,36 @@ def main(runner=run.run_day, clock=datetime.now, stop=None) -> int:
                     stop.wait(min(60, max(0, remaining)))
                 if stop.is_set():
                     break
-                try:
-                    runner(stop=stop, log=file_log)
-                except Exception as e:
-                    file_log(f"运行出错：{e!r}")
+                _run_with_retry(runner, stop, clock)
                 last_run = clock().date()
             return 0
     except RuntimeError:
         file_log("已有后台程序在运行，退出")
         return 0
+
+
+def _run_with_retry(runner, stop: threading.Event, clock) -> None:
+    """跑一轮 runner；若因交易锁被占用（面板或 run.bat 抢了锁，runner 抛 HELD_MSG）失败，
+    记日志后每 60 秒重试一次，直到成功、遇到其他异常，或到了当天 REPORT_AT（15:05）为止。
+    08:50 后台被面板短暂抢锁不该导致后台一整天放弃：之前的做法是记日志后直接把 last_run
+    设为今天，等于当天彻底不再补跑。"""
+    while True:
+        try:
+            runner(stop=stop, log=file_log)
+            return
+        except RuntimeError as e:
+            if str(e) != HELD_MSG:
+                file_log(f"运行出错：{e!r}")
+                return
+            file_log(f"交易锁被占用，60 秒后重试：{e!r}")
+        except Exception as e:
+            file_log(f"运行出错：{e!r}")
+            return
+        if clock().time() >= run.REPORT_AT:
+            file_log("已过今日收盘时间，放弃重试")
+            return
+        if stop.wait(60):
+            return
 
 
 if __name__ == "__main__":

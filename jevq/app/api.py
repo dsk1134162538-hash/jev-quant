@@ -37,6 +37,8 @@ class Api:
     def start(self) -> dict:
         if self.is_running():
             return {"ok": False, "msg": "已经在运行"}
+        if runlock.is_held(Path(self._db_path).parent / runlock.DAEMON_LOCK_NAME):
+            return {"ok": False, "msg": "后台程序已接管今日交易，面板只需查看"}
         self._stop = threading.Event()
         self._state.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -97,7 +99,9 @@ class Api:
             conn.close()
         running = self.is_running()
         background = not running and runlock.is_held(Path(self._db_path).parent / "runner.lock")
-        return {"running": running, "background": background, "phase": self._state.get("phase", "未运行"),
+        daemon = runlock.is_held(Path(self._db_path).parent / runlock.DAEMON_LOCK_NAME)
+        return {"running": running, "background": background, "daemon": daemon,
+                "phase": self._state.get("phase", "未运行"),
                 "overseas": self._state.get("overseas"), "sentiment": self._state.get("sentiment"),
                 "warning": self._state.get("warning"), "board_watch": self._state.get("board_watch") or [],
                 "today": date.today().isoformat(), "accounts": accounts}

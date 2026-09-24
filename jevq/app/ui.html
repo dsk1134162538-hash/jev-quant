@@ -66,6 +66,7 @@
   <span class="tag">情绪 <b id="sentiment">–</b></span>
   <span class="tag" id="warningWrap" style="display:none"><b id="warning" style="color:var(--up)"></b></span>
   <span class="tag" id="watchWrap" style="display:none">观察池：<b id="boardWatch"></b></span>
+  <span class="tag" id="daemonWrap" style="display:none"><b id="daemonMsg" style="color:var(--up)"></b></span>
   <span class="spacer"></span>
   <button id="btnStart" class="primary">开始运行</button>
   <button id="btnStop" disabled>停止</button>
@@ -265,7 +266,9 @@ async function refresh() {
   $("warning").innerHTML = esc(s.warning);
   $("watchWrap").style.display = s.board_watch && s.board_watch.length ? "" : "none";
   $("boardWatch").innerHTML = (s.board_watch || []).map((w) => esc(w.name || w.code)).join("、");
-  $("btnStart").disabled = s.running || s.background;
+  $("daemonWrap").style.display = s.daemon ? "" : "none";
+  $("daemonMsg").innerHTML = esc(s.daemon ? "后台程序已接管今日交易，面板只需查看" : "");
+  $("btnStart").disabled = s.running || s.background || s.daemon;
   $("btnStop").disabled = !s.running;
   renderAccounts(s.accounts);
   renderCurve(await api.equity_curve());

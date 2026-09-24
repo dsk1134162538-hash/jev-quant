@@ -43,7 +43,7 @@ def hot_quotes(now=DAY):
     }
 
 
-def make(notice=None, news=None, fetch_quotes=None, enabled=True):
+def make(notice=None, news=None, fetch_quotes=None, enabled=True, recent_limit_ups=frozenset()):
     conn = db.connect(":memory:")
     ledger = Ledger(conn)
 
@@ -52,7 +52,7 @@ def make(notice=None, news=None, fetch_quotes=None, enabled=True):
 
     strat = BoardStrategy(conn, ledger, notice or Judge(), news or Judge(),
                           fetch_quotes or default_fetch, UNIVERSE, RET5, CONCEPT_MAP,
-                          PREV_CLOSES, PREV_DAY, enabled=enabled)
+                          PREV_CLOSES, PREV_DAY, enabled=enabled, recent_limit_ups=recent_limit_ups)
     return strat, conn, ledger
 
 
@@ -80,6 +80,17 @@ def test_watch_enter_triggers_one_jev_check_no_repeat_next_minute():
 
     strat.on_minute(quotes, at(9, 36))
     assert notice.calls == [code]                 # 不重复判断
+
+
+def test_recent_limit_up_leader_excluded_from_watch():
+    notice = Judge()
+    quotes = hot_quotes()
+    code = leader_code(quotes)
+    strat, conn, _ = make(notice=notice, recent_limit_ups={code})
+
+    strat.on_minute(quotes, at(9, 35))
+    assert code not in strat.watch
+    assert notice.calls == []                      # 排除的题材不会被问 Jev
 
 
 def test_rejected_leaves_watch_and_not_readded_same_day():

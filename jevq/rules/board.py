@@ -62,15 +62,17 @@ def leader(concept: str, members: list[str], quotes: dict[str, Quote], ret5: dic
 
 
 def watch_candidates(quotes: dict[str, Quote], concept_map: dict[str, list[str]], ret5: dict[str, float],
-                     prev_prev_closes: dict[str, float | None], today) -> list[Candidate]:
+                     prev_prev_closes: dict[str, float | None], today,
+                     exclude: set[str] = frozenset()) -> list[Candidate]:
     """每个热点题材取龙头；满足：涨幅 ≥ ENTER_PCT、今天还没摸过涨停（只扫第一次冲板）、首板。
     按热度降序、龙头分升序，去重后最多 WATCH_MAX。
-    首板判断的昨收用实时行情的 pre_close，prev_prev_closes 只提供前日收（code → 收盘价）。"""
+    首板判断的昨收用实时行情的 pre_close，prev_prev_closes 只提供前日收（code → 收盘价）。
+    exclude：近 10 日涨停过的代码，龙头命中就跳过该题材（不取第二名——只做龙头）。"""
     out: dict[str, Candidate] = {}
     hot = hot_concepts(quotes, concept_map, today)
     for concept, members in sorted(hot.items(), key=lambda kv: -len(kv[1])):
         cand = leader(concept, members, quotes, ret5)
-        if cand is None or cand.code in out:
+        if cand is None or cand.code in out or cand.code in exclude:
             continue
         q = quotes[cand.code]
         if q.pct < ENTER_PCT or q.high >= q.limit_up                 or not is_first_board(q.pre_close, prev_prev_closes.get(cand.code)):

@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 
 from jevq import db
-from jevq.data.closes import backfill_closes, prev_closes_from_db, ret5_from_db, save_closes
+from jevq.data.closes import backfill_closes, prev_closes_from_db, recent_limit_up_codes, ret5_from_db, save_closes
 
 DATES = ["2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17",
          "2026-09-18", "2026-09-21", "2026-09-22"]
@@ -159,6 +159,61 @@ def test_prev_closes_empty_when_latest_date_is_not_prev_day():
 
 def test_prev_closes_empty_table_is_empty():
     assert prev_closes_from_db(conn(), ["600001"], TODAY, date(2026, 9, 22)) == {}
+
+
+# ---- recent_limit_up_codes（近 N 日是否涨停过，首板过滤用）----
+
+BASE = date(2026, 10, 5)
+
+
+def _offset_dates(n):
+    """从 BASE 往前数 n 个连续日历日（offset 1 = 昨天……offset n = n 天前），升序返回。"""
+    return [(BASE - timedelta(days=i)).isoformat() for i in range(n, 0, -1)]
+
+
+def test_recent_limit_up_5_days_ago_is_in_set():
+    c = conn()
+    dates = _offset_dates(12)          # index j ↔ offset(12 - j)：index 0 是 offset 12（最老），index 11 是 offset 1（昨天）
+    prices = [10.0] * 12
+    prices[7] = round(prices[6] * 1.1, 2)      # index 7 = offset 5（10 天窗口内），相对 index 6（offset 6）涨停
+    c.executemany("INSERT INTO closes(date, code, close) VALUES (?, '600001', ?)",
+                  list(zip(dates, prices)))
+    c.commit()
+    assert recent_limit_up_codes(c, ["600001"], BASE) == {"600001"}
+
+
+def test_recent_limit_up_11_days_ago_is_excluded():
+    c = conn()
+    dates = _offset_dates(12)          # index 0 = offset 12（最老），index 1 = offset 11
+    prices = [10.0] * 12
+    prices[1] = 11.0    # 涨停发生在 offset 12→11 之间（11 天前），超出 10 天窗口
+    c.executemany("INSERT INTO closes(date, code, close) VALUES (?, '600001', ?)",
+                  list(zip(dates, prices)))
+    c.commit()
+    # 只有最近 11 个日期（offset 1..11）会被取到（days+1=11），offset 12（index 0）那天取不到，
+    # 涨停判断不到，正确地被排除在外。
+    assert recent_limit_up_codes(c, ["600001"], BASE) == set()
+
+
+def test_recent_limit_up_best_effort_with_only_3_dates():
+    c = conn()
+    dates = [(BASE - timedelta(days=3)).isoformat(), (BASE - timedelta(days=2)).isoformat(),
+             (BASE - timedelta(days=1)).isoformat()]
+    prices = [10.0, 11.0, 11.0]        # 第一天到第二天涨停
+    c.executemany("INSERT INTO closes(date, code, close) VALUES (?, '600001', ?)",
+                  list(zip(dates, prices)))
+    c.commit()
+    assert recent_limit_up_codes(c, ["600001"], BASE) == {"600001"}
+
+
+def test_recent_limit_up_no_data_returns_empty():
+    assert recent_limit_up_codes(conn(), ["600001"], BASE) == set()
+
+
+def test_recent_limit_up_no_codes_returns_empty():
+    c = conn()
+    seed(c, "600001")
+    assert recent_limit_up_codes(c, [], TODAY) == set()
 
 
 def test_prev_closes_none_when_second_date_is_not_prev_prev_day():

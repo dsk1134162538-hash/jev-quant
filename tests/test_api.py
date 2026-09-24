@@ -9,7 +9,7 @@ from factories import quote
 from jevq import db
 from jevq.app.api import Api
 from jevq.ledger import Ledger
-from jevq.runlock import hold_run_lock
+from jevq.runlock import DAEMON_LOCK_NAME, hold_run_lock
 
 T = datetime(2026, 9, 23, 14, 50)
 
@@ -234,3 +234,27 @@ def test_status_background_true_when_another_handle_holds_runner_lock(paths):
         s = api.status()
     assert s["background"] is True and s["running"] is False
     assert api.status()["background"] is False
+
+
+def test_status_daemon_true_when_daemon_lock_held(paths):
+    api = make_api(paths)
+    lock_path = Path(paths[0]).parent / DAEMON_LOCK_NAME
+    with hold_run_lock(lock_path):
+        s = api.status()
+    assert s["daemon"] is True
+    assert api.status()["daemon"] is False
+
+
+def test_start_defers_to_daemon_when_daemon_lock_held(paths):
+    started = threading.Event()
+
+    def runner(stop, log, state):
+        started.set()
+
+    api = make_api(paths, runner=runner)
+    lock_path = Path(paths[0]).parent / DAEMON_LOCK_NAME
+    with hold_run_lock(lock_path):
+        result = api.start()
+    assert result == {"ok": False, "msg": "后台程序已接管今日交易，面板只需查看"}
+    assert not api.is_running()
+    assert not started.wait(0.2)

@@ -69,6 +69,40 @@ def prev_closes_from_db(conn, codes: Iterable[str], today: date, prev_day: date,
     return {c: rows.get(c) for c in codes}
 
 
+def recent_limit_up_codes(conn, codes: Iterable[str], today: date, days: int = 10) -> set[str]:
+    """近 days 个交易日（不含 today）里涨停过的代码集合，扫首板用来排除「不是首板」的龙头。
+
+    取 closes 表 date < today 的最近 days + 1 个不同日期（升序后按相邻两天比较）：
+    若 close_d >= round(close_{d-1} * 1.1, 2)（主板 10%），该代码这天算涨停过。
+    数据不足 days + 1 个日期时，用已有日期尽力判断（不足 2 个日期直接返回空集）。
+    """
+    codes = list(codes)
+    if not codes:
+        return set()
+    dates = [r[0] for r in conn.execute(
+        "SELECT DISTINCT date FROM closes WHERE date < ? ORDER BY date DESC LIMIT ?",
+        (today.isoformat(), days + 1)).fetchall()]
+    if len(dates) < 2:
+        return set()
+    dates.sort()    # 升序，方便按相邻两天比较
+    date_placeholders = ",".join("?" * len(dates))
+    code_placeholders = ",".join("?" * len(codes))
+    rows = conn.execute(
+        f"SELECT code, date, close FROM closes WHERE date IN ({date_placeholders}) "
+        f"AND code IN ({code_placeholders})", (*dates, *codes)).fetchall()
+    by_code: dict[str, dict[str, float]] = {}
+    for code, d, close in rows:
+        by_code.setdefault(code, {})[d] = close
+    out: set[str] = set()
+    for code, vals in by_code.items():
+        for i in range(1, len(dates)):
+            prev, cur = vals.get(dates[i - 1]), vals.get(dates[i])
+            if prev and cur and cur >= round(prev * 1.1, 2):
+                out.add(code)
+                break
+    return out
+
+
 def backfill_closes(conn, codes: Iterable[str], today: date,
                      fetch_kline: Callable[[str], list[tuple[str, float]]], pause: float = 0.1,
                      max_consecutive_failures: int = 30, deadline: datetime | None = None,

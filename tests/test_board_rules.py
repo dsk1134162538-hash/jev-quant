@@ -57,6 +57,17 @@ def test_watch_candidates_filters():
     assert watch_candidates(sealed, cmap, ret5, prev, TODAY) == []
 
 
+def test_watch_candidates_excludes_recent_limit_up_leader():
+    quotes = {"600001": q("600001", 8.5, amount=9e8), "600002": q("600002", 6), "600003": q("600003", 5.5)}
+    cmap = {c: ["机器人"] for c in quotes}
+    ret5 = {c: 1.0 for c in quotes}
+    prev = {"600001": 9.5}
+    # 600001 是龙头，正常能进观察池
+    assert [c.code for c in watch_candidates(quotes, cmap, ret5, prev, TODAY)] == ["600001"]
+    # 但它近 10 日涨停过：题材整个跳过，不取第二名
+    assert watch_candidates(quotes, cmap, ret5, prev, TODAY, exclude={"600001"}) == []
+
+
 def test_scan_trigger_window_and_sealed():
     assert in_scan_window(time(9, 30)) and in_scan_window(time(10, 29)) and not in_scan_window(time(10, 30))
     assert scan_trigger(q("600001", 9.2), datetime(2026, 9, 24, 9, 45))

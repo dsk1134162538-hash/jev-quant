@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 
 import daemon
 import desktop
-from jevq.runlock import hold_run_lock
+from jevq.runlock import HELD_MSG, hold_run_lock
 
 
 def test_importing_daemon_and_desktop_does_not_change_cwd():
@@ -93,6 +93,44 @@ def test_main_logs_runner_exception_and_does_not_crash(monkeypatch, tmp_path):
     assert rc == 0
     assert calls == [1]
     assert any("已有另一个交易进程在运行" in m for m in logged)
+
+
+def test_main_retries_runner_on_lock_contention_until_success(monkeypatch, tmp_path):
+    """08:50 后台被面板抢锁：runner 前两次抛 HELD_MSG，第三次成功 → runner 被调用 3 次，
+    不能在锁竞争那次就把 last_run 设为今天（否则当天彻底放弃补跑）。"""
+    monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "jevq.sqlite"))
+    logged = []
+    monkeypatch.setattr(daemon, "file_log", lambda msg: logged.append(msg))
+    calls = []
+
+    def runner(stop, log):
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError(HELD_MSG)
+
+    stop = FakeStop(trip_after=3)
+    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=stop)
+    assert rc == 0
+    assert len(calls) == 3
+    assert any("60 秒后重试" in m for m in logged)
+
+
+def test_main_gives_up_retry_after_report_at(monkeypatch, tmp_path):
+    """一直被占用且已过当天 15:05：放弃重试，记日志，不再无限等下去。"""
+    monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "jevq.sqlite"))
+    logged = []
+    monkeypatch.setattr(daemon, "file_log", lambda msg: logged.append(msg))
+    calls = []
+
+    def runner(stop, log):
+        calls.append(1)
+        raise RuntimeError(HELD_MSG)
+
+    stop = FakeStop(trip_after=3)
+    rc = daemon.main(runner=runner, clock=lambda: datetime(2026, 9, 23, 15, 6), stop=stop)
+    assert rc == 0
+    assert len(calls) == 1                          # 已过 15:05，不重试
+    assert any("放弃重试" in m for m in logged)
 
 
 def test_main_exits_immediately_when_daemon_lock_already_held(monkeypatch, tmp_path):
