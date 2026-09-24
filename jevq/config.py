@@ -57,3 +57,12 @@ ACCOUNT_NAMES = {
     "board_main": "首板·主(Jev)", "board_shadow": "首板·影子",
 }
 ACCOUNT_STRATEGY = {a: sid for sid, s in STRATEGIES.items() for a in s["accounts"]}
+
+
+def builtin_accounts() -> tuple[str, ...]:
+    """内置四个账户（低吸 main/shadow + 扫首板 board_main/board_shadow）。"""
+    return ACCOUNTS
+
+
+# 自定义策略
+MAX_CUSTOM_ENABLED = 5

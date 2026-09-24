@@ -1,8 +1,8 @@
 import sqlite3
 from datetime import date, datetime
 
-from jevq.config import (ACCOUNTS, COMMISSION_MIN, COMMISSION_RATE, INITIAL_CASH, LOT,
-                         MAX_PER_TRADE, MAX_POSITIONS, STAMP_RATE, TRANSFER_RATE)
+from jevq.config import (COMMISSION_MIN, COMMISSION_RATE, INITIAL_CASH, LOT, MAX_PER_TRADE,
+                         MAX_POSITIONS, STAMP_RATE, TRANSFER_RATE, builtin_accounts)
 from jevq.models import Fill, Position, Quote
 
 
@@ -27,10 +27,16 @@ class Ledger:
         self.conn = conn
         if not init:
             return
-        for a in ACCOUNTS:
+        for a in builtin_accounts():
             conn.execute("INSERT OR IGNORE INTO cash(account, amount) VALUES (?, ?)",
                          (a, INITIAL_CASH))
         conn.commit()
+
+    def ensure_account(self, account: str, capital: float) -> None:
+        """给自定义策略的账户（c{n}_main/_shadow）开户；已存在则什么都不做。"""
+        self.conn.execute("INSERT OR IGNORE INTO cash(account, amount) VALUES (?, ?)",
+                          (account, capital))
+        self.conn.commit()
 
     def cash(self, account: str) -> float:
         return self.conn.execute("SELECT amount FROM cash WHERE account=?", (account,)).fetchone()[0]

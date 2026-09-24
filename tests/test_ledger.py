@@ -111,3 +111,21 @@ def test_new_ledger_seeds_all_four_accounts(ledger):
     assert ledger.cash("shadow") == 30000
     assert ledger.cash("board_main") == 30000
     assert ledger.cash("board_shadow") == 30000
+
+
+def test_ensure_account_creates_cash_row_with_given_capital(ledger):
+    ledger.ensure_account("c1_main", 20000)
+    assert ledger.cash("c1_main") == 20000
+
+
+def test_ensure_account_is_idempotent(ledger):
+    ledger.ensure_account("c1_main", 20000)
+    ledger.buy("c1_main", quote(pct=-1.0), T, "x")
+    ledger.ensure_account("c1_main", 20000)          # 第二次调用不应该把现金重置回 20000
+    assert ledger.cash("c1_main") < 20000
+
+
+def test_ledger_init_only_seeds_builtin_four_not_custom_accounts():
+    conn = db.connect(":memory:")
+    Ledger(conn)
+    assert conn.execute("SELECT COUNT(*) FROM cash").fetchone()[0] == 4

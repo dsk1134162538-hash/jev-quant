@@ -5,9 +5,12 @@ from pathlib import Path
 
 import pytest
 
+from datetime import date as _date
+
 from factories import quote
 from jevq import db
 from jevq.app.api import Api
+from jevq.data import custom_store
 from jevq.ledger import Ledger
 from jevq.runlock import DAEMON_LOCK_NAME, hold_run_lock
 
@@ -225,6 +228,31 @@ def test_api_init_creates_fresh_db(paths):
     api = make_api(paths)
     s = api.status()
     assert [a["equity"] for a in s["accounts"]] == [30000, 30000, 30000, 30000]
+
+
+def test_status_includes_active_custom_strategy_accounts(paths):
+    conn = db.connect(paths[0])
+    conn.close()
+    conn = db.connect(paths[0])
+    today = _date.today()
+    yesterday = today.fromordinal(today.toordinal() - 1)
+    spec = {"name": "尾盘弱转强", "capital": 20000,
+            "select": {"conditions": [{"field": "pct", "op": "between", "value": [-2, 0]}]},
+            "entry": {"conditions": []},
+            "exits": [{"when": {"conditions": [{"field": "pct", "op": "<=", "value": -3}]}, "reason": "止损"}],
+            "jev": {"notices": True, "news": True}}
+    sid, version = custom_store.save(conn, spec, yesterday, [yesterday, today])
+    assert sid == "c1"
+    Ledger(conn, init=False).ensure_account("c1_main", 20000)
+    Ledger(conn, init=False).ensure_account("c1_shadow", 20000)
+    conn.close()
+    api = make_api(paths)
+    s = api.status()
+    ids = [a["id"] for a in s["accounts"]]
+    assert "c1_main" in ids and "c1_shadow" in ids
+    main = next(a for a in s["accounts"] if a["id"] == "c1_main")
+    assert main["name"] == "尾盘弱转强·主(Jev)" and main["strategy"] == "c1"
+    assert main["strategy_name"] == "尾盘弱转强" and main["equity"] == 20000
 
 
 def test_status_background_true_when_another_handle_holds_runner_lock(paths):

@@ -5,9 +5,10 @@ from collections import deque
 from datetime import date, datetime
 from pathlib import Path
 
-from jevq import db, runlock
-from jevq.config import ACCOUNT_NAMES, ACCOUNT_STRATEGY, ACCOUNTS, DB_PATH, INITIAL_CASH, REPORT_DIR, STRATEGIES
-from jevq.data import board_events, tencent
+from jevq import accounts as accounts_mod
+from jevq import config, db, runlock
+from jevq.config import DB_PATH, INITIAL_CASH, REPORT_DIR, STRATEGIES
+from jevq.data import board_events, custom_store, tencent
 from jevq.ledger import Ledger
 
 REPORT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
@@ -83,8 +84,15 @@ class Api:
         conn = db.connect_readonly(self._db_path)
         try:
             ledger = Ledger(conn, init=False)
+            today = date.today()
+            account_list = accounts_mod.all_accounts(conn, today)
+            account_names = accounts_mod.account_names(conn, today)
+            account_strategy = accounts_mod.account_strategy(conn, today)
+            strategy_names = dict({sid: s["name"] for sid, s in STRATEGIES.items()})
+            for s in custom_store.active_for(conn, today) + custom_store.holders(conn, today):
+                strategy_names[s["id"]] = s["name"]
             prices = dict(self._state.get("prices") or {})
-            held = {p.code for a in ACCOUNTS for p in ledger.positions(a)}
+            held = {p.code for a in account_list for p in ledger.positions(a)}
             missing = sorted(held - prices.keys())
             quotes = {}
             if missing:
@@ -94,7 +102,8 @@ class Api:
                 except Exception as e:
                     self._log(f"持仓行情获取失败：{e}")
             names = self._lookup_names(held, quotes)
-            accounts = [self._account(ledger, a, prices, names) for a in ACCOUNTS]
+            accounts = [self._account(ledger, a, prices, names, account_names, account_strategy, strategy_names)
+                       for a in account_list]
         finally:
             conn.close()
         running = self.is_running()
@@ -106,8 +115,9 @@ class Api:
                 "warning": self._state.get("warning"), "board_watch": self._state.get("board_watch") or [],
                 "today": date.today().isoformat(), "accounts": accounts}
 
-    def _account(self, ledger: Ledger, account: str, prices: dict[str, float],
-                names: dict[str, str]) -> dict:
+    def _account(self, ledger: Ledger, account: str, prices: dict[str, float], names: dict[str, str],
+                account_names: dict[str, str], account_strategy: dict[str, str],
+                strategy_names: dict[str, str]) -> dict:
         value = ledger.equity(account, prices)
         positions = []
         for p in ledger.positions(account):
@@ -116,21 +126,22 @@ class Api:
                               "buy_price": p.buy_price,
                               "buy_date": p.buy_date.isoformat(), "price": price,
                               "pnl_pct": None if price is None else round((price / p.buy_price - 1) * 100, 2)})
-        strategy = ACCOUNT_STRATEGY[account]
-        return {"id": account, "name": ACCOUNT_NAMES[account], "equity": value,
+        strategy = account_strategy.get(account, "")
+        return {"id": account, "name": account_names.get(account, account), "equity": value,
                 "cash": round(ledger.cash(account), 2),
                 "return_pct": round((value / INITIAL_CASH - 1) * 100, 2), "positions": positions,
-                "strategy": strategy, "strategy_name": STRATEGIES[strategy]["name"]}
+                "strategy": strategy, "strategy_name": strategy_names.get(strategy, strategy)}
 
     def fills(self, day: str) -> list[dict]:
         conn = db.connect_readonly(self._db_path)
         try:
             fills = Ledger(conn, init=False).fills_on(date.fromisoformat(day))
+            account_names = accounts_mod.account_names(conn, date.today())
         finally:
             conn.close()
         names = self._lookup_names({f.code for f in fills})
-        return [{"time": f.ts.strftime("%H:%M"), "account": ACCOUNT_NAMES[f.account], "code": f.code,
-                 "name": names[f.code],
+        return [{"time": f.ts.strftime("%H:%M"), "account": account_names.get(f.account, f.account),
+                 "code": f.code, "name": names[f.code],
                  "side": "买" if f.side == "buy" else "卖", "price": f.price, "shares": f.shares,
                  "fee": f.fee, "reason": f.reason}
                 for f in fills]
@@ -181,11 +192,15 @@ class Api:
         conn = db.connect_readonly(self._db_path)
         try:
             rows = conn.execute("SELECT date, account, value FROM equity ORDER BY date").fetchall()
+            custom_ids = conn.execute("SELECT DISTINCT id FROM custom_strategies").fetchall()
         finally:
             conn.close()
-        out: dict[str, list] = {a: [] for a in ACCOUNTS}
+        accounts = list(config.builtin_accounts())
+        for (sid,) in custom_ids:
+            accounts += [f"{sid}_main", f"{sid}_shadow"]
+        out: dict[str, list] = {a: [] for a in accounts}
         for d, a, v in rows:
-            out[a].append([d, v])
+            out.setdefault(a, []).append([d, v])
         return out
 
     def reports(self) -> list[str]:

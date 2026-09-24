@@ -20,6 +20,28 @@ def test_migrates_old_schema(tmp_path):
     db.connect(path)                                   # 再次连接不报错（迁移幂等）
 
 
+def test_custom_strategies_table_and_version_columns_created(tmp_path):
+    conn = db.connect(str(tmp_path / "n.sqlite"))
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(custom_strategies)")}
+    assert cols == {"id", "version", "name", "spec", "created", "active_from", "enabled"}
+    assert "version" in {r[1] for r in conn.execute("PRAGMA table_info(fills)")}
+    assert "version" in {r[1] for r in conn.execute("PRAGMA table_info(decisions)")}
+
+
+def test_migrates_old_schema_adds_version_columns(tmp_path):
+    path = str(tmp_path / "old2.sqlite")
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE fills(id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT, code TEXT, "
+               "side TEXT, price REAL, shares INTEGER, fee REAL, ts TEXT, reason TEXT)")
+    old.execute("CREATE TABLE decisions(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, code TEXT, "
+               "verdict TEXT, detail TEXT)")
+    old.commit()
+    old.close()
+    conn = db.connect(path)
+    assert "version" in {r[1] for r in conn.execute("PRAGMA table_info(fills)")}
+    assert "version" in {r[1] for r in conn.execute("PRAGMA table_info(decisions)")}
+
+
 def test_file_db_uses_wal(tmp_path):
     conn = db.connect(str(tmp_path / "w.sqlite"))
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"

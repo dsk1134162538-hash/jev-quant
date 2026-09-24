@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
 from jevq.config import (ACCOUNTS, MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE,
@@ -15,9 +16,14 @@ class Engine:
                  market_judge, fetch_quotes, fetch_pools, universe: dict[str, str],
                  ret5: dict[str, float], prev_day: date, overseas: str | None,
                  overseas_trace: dict | None = None,
-                 accounts: tuple[str, str] = STRATEGIES["lowbuy"]["accounts"]):
+                 accounts: tuple[str, str] = STRATEGIES["lowbuy"]["accounts"],
+                 accounts_provider: Callable[[], tuple[str, ...]] | None = None):
         self.conn, self.ledger = conn, ledger
         self.accounts = accounts
+        # 持仓代码（_fetch 用来决定该拉哪些行情）要看全部账户，不只是本策略自己那两个；
+        # 默认取内置四个账户，保证低吸这条主线的行为不变。自定义策略跑起来后由调用方
+        # 注入一个能看到「今天在跑」账户全集的 provider（见 jevq.accounts.all_accounts）。
+        self.accounts_provider = accounts_provider or (lambda: ACCOUNTS)
         self.notice_judge, self.news_judge, self.market_judge = notice_judge, news_judge, market_judge
         self.fetch_quotes, self.fetch_pools = fetch_quotes, fetch_pools
         self.universe, self.ret5, self.prev_day, self.overseas = universe, ret5, prev_day, overseas
@@ -59,7 +65,7 @@ class Engine:
         self._rejected_day = day
 
     def _fetch(self, now: datetime) -> dict[str, Quote] | None:
-        held = {p.code for a in ACCOUNTS for p in self.ledger.positions(a)}
+        held = {p.code for a in self.accounts_provider() for p in self.ledger.positions(a)}
         try:
             quotes = self.fetch_quotes(sorted(set(self.universe) | held))
         except Exception as e:

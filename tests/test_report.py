@@ -2,6 +2,7 @@ from datetime import date, datetime
 
 from factories import quote
 from jevq import db
+from jevq.data import custom_store
 from jevq.ledger import Ledger
 from jevq.report import write_report
 
@@ -53,6 +54,25 @@ def test_report_shows_names(tmp_path):
     assert "| 600001 | 股票甲 |" in text
     assert "| 600002 | 股票乙 |" in text
     assert "600001 股票甲" in text                   # 持仓列
+
+
+def test_report_includes_active_custom_strategy_account_and_name(tmp_path):
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    day = date(2026, 9, 24)
+    spec = {"name": "尾盘弱转强", "capital": 30000,
+            "select": {"conditions": [{"field": "pct", "op": "between", "value": [-2, 0]}]},
+            "entry": {"conditions": []},
+            "exits": [{"when": {"conditions": [{"field": "pct", "op": "<=", "value": -3}]}, "reason": "止损"}],
+            "jev": {"notices": True, "news": True}}
+    custom_store.save(conn, spec, date(2026, 9, 23), [date(2026, 9, 23), day], sid=None)
+    ledger.ensure_account("c1_main", 30000)
+    ledger.ensure_account("c1_shadow", 30000)
+    text = write_report(conn, ledger, day, {}, "中性", "正常", tmp_path).read_text(encoding="utf-8")
+    assert "### 尾盘弱转强" in text
+    assert "尾盘弱转强·主(Jev)" in text and "尾盘弱转强·影子" in text
+    # 内置两个策略 + 新增的自定义策略各两个账户 = 6 条净值记录
+    assert conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0] == 6
 
 
 def test_report_check_table_has_strategy_column(tmp_path):

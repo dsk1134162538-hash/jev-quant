@@ -6,8 +6,9 @@ from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
+from jevq import accounts as accounts_mod
 from jevq import db, notify_content
-from jevq.config import ACCOUNT_NAMES, ACCOUNTS, DB_PATH, REPORT_DIR
+from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
 from jevq.data import akdata, board_events, closes, concepts, tencent
 from jevq.data.notice_store import sync_notices
 from jevq.engine import Engine
@@ -83,8 +84,8 @@ def ran_on(conn, day: date) -> bool:
                         (f"{day.isoformat()}%",)).fetchone() is not None
 
 
-def held_codes(ledger: Ledger) -> list[str]:
-    return sorted({p.code for a in ACCOUNTS for p in ledger.positions(a)})
+def held_codes(ledger: Ledger, day: date) -> list[str]:
+    return sorted({p.code for a in accounts_mod.all_accounts(ledger.conn, day) for p in ledger.positions(a)})
 
 
 def run_day(once: bool = False, stop: threading.Event | None = None,
@@ -112,15 +113,16 @@ def run_day(once: bool = False, stop: threading.Event | None = None,
 def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None],
              state: dict, notifier: Notifier) -> Path | None:
     ledger = Ledger(conn)
+    today = now().date()
+    acct_names = accounts_mod.account_names(conn, today)
     sell_only = False
     key = os.environ.get("TYPESAFE_API_KEY")
     if not key:
-        if not held_codes(ledger):
+        if not held_codes(ledger, today):
             raise RuntimeError("缺少环境变量 TYPESAFE_API_KEY")
         log("缺少环境变量 TYPESAFE_API_KEY，但有持仓需要卖出")
         sell_only = True
 
-    today = now().date()
     calendar_fallback = False
     try:
         days = akdata.trade_days()
@@ -265,8 +267,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         t = now()
         fills = _safe_tick(engine, conn, t, log)
         board_fills = _safe_board_minute(board, _fresh_quotes(engine, t), t, conn, log) if board is not None else []
-        _notify_fills(notifier, conn, fills, state["names"], log)
-        _notify_fills(notifier, conn, board_fills, state["names"], log)
+        _notify_fills(notifier, conn, fills, state["names"], log, acct_names)
+        _notify_fills(notifier, conn, board_fills, state["names"], log, acct_names)
         state.update(sentiment=engine.sentiment_label, prices={c: q.price for c, q in engine.last_quotes.items()})
         if board is not None:
             state["board_watch"] = _board_watch_state(board, state["names"])
@@ -288,10 +290,10 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             state["phase"] = "盘中"
             tick_fills = _safe_tick(engine, conn, t, log)
             _log_fills(tick_fills, log)
-            _notify_fills(notifier, conn, tick_fills, state["names"], log)
+            _notify_fills(notifier, conn, tick_fills, state["names"], log, acct_names)
             board_fills = _safe_board_minute(board, _fresh_quotes(engine, t), t, conn, log)
             _log_fills(board_fills, log)
-            _notify_fills(notifier, conn, board_fills, state["names"], log)
+            _notify_fills(notifier, conn, board_fills, state["names"], log, acct_names)
             if getattr(engine, "halted", False):
                 notifier.once("halted", "⚠️ 模拟盘提醒", "行情连续失败，今日暂停开新仓，卖出照常")
             state.update(sentiment=engine.sentiment_label,
@@ -310,7 +312,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
 
     prices = {c: q.price for c, q in engine.last_quotes.items()}
     names = dict(universe)
-    held = held_codes(ledger)
+    held = held_codes(ledger, today)
     close_codes = sorted(set(universe) | set(held))
     quotes: dict = {}
     if close_codes:
@@ -345,7 +347,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         return None
     finally:
         state["phase"] = "已收盘"
-    log(f"复盘报告 {path}；" + "，".join(f"{a} {ledger.equity(a, prices):,.2f}" for a in ACCOUNTS))
+    report_accounts = accounts_mod.all_accounts(conn, today)
+    log(f"复盘报告 {path}；" + "，".join(f"{a} {ledger.equity(a, prices):,.2f}" for a in report_accounts))
     _notify_close_summary(notifier, ledger, today, prices, log)
     return path
 
@@ -360,19 +363,22 @@ def _notify_close_summary(notifier: Notifier, ledger: Ledger, today: date, price
 
 
 def _notify_fills(notifier: Notifier, conn, fills: list, names: dict,
-                  log: Callable[[str], None]) -> None:
-    """成交推送：只推主账户（main / board_main），影子账户不推。任何问题只记日志，不影响交易。
-    正文明细的构建都在 jevq.notify_content 里，这里只是薄薄一层：拼标题、挑账户、兜底记日志。"""
+                  log: Callable[[str], None], account_names: dict | None = None) -> None:
+    """成交推送：只推各策略的主账户（main / board_main / c{n}_main），影子账户不推。
+    任何问题只记日志，不影响交易。正文明细的构建都在 jevq.notify_content 里，这里只是薄薄一层：
+    拼标题、挑账户、兜底记日志。"""
+    account_names = account_names or ACCOUNT_NAMES
     for f in fills:
-        if f.account not in ("main", "board_main"):
+        if f.account != "main" and not f.account.endswith("_main"):
             continue
         try:
             stock_name = names.get(f.code, f.code)
+            account_label = account_names.get(f.account, f.account)
             if f.side == "buy":
-                title = f"【{ACCOUNT_NAMES[f.account]} 买入】{stock_name} @{f.price}"
+                title = f"【{account_label} 买入】{stock_name} @{f.price}"
                 content = notify_content.buy_push_content(conn, f, stock_name)
             else:
-                title = f"【{ACCOUNT_NAMES[f.account]} 卖出】{stock_name} @{f.price}"
+                title = f"【{account_label} 卖出】{stock_name} @{f.price}"
                 content = notify_content.sell_push_content(conn, f, stock_name)
             notifier.send(title, content)
         except Exception as e:
@@ -451,7 +457,7 @@ def _fast_scan(board: BoardStrategy, stop: threading.Event, log: Callable[[str],
         try:
             fast_fills = board.on_fast(now())
             _log_fills(fast_fills, log, "%H:%M:%S")
-            _notify_fills(notifier, conn, fast_fills, state.get("names", {}), log)
+            _notify_fills(notifier, conn, fast_fills, state.get("names", {}), log, acct_names)
         except Exception as e:
             log(f"扫板出错：{e!r}")
         state["board_watch"] = _board_watch_state(board, state.get("names", {}))

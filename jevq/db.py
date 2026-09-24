@@ -26,11 +26,15 @@ CREATE TABLE IF NOT EXISTS concepts(code TEXT, concept TEXT, updated TEXT, PRIMA
 CREATE TABLE IF NOT EXISTS board_events(
   date TEXT, code TEXT, name TEXT, first_seal TEXT, bucket TEXT, concept TEXT,
   next_open_pct REAL, next_close_pct REAL, next_board INTEGER, PRIMARY KEY(date, code));
+CREATE TABLE IF NOT EXISTS custom_strategies(
+  id TEXT, version INTEGER, name TEXT, spec TEXT, created TEXT, active_from TEXT, enabled INTEGER,
+  PRIMARY KEY(id, version));
 """
 
 
 MIGRATIONS = [("decisions", "trace", "TEXT"), ("notice_verdicts", "probs", "TEXT"),
-              ("decisions", "strategy", "TEXT")]
+              ("decisions", "strategy", "TEXT"), ("fills", "version", "INTEGER"),
+              ("decisions", "version", "INTEGER")]
 
 
 def _migrate(conn: sqlite3.Connection):

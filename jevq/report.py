@@ -2,8 +2,20 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 
-from jevq.config import ACCOUNT_NAMES, INITIAL_CASH, REPORT_DIR, STRATEGIES
+from jevq import accounts as accounts_mod
+from jevq.config import INITIAL_CASH, REPORT_DIR, STRATEGIES
+from jevq.data import custom_store
 from jevq.ledger import Ledger
+
+
+def _strategy_groups(conn: sqlite3.Connection, day: date) -> tuple[list[dict], dict[str, str]]:
+    """净值表按策略分组的账户列表，以及策略 id -> 名称（含自定义策略，供检查记录表用）。"""
+    groups = [{"name": s["name"], "accounts": s["accounts"]} for s in STRATEGIES.values()]
+    labels = {sid: s["name"] for sid, s in STRATEGIES.items()}
+    for s in custom_store.active_for(conn, day) + custom_store.holders(conn, day):
+        labels[s["id"]] = s["name"]
+        groups.append({"name": s["name"], "accounts": (f"{s['id']}_main", f"{s['id']}_shadow")})
+    return groups, labels
 
 
 def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: dict[str, float],
@@ -11,18 +23,20 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
                  names: dict[str, str] | None = None) -> Path:
     names = names or {}
     fills = ledger.fills_on(day)
+    account_names = accounts_mod.account_names(conn, day)
+    groups, strategy_labels = _strategy_groups(conn, day)
     lines = [f"# 复盘 {day.isoformat()}", "",
              f"外围：{overseas or '未知'}　情绪：{sentiment or '未知'}", "",
              "## 净值"]
-    for strategy in STRATEGIES.values():
-        lines += ["", f"### {strategy['name']}", "",
+    for group in groups:
+        lines += ["", f"### {group['name']}", "",
                   "| 账户 | 净值 | 累计收益 | 今日费用 | 持仓 |", "|---|---|---|---|---|"]
-        for a in strategy["accounts"]:
+        for a in group["accounts"]:
             value = ledger.equity(a, prices)
             conn.execute("INSERT OR REPLACE INTO equity VALUES (?, ?, ?)", (day.isoformat(), a, value))
             fee = sum(f.fee for f in fills if f.account == a)
             held = "、".join(f"{p.code} {names.get(p.code, '')}".strip() for p in ledger.positions(a)) or "空仓"
-            lines.append(f"| {ACCOUNT_NAMES[a]} | {value:,.2f} | {(value / INITIAL_CASH - 1) * 100:+.2f}% "
+            lines.append(f"| {account_names.get(a, a)} | {value:,.2f} | {(value / INITIAL_CASH - 1) * 100:+.2f}% "
                          f"| {fee:.2f} | {held} |")
     conn.commit()
 
@@ -30,14 +44,14 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
               "|---|---|---|---|---|---|---|---|---|"]
     for f in fills:
         side = "买" if f.side == "buy" else "卖"
-        lines.append(f"| {f.ts:%H:%M} | {ACCOUNT_NAMES[f.account]} | {f.code} | {names.get(f.code, '')} | {side} | {f.price:.2f} "
+        lines.append(f"| {f.ts:%H:%M} | {account_names.get(f.account, f.account)} | {f.code} | {names.get(f.code, '')} | {side} | {f.price:.2f} "
                      f"| {f.shares} | {f.fee:.2f} | {f.reason} |")
 
     rows = conn.execute("SELECT ts, strategy, code, verdict, detail FROM decisions "
                         "WHERE substr(ts, 1, 10)=? AND code != '' ORDER BY id",
                         (day.isoformat(),)).fetchall()
     lines += ["", "## 主账户检查记录", "", "| 时间 | 策略 | 代码 | 名称 | 结果 | 原因 |", "|---|---|---|---|---|---|"]
-    lines += [f"| {ts[11:16]} | {STRATEGIES.get(sid or 'lowbuy', {}).get('name', sid)} | {code} "
+    lines += [f"| {ts[11:16]} | {strategy_labels.get(sid or 'lowbuy', sid or 'lowbuy')} | {code} "
               f"| {names.get(code, '')} | {verdict} | {detail} |" for ts, sid, code, verdict, detail in rows]
 
     bucket_rows = conn.execute(
