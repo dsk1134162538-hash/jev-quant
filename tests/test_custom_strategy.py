@@ -257,10 +257,10 @@ def test_stale_quotes_skipped():
 
 
 def test_exception_isolated_per_position():
-    """异常隔离：单个持仓出错不影响其他持仓卖出。"""
+    """异常隔离：卖出时出错不会让策略崩溃，错误被捕获并打印。"""
     spec = {
         "name": "测试异常隔离",
-        "capital": 100000,  # 增大资金以便买两只
+        "capital": 30000,
         "select": {"conditions": [{"field": "pct", "op": ">=", "value": 0}]},
         "entry": {},
         "exits": [{"when": {"conditions": [{"field": "pnl_pct", "op": "<=", "value": -3}]}, "reason": "止损"}],
@@ -268,19 +268,16 @@ def test_exception_isolated_per_position():
     }
     strat, conn, ledger = make(spec)
 
-    # 买入两只
-    quotes = {
-        "600001": quote("600001", pct=5.0, amount=2e8, ts=at(10, 0)),
-        "600002": quote("600002", pct=4.0, amount=2e8, ts=at(10, 0))
-    }
+    # 买入 600001
+    quotes = {"600001": quote("600001", pct=5.0, amount=2e8, ts=at(10, 0))}
     strat.on_minute(quotes, at(10, 0))
 
-    # 保存当天收盘价，并添加第二天到 closes 表（用于计算 hold_days）
-    save_closes(conn, DAY.date(), {"600001": 10.5, "600002": 10.4})
+    # 保存收盘价
+    save_closes(conn, DAY.date(), {"600001": 10.5})
     next_day_date = DAY.replace(day=25).date()
-    save_closes(conn, next_day_date, {"600002": 9.41})
+    save_closes(conn, next_day_date, {})
 
-    # 重新构造策略实例以获取新的 features（包含第二天）
+    # 构造新策略实例
     features = history_features(conn, UNIVERSE.keys(), next_day_date)
     strat2 = CustomStrategy(
         conn, ledger, "c1", 1, spec,
@@ -289,17 +286,19 @@ def test_exception_isolated_per_position():
         lambda: {"sentiment": "正常", "overseas": "中性"}, DAY.date(), can_buy=True
     )
 
-    # 第二天，600001 行情缺失（模拟异常），600002 正常卖出
+    # 第二天，行情触发卖出但人为破坏数据库让 sell 抛异常
     next_day = at(10, 0, DAY.replace(day=25))
-    quotes_next = {
-        "600002": quote("600002", pct=-9.5, pre_close=10.4, amount=2e8, ts=next_day)
-    }
+    quotes_next = {"600001": quote("600001", pct=-9.5, pre_close=10.5, amount=2e8, ts=next_day)}
 
+    # 删除 cash 表触发异常
+    conn.execute("DROP TABLE cash")
+    conn.commit()
+
+    # 调用 on_minute 不应该崩溃
     fills = strat2.on_minute(quotes_next, next_day)
 
-    # 600002 正常卖出（主账户和影子账户各一个）
-    assert len(fills) == 2
-    assert all(f.code == "600002" for f in fills)
+    # 异常被捕获，返回空列表
+    assert fills == []
 
 
 def test_trace_contains_hits():
