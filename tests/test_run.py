@@ -1,3 +1,4 @@
+import threading
 from collections import Counter
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -10,8 +11,9 @@ from factories import quote
 from jevq import db
 from jevq.data import board_events as be
 from jevq.ledger import Ledger
+from jevq.models import Fill
 from jevq.notify import Notifier
-from jevq.rules.board import Candidate
+from jevq.rules.board import SCAN_WINDOWS, Candidate
 from jevq.runlock import hold_run_lock
 from jevq.strategies.board import BoardStrategy as RealBoardStrategy
 
@@ -632,6 +634,46 @@ def test_on_fast_exception_is_isolated_and_ticks_continue(env):
     assert len(SpyBoard.fast_call_times) > 1        # 炸完之后循环继续跑，不是就此死掉
     assert len(FakeEngine.instances[0].ticks) == 240
     assert path is not None
+
+
+def test_fast_scan_pushes_board_main_fill_and_does_not_log_error(monkeypatch):
+    """回归测试：_fast_scan 曾经把 acct_names 当成 _run_day 的局部变量直接用，实际上它不在
+    _fast_scan 的作用域里，一 NameError 就被 except 吞掉，扫板成交推送悄悄丢失（只在日志里
+    看得到，桌面面板和微信都收不到）。这里直接单测 _fast_scan：board_main 的成交必须真的
+    推送出去，并且不能出现「扫板出错」日志。"""
+    monkeypatch.setattr(run, "now", lambda: datetime(2026, 9, 23, 10, 0, 0))
+    monkeypatch.setattr(run, "_tick_wait", lambda seconds, stop: False)
+
+    calls = {"n": 0}
+
+    class FakeBoard:
+        windows = SCAN_WINDOWS
+        watch = {"600001": object()}
+
+        def has_watch(self):
+            calls["n"] += 1
+            return calls["n"] == 1          # 只在循环第一轮进 on_fast，第二轮退出循环
+
+        def on_fast(self, now):
+            return [Fill("board_main", "600001", "buy", 10.0, 1000, 5.0, now, "扫板")]
+
+    class FakeNotifier:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, title, content):
+            self.sent.append((title, content))
+
+    conn = db.connect(":memory:")
+    logs: list[str] = []
+    notifier = FakeNotifier()
+    acct_names = {"board_main": "首板·主(Jev)"}
+    stopped = run._fast_scan(FakeBoard(), threading.Event(), logs.append, {"names": {"600001": "甲"}},
+                             notifier, conn, acct_names)
+    assert stopped is False
+    assert not any("扫板出错" in line for line in logs)          # acct_names NameError 不再发生
+    assert len(notifier.sent) == 1
+    assert notifier.sent[0][0] == "【首板·主(Jev) 买入】甲 @10.0"
 
 
 def test_once_mode_shares_same_t_for_engine_and_board_tick(env, monkeypatch):

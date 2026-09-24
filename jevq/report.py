@@ -3,18 +3,19 @@ from datetime import date
 from pathlib import Path
 
 from jevq import accounts as accounts_mod
-from jevq.config import INITIAL_CASH, REPORT_DIR, STRATEGIES
+from jevq.config import REPORT_DIR, STRATEGIES
 from jevq.data import custom_store
 from jevq.ledger import Ledger
 
 
 def _strategy_groups(conn: sqlite3.Connection, day: date) -> tuple[list[dict], dict[str, str]]:
-    """净值表按策略分组的账户列表，以及策略 id -> 名称（含自定义策略，供检查记录表用）。"""
-    groups = [{"name": s["name"], "accounts": s["accounts"]} for s in STRATEGIES.values()]
+    """净值表按策略分组的账户列表（含策略 id，用来查净值基准），以及策略 id -> 名称
+    （含自定义策略，供检查记录表用）。"""
+    groups = [{"id": sid, "name": s["name"], "accounts": s["accounts"]} for sid, s in STRATEGIES.items()]
     labels = {sid: s["name"] for sid, s in STRATEGIES.items()}
     for s in custom_store.active_for(conn, day) + custom_store.holders(conn, day):
         labels[s["id"]] = s["name"]
-        groups.append({"name": s["name"], "accounts": (f"{s['id']}_main", f"{s['id']}_shadow")})
+        groups.append({"id": s["id"], "name": s["name"], "accounts": (f"{s['id']}_main", f"{s['id']}_shadow")})
     return groups, labels
 
 
@@ -29,6 +30,7 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
              f"外围：{overseas or '未知'}　情绪：{sentiment or '未知'}", "",
              "## 净值"]
     for group in groups:
+        baseline = accounts_mod.capital_baseline(conn, group["id"])
         lines += ["", f"### {group['name']}", "",
                   "| 账户 | 净值 | 累计收益 | 今日费用 | 持仓 |", "|---|---|---|---|---|"]
         for a in group["accounts"]:
@@ -36,7 +38,7 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
             conn.execute("INSERT OR REPLACE INTO equity VALUES (?, ?, ?)", (day.isoformat(), a, value))
             fee = sum(f.fee for f in fills if f.account == a)
             held = "、".join(f"{p.code} {names.get(p.code, '')}".strip() for p in ledger.positions(a)) or "空仓"
-            lines.append(f"| {account_names.get(a, a)} | {value:,.2f} | {(value / INITIAL_CASH - 1) * 100:+.2f}% "
+            lines.append(f"| {account_names.get(a, a)} | {value:,.2f} | {(value / baseline - 1) * 100:+.2f}% "
                          f"| {fee:.2f} | {held} |")
     conn.commit()
 

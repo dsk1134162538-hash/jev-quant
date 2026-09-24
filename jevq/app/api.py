@@ -7,7 +7,7 @@ from pathlib import Path
 
 from jevq import accounts as accounts_mod
 from jevq import config, db, runlock
-from jevq.config import DB_PATH, INITIAL_CASH, REPORT_DIR, STRATEGIES
+from jevq.config import DB_PATH, REPORT_DIR, STRATEGIES
 from jevq.data import board_events, custom_store, tencent
 from jevq.ledger import Ledger
 
@@ -127,9 +127,10 @@ class Api:
                               "buy_date": p.buy_date.isoformat(), "price": price,
                               "pnl_pct": None if price is None else round((price / p.buy_price - 1) * 100, 2)})
         strategy = account_strategy.get(account, "")
+        baseline = accounts_mod.capital_baseline(ledger.conn, strategy)
         return {"id": account, "name": account_names.get(account, account), "equity": value,
                 "cash": round(ledger.cash(account), 2),
-                "return_pct": round((value / INITIAL_CASH - 1) * 100, 2), "positions": positions,
+                "return_pct": round((value / baseline - 1) * 100, 2), "positions": positions,
                 "strategy": strategy, "strategy_name": strategy_names.get(strategy, strategy)}
 
     def fills(self, day: str) -> list[dict]:

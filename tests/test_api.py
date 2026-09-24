@@ -1,11 +1,10 @@
 import json
 import threading
+from datetime import date as _date
 from datetime import datetime
 from pathlib import Path
 
 import pytest
-
-from datetime import date as _date
 
 from factories import quote
 from jevq import db
@@ -253,6 +252,9 @@ def test_status_includes_active_custom_strategy_accounts(paths):
     main = next(a for a in s["accounts"] if a["id"] == "c1_main")
     assert main["name"] == "尾盘弱转强·主(Jev)" and main["strategy"] == "c1"
     assert main["strategy_name"] == "尾盘弱转强" and main["equity"] == 20000
+    # 净值基准是这个策略自己冻结的资金（20000），不是内置策略的 INITIAL_CASH（30000）；
+    # 空仓时净值等于本金，收益率必须是 0，不能因为拿错基准变成 (20000/30000-1) 这种负数。
+    assert main["return_pct"] == 0.0
 
 
 def test_status_background_true_when_another_handle_holds_runner_lock(paths):

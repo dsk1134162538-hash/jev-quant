@@ -67,15 +67,16 @@ def test_new_version_not_active_until_next_trade_day():
 
 def test_disable_writes_enabled_zero_version_effective_next_trade_day():
     c = conn()
-    sid, v1 = custom_store.save(c, spec(), TODAY, DAYS)
-    active_from_v1 = date(2026, 9, 24)
-    v2 = custom_store.disable(c, sid, TODAY, DAYS)
-    assert v2 == v1 + 1
-    # 停用生效前（9-24 当天）还能正常开新仓
-    assert custom_store.active_for(c, active_from_v1) == []          # 立刻查询 today=9-23 时还没到 active_from
+    sid, v1 = custom_store.save(c, spec(), TODAY, DAYS)              # v1 的 active_from 是 9-24
+    day_v1_active = date(2026, 9, 24)
+    v2, errors = custom_store.disable(c, sid, day_v1_active, DAYS)    # 停用发生在 v1 已经在跑的那天
+    assert errors == [] and v2 == v1 + 1
     row = c.execute("SELECT enabled, active_from FROM custom_strategies WHERE id=? AND version=?",
                     (sid, v2)).fetchone()
-    assert row == (0, "2026-09-24")
+    assert row == (0, "2026-09-25")
+    # 停用生效前（v1 在跑的当天）还照常开新仓；到停用的 active_from 那天才不再出现在 active_for 里。
+    assert [s["version"] for s in custom_store.active_for(c, day_v1_active)] == [v1]
+    assert custom_store.active_for(c, date(2026, 9, 25)) == []
 
 
 def test_disabled_but_still_holding_returned_by_holders_with_can_buy_false():
@@ -91,7 +92,7 @@ def test_disabled_but_still_holding_returned_by_holders_with_can_buy_false():
     assert custom_store.active_for(c, disabled_day) == []          # 停用生效，不再开新仓
     held = custom_store.holders(c, disabled_day)
     assert len(held) == 1
-    assert held[0]["id"] == sid and held[0]["can_buy"] is False
+    assert held[0]["id"] == sid and held[0]["version"] == 1 and held[0]["can_buy"] is False
 
 
 def test_holders_excludes_ids_without_positions():
@@ -121,8 +122,46 @@ def test_history_returns_all_versions_in_order():
     assert hist[2]["enabled"] is False
 
 
-def test_save_with_no_future_trade_day_raises():
+def test_save_with_no_future_trade_day_returns_error_instead_of_raising():
     c = conn()
-    import pytest
-    with pytest.raises(ValueError):
-        custom_store.save(c, spec(), date(2026, 9, 29), DAYS)     # 传入的交易日列表里没有更晚的日子
+    sid, errors = custom_store.save(c, spec(), date(2026, 9, 29), DAYS)   # 交易日列表里没有更晚的日子
+    assert sid is None and errors
+    assert c.execute("SELECT COUNT(*) FROM custom_strategies").fetchone()[0] == 0
+
+
+def test_disable_with_no_future_trade_day_returns_error_instead_of_raising():
+    c = conn()
+    sid, _ = custom_store.save(c, spec(), TODAY, DAYS)
+    version, errors = custom_store.disable(c, sid, date(2026, 9, 29), DAYS)
+    assert version is None and errors
+
+
+def test_disable_unknown_strategy_returns_error_instead_of_raising():
+    c = conn()
+    version, errors = custom_store.disable(c, "c99", TODAY, DAYS)
+    assert version is None and errors == ["未知策略 c99"]
+
+
+def test_save_rejects_capital_change_on_existing_strategy():
+    c = conn()
+    sid, _ = custom_store.save(c, spec(capital=30000), TODAY, DAYS)
+    new_sid, errors = custom_store.save(c, spec(capital=20000), TODAY, DAYS, sid=sid)
+    assert new_sid is None
+    assert errors == [custom_store.CAPITAL_FROZEN_ERROR]
+    # 没有写入新版本
+    assert [h["version"] for h in custom_store.history(c, sid)] == [1]
+
+
+def test_save_allows_unchanged_capital_on_existing_strategy():
+    c = conn()
+    sid, v1 = custom_store.save(c, spec(capital=30000), TODAY, DAYS)
+    sid2, v2 = custom_store.save(c, spec(name="改名", capital=30000), TODAY, DAYS, sid=sid)
+    assert sid2 == sid and v2 == v1 + 1
+
+
+def test_capital_of_returns_version_one_capital_and_none_for_unknown():
+    c = conn()
+    sid, _ = custom_store.save(c, spec(capital=25000), TODAY, DAYS)
+    custom_store.save(c, spec(name="改名", capital=25000), TODAY, DAYS, sid=sid)  # 版本 2，资金不变
+    assert custom_store.capital_of(c, sid) == 25000
+    assert custom_store.capital_of(c, "c99") is None

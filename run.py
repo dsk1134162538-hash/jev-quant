@@ -303,7 +303,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             state["phase"] = "休市等待"
 
         if _should_fast_scan(board, now().time()):
-            stopped = _fast_scan(board, stop, log, state, notifier, conn)
+            stopped = _fast_scan(board, stop, log, state, notifier, conn, acct_names)
         else:
             stopped = stop.wait(seconds_to_next_minute())
         if stopped:
@@ -433,7 +433,7 @@ def _should_fast_scan(board: BoardStrategy | None, t: time) -> bool:
 
 
 def _fast_scan(board: BoardStrategy, stop: threading.Event, log: Callable[[str], None],
-               state: dict, notifier: Notifier, conn) -> bool:
+               state: dict, notifier: Notifier, conn, acct_names: dict | None = None) -> bool:
     """观察池非空时的 3 秒扫板循环。返回是否被 stop 打断。
 
     边界在进入时算死一次（deadline = 现在 + seconds_to_next_minute()，带着 :02 缓冲），
