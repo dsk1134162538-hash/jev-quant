@@ -9,7 +9,7 @@ from pathlib import Path
 from jevq import accounts as accounts_mod
 from jevq import config, db, notify_content
 from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
-from jevq.data import akdata, board_events, closes, concepts, custom_store, tencent
+from jevq.data import akdata, board_events, closes, concepts, custom_store, sell_followups, tencent
 from jevq.data.features import history_features
 from jevq.data.notice_store import sync_notices
 from jevq.engine import Engine
@@ -301,6 +301,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
 
     resynced = False
     last_tick_minute = None
+    after_sell = sell_followups.AfterSellTracker()     # 卖飞统计：盘中跟踪每笔卖出之后的最高价
     while now().time() < REPORT_AT:
         t = now()
         if not resynced and t.time() >= NOTICE_RESYNC_AT:
@@ -324,6 +325,10 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             custom_fills = _safe_custom_minute(customs, _fresh_quotes(engine, t), t, conn, log)
             _log_fills(custom_fills, log)
             _notify_fills(notifier, conn, custom_fills, state["names"], log, acct_names)
+            try:        # 卖飞统计：只记录，失败不影响交易
+                after_sell.update(conn, today, _fresh_quotes(engine, t))
+            except Exception as e:
+                log(f"卖飞跟踪失败：{e!r}")
             if getattr(engine, "halted", False):
                 notifier.once("halted", "⚠️ 模拟盘提醒", "行情连续失败，今日暂停开新仓，卖出照常")
             state.update(sentiment=engine.sentiment_label,
@@ -343,7 +348,12 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     prices = {c: q.price for c, q in engine.last_quotes.items()}
     names = dict(universe)
     held = held_codes(ledger, today)
-    close_codes = sorted(set(universe) | set(held))
+    try:
+        sold = sell_followups.codes_to_quote(conn, today, prev_day)
+    except Exception as e:
+        log(f"卖飞统计取代码失败：{e!r}")
+        sold = set()
+    close_codes = sorted(set(universe) | set(held) | sold)
     quotes: dict = {}
     if close_codes:
         try:
@@ -357,6 +367,13 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             log(f"收盘价刷新失败，沿用最后快照：{e!r}")
             quotes = {}
 
+    # 卖飞统计：只记录，不参与交易，失败不挡报告。晚启动（没跑盘中）拿不到卖后最高，只记收盘。
+    try:
+        filled = sell_followups.fill_next_day(conn, prev_day, quotes, today)
+        recorded = sell_followups.record_day(conn, today, quotes, after_sell.highs)
+        log(f"卖飞统计：回填 {filled} 笔，记录 {recorded} 笔")
+    except Exception as e:
+        log(f"卖飞统计失败：{e!r}")
     # 封板时段统计（spec §4.5）：只验证经验，不参与交易，任何一步失败都不能挡住报告写入。
     try:
         filled = board_events.fill_next_day(conn, prev_day, quotes, today)

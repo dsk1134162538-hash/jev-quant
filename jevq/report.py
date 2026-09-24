@@ -4,7 +4,7 @@ from pathlib import Path
 
 from jevq import accounts as accounts_mod
 from jevq.config import REPORT_DIR, STRATEGIES
-from jevq.data import custom_store
+from jevq.data import custom_store, sell_followups
 from jevq.ledger import Ledger
 
 
@@ -61,6 +61,18 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
         (day.isoformat(),)).fetchall()
     lines += ["", "## 今日首板时段分布", "", "| 时段 | 首板数 |", "|---|---|"]
     lines += [f"| {bucket} | {count} |" for bucket, count in bucket_rows] or ["| 无 | 0 |"]
+
+    followups = sell_followups.report_rows(conn, day)
+    if followups:
+        def pct(v, base):
+            return f"{(v / base - 1) * 100:+.2f}%" if v is not None and base else "—"
+        lines += ["", "## 卖飞回看", "",
+                  "相对卖出价：卖后当日最高 / 当日收盘 / 次日最高 / 次日收盘（只记录，不参与交易）", "",
+                  "| 卖出日 | 账户 | 代码 | 名称 | 原因 | 卖出价 | 卖后最高 | 当日收盘 | 次日最高 | 次日收盘 |",
+                  "|---|---|---|---|---|---|---|---|---|---|"]
+        lines += [f"| {d} | {account_names.get(a, a)} | {code} | {names.get(code, '')} | {reason} | {price:.2f} "
+                  f"| {pct(high, price)} | {pct(close, price)} | {pct(nhigh, price)} | {pct(nclose, price)} |"
+                  for d, a, code, reason, price, high, close, nhigh, nclose in followups]
 
     lines += ["", "> 成交价取分钟快照，开盘附近会比实盘略好。"]
 
