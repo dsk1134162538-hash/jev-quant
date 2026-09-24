@@ -10,6 +10,7 @@ from factories import quote
 from jevq import db
 from jevq.data import board_events as be
 from jevq.ledger import Ledger
+from jevq.notify import Notifier
 from jevq.rules.board import Candidate
 from jevq.runlock import hold_run_lock
 from jevq.strategies.board import BoardStrategy as RealBoardStrategy
@@ -128,6 +129,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "DB_PATH", str(dbp))
     monkeypatch.setattr(run, "REPORT_DIR", str(reports))
     monkeypatch.setenv("TYPESAFE_API_KEY", "k")
+    # 这台机器上真实跑着日常任务的守护进程，环境变量/注册表里可能有真的 PUSHPLUS_TOKEN；
+    # 测试永远不能真的发推送或联网，默认给一个禁用的假 Notifier，需要验证推送行为的测试
+    # 自己注入带假 post 的 Notifier（见 env.run(notifier=...)）。
+    monkeypatch.setattr(run, "notifier_from_env", lambda **kw: Notifier(None))
     clock = Clock(datetime(2026, 9, 23, 9, 29))
     monkeypatch.setattr(run, "now", clock.now)
     monkeypatch.setattr(run, "seconds_to_next_minute", clock.step)
