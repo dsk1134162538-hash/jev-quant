@@ -36,25 +36,29 @@ def history_features(conn, codes: Iterable[str], today: date) -> dict[str, dict]
     out: dict[str, dict] = {}
     for code in codes:
         vals = by_code.get(code, {})
-        c = [vals[d] for d in dates if d in vals]  # 该代码在这些日期上实际存在的收盘价，按日期升序
 
+        # ret_n：精确对上全局日期表里 N 个交易日前的那一天，那天没有行情就是缺失，
+        # 不用别的日期顶替（否则会把「N 天前」悄悄挪到别的交易日）。
         ret = {}
         for n in RET_NS:
-            if len(c) >= n + 1 and c[-1 - n]:
-                ret[n] = round((c[-1] / c[-1 - n] - 1) * 100, 2)
+            if len(dates) >= n + 1:
+                cur, prev = vals.get(dates[-1]), vals.get(dates[-1 - n])
+                if cur is not None and prev:
+                    ret[n] = round((cur / prev - 1) * 100, 2)
 
+        # ma_n：窗口内不要求逐日连续，凑够 n 个实际存在的收盘价就用它们的均值。
+        c = [vals[d] for d in dates if d in vals]  # 该代码在这些日期上实际存在的收盘价，按日期升序
         ma = {}
         for n in MA_NS:
             if len(c) >= n:
                 ma[n] = round(sum(c[-n:]) / n, 2)
 
-        # 相邻日对（缺日不跨比）：只在两天都有数据时才判断是否涨停
+        # 涨停标记：严格对齐全局相邻日期对（不压缩、不跳过），缺数据的那一对记为断点（False），
+        # 不跨过缺口比较——否则两段本不相连的涨停会被缺口“焊”成一条连板。
         flags: list[bool] = []
         for i in range(1, len(dates)):
             prev, cur = vals.get(dates[i - 1]), vals.get(dates[i])
-            if prev is None or cur is None:
-                continue
-            flags.append(cur >= round(prev * 1.1, 2))
+            flags.append(prev is not None and cur is not None and cur >= round(prev * 1.1, 2))
 
         limit_up = {n: any(flags[-n:]) for n in LIMIT_UP_NS}
 

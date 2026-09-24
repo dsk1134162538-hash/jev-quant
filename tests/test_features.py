@@ -103,3 +103,53 @@ def test_no_history_returns_empty_dict():
 def test_no_codes_returns_empty():
     c = conn()
     assert history_features(c, [], TODAY) == {}
+
+
+def test_boards_does_not_bridge_a_gap_between_two_streaks():
+    """涨停 3 个交易日前收尾，中间缺一天，昨天又收一次涨停：不能被数据缺口拼成一条连板。"""
+    c = conn()
+    dates = dates_before(TODAY, 21)
+    seed(c, "FILLER", dates, [10.0] * 21)  # 让这 21 个日期都出现在全局日期集合里
+
+    full = [10.0] * 17 + [11.00, 10.0, 10.0, 11.00]  # idx16=10.0(前收) idx17=11.00(涨停收尾)
+    #                                                    idx18 缺 idx19=10.0 idx20=11.00(涨停收尾)
+    own_dates = dates[:18] + dates[19:]
+    own_closes = full[:18] + full[19:]
+    seed(c, "600006", own_dates, own_closes)
+    feats = history_features(c, ["600006"], TODAY)["600006"]
+
+    assert feats["boards"] == 1                # 只算昨天收尾的这一条，不跟 3 天前的合并
+    assert feats["limit_up"][3] is True         # 最近 3 对里含昨天那次涨停
+    assert feats["limit_up"][5] is True         # 最近 5 对里，中间那对因缺数据算断点，不算涨停，但仍含昨天那次
+
+
+def test_ret_n_missing_when_exact_anchor_date_has_no_row():
+    """ret_n 要精确对上 N 个交易日前那一天；那天缺数据就算缺失，不用最近可得的收盘价顶替。"""
+    c = conn()
+    dates = dates_before(TODAY, 21)
+    seed(c, "FILLER", dates, [10.0] * 21)  # 让这 21 个日期都留在全局日期集合里
+    closes_full = [round(10.0 + i * 0.1, 2) for i in range(21)]
+    own_dates = dates[:15] + dates[16:]        # 缺 dates[15]，正好是 ret_5 的精确锚点
+    own_closes = closes_full[:15] + closes_full[16:]
+    seed(c, "600007", own_dates, own_closes)
+    feats = history_features(c, ["600007"], TODAY)["600007"]
+
+    assert 5 not in feats["ret"]
+    assert feats["ret"][3] == round((closes_full[20] / closes_full[17] - 1) * 100, 2)
+    assert feats["ret"][10] == round((closes_full[20] / closes_full[10] - 1) * 100, 2)
+    assert feats["ret"][20] == round((closes_full[20] / closes_full[0] - 1) * 100, 2)
+
+
+def test_ma_n_uses_available_closes_in_window_despite_a_gap():
+    """ma_n 不要求逐日连续，窗口内只要凑够 n 个实际存在的收盘价就算，用它们的均值。"""
+    c = conn()
+    dates = dates_before(TODAY, 21)
+    closes_full = [round(10.0 + i * 0.1, 2) for i in range(21)]
+    own_dates = dates[:18] + dates[19:]        # 缺 dates[18] 这一天
+    own_closes = closes_full[:18] + closes_full[19:]
+    seed(c, "600008", own_dates, own_closes)
+    feats = history_features(c, ["600008"], TODAY)["600008"]
+
+    assert feats["ma"][5] == round(sum(own_closes[-5:]) / 5, 2)
+    assert feats["ma"][10] == round(sum(own_closes[-10:]) / 10, 2)
+    assert feats["ma"][20] == round(sum(own_closes[-20:]) / 20, 2)
