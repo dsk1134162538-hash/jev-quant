@@ -1,6 +1,7 @@
-"""超跌反弹：近 5 日跌了 0~20%、近两个月没连板过的票，当日回调到低吸区间时买入赌反弹，反弹就走。
+"""超跌反弹：近 5 日跌了 0~20%、近两个月没连板过的票，当日回调到低吸区间时买入赌反弹。
 
-买入时机只看情绪（正常/火热盘中买，偏弱/冰点尾盘买），卖出与低吸完全相同（rules.sell.decide_sell）。
+买入时机只看情绪（正常/火热盘中买，偏弱/冰点尾盘买）；卖出见 rules.rebound_sell（相对买入价止损、
+跟踪止盈、最多拿 2 个交易日）。
 行情与情绪都由低吸引擎每分钟取好传进来，本策略不自己拉行情、不自己问情绪。
 """
 import json
@@ -12,7 +13,7 @@ from jevq.config import MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE,
 from jevq.ledger import Ledger, affordable_shares
 from jevq.models import Fill, Quote
 from jevq.rules.buy import buy_window_open, rank_rebound, rebound_mode
-from jevq.rules.sell import decide_sell
+from jevq.rules.rebound_sell import decide_rebound_sell
 
 SID = "rebound"
 
@@ -21,7 +22,8 @@ class ReboundStrategy:
     def __init__(self, conn: sqlite3.Connection, ledger: Ledger, notice_judge, news_judge,
                  universe: dict[str, str], ret5: dict[str, float], excluded: set[str], prev_day: date,
                  sentiment_provider: Callable[[], str | None], enabled: bool = True,
-                 sentiment_trace_provider: Callable[[], dict | None] | None = None):
+                 sentiment_trace_provider: Callable[[], dict | None] | None = None,
+                 trade_days: list[date] | None = None):
         self.conn, self.ledger = conn, ledger
         self.accounts = STRATEGIES[SID]["accounts"]
         self.notice_judge, self.news_judge = notice_judge, news_judge
@@ -29,7 +31,7 @@ class ReboundStrategy:
         self.sentiment_provider = sentiment_provider
         self.sentiment_trace_provider = sentiment_trace_provider or (lambda: None)
         self.enabled = enabled
-        self.stale_before: date | None = prev_day      # 同低吸：错过上一交易日的持仓开盘即卖
+        self.calendar = sorted(trade_days) if trade_days else None     # 交易日历；None = 不可用
         self.rejected: set[str] = set()
         self._rejected_day: date | None = None
 
@@ -67,10 +69,16 @@ class ReboundStrategy:
                 q = quotes.get(pos.code)
                 if q is None or q.ts.date() < now.date():
                     continue
-                d = decide_sell(pos, q, now, self.stale_before)
+                d = decide_rebound_sell(pos, q, now, self._hold_days(pos.buy_date, now.date()))
                 if d.sell and (f := self.ledger.sell(account, pos, q, now, d.reason)):
                     fills.append(f)
         return fills
+
+    def _hold_days(self, buy_date: date, today: date) -> int | None:
+        """持有交易日数：日历里晚于买入日、不晚于今天的天数。日历不可用返回 None（卖出规则当天尾盘清仓）。"""
+        if self.calendar is None:
+            return None
+        return sum(1 for d in self.calendar if buy_date < d <= today)
 
     def _buy_shadow(self, ranked: list[Quote], now: datetime) -> list[Fill]:
         shadow = self.accounts[1]

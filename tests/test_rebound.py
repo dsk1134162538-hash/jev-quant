@@ -181,3 +181,34 @@ def test_rejected_restored_after_restart():
                              lambda: "正常")
     strat2.on_minute(_quotes(at(10, 1), **{"600002": -1.0}), at(10, 1))
     assert notice.calls == ["600002"]
+
+
+def _hold(conn, code="600002", buy_price=10.0, buy_date=PREV_DAY):
+    conn.execute("INSERT INTO positions VALUES (?, ?, ?, ?, ?, ?)",
+                 ("rebound_main", code, 1000, buy_price * 1000 + 5, buy_price, buy_date.isoformat()))
+    conn.commit()
+
+
+def test_holds_overnight_on_first_day_and_clears_on_second():
+    calendar = [date(2026, 9, 23), date(2026, 9, 24), date(2026, 9, 25)]
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    _hold(conn)
+    strat = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {}, set(), PREV_DAY, lambda: "正常",
+                            enabled=False, trade_days=calendar)
+    assert strat.on_minute(_quotes(at(14, 56), **{"600002": 0.5}), at(14, 56)) == []
+    d2 = datetime(2026, 9, 25, 14, 56)
+    fills = strat.on_minute({"600002": quote("600002", pct=0.5, ts=d2)}, d2)
+    assert [(f.side, f.reason) for f in fills] == [("sell", "到期清仓")]
+
+
+def test_trailing_take_profit_in_strategy():
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    _hold(conn)
+    strat = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {}, set(), PREV_DAY, lambda: "正常",
+                            enabled=False, trade_days=[PREV_DAY, TODAY])
+    q = quote("600002", pct=1.7, ts=at(10, 30))
+    q = type(q)(**{**q.__dict__, "high": 10.25})
+    fills = strat.on_minute({"600002": q}, at(10, 30))
+    assert [(f.side, f.reason) for f in fills] == [("sell", "跟踪止盈")]
