@@ -22,10 +22,11 @@ CRITERIA = {
 MINE_KEYWORDS = {"新增减持": ["减持"], "新增质押": ["质押"], "回购": ["回购"],
                  "诉讼仲裁": ["诉讼", "仲裁", "起诉"]}
 SAFE_KEYWORDS = ["解除", "解押", "实施完毕", "期限届满", "终止", "完成"]
+NEGATION_KEYWORDS = ["不减持", "不存在减持", "承诺不", "不质押", "暂不", "无减持", "不再减持"]
 
 
 def classify_by_keyword(title: str) -> str | None:
-    if any(k in title for k in SAFE_KEYWORDS):
+    if any(k in title for k in SAFE_KEYWORDS) or any(k in title for k in NEGATION_KEYWORDS):
         return None
     for label, words in MINE_KEYWORDS.items():
         if any(w in title for w in words):
@@ -47,6 +48,14 @@ class NoticeJudge:
                 "SELECT label, confidence, source, probs FROM notice_verdicts WHERE id=?", (n.id,)).fetchone()
             if cached:
                 label, conf, source, probs = cached
+                if source == "keyword":
+                    fresh = classify_by_keyword(n.title)
+                    if fresh is None:
+                        pending.append(n)
+                        continue
+                    if fresh != label:
+                        label = fresh
+                        self._save(n.id, label, 1.0, "keyword", None)
                 verdicts[n.id] = (label, conf, source, json.loads(probs) if probs else None)
             elif (label := classify_by_keyword(n.title)) is not None:
                 verdicts[n.id] = (label, 1.0, "keyword", None)

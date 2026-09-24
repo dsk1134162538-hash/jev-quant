@@ -99,11 +99,13 @@ const signCls = (n) => n > 0 ? "up" : n < 0 ? "down" : "";
 let api, tab = "fills", today = "";
 let selectedId = null;
 let strategyFilter = null;
+let noticesExpanded = false;
 
-function table(headers, rows) {
+function table(headers, rows, wrapCols) {
   if (!rows.length) return '<div class="empty">暂无数据</div>';
+  const wrap = wrapCols || [headers.length - 1];
   return `<div class="table-wrap"><table><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr>${rows.map((r) =>
-    `<tr>${r.map((c, i) => `<td class="${i === r.length - 1 ? "wrap" : ""}">${c}</td>`).join("")}</tr>`).join("")}</table></div>`;
+    `<tr>${r.map((c, i) => `<td class="${wrap.includes(i) ? "wrap" : ""}">${c}</td>`).join("")}</tr>`).join("")}</table></div>`;
 }
 
 function accountCard(a) {
@@ -165,7 +167,7 @@ function mdToHtml(md) {
 }
 
 const VERDICT = {pass: "通过", reject: "否决", error: "出错", sentiment: "情绪", skip: "跳过"};
-const probsTxt = (p) => p ? Object.entries(p).sort((a, b) => b[1] - a[1])
+const probsTxt = (p, top) => p ? Object.entries(p).sort((a, b) => b[1] - a[1]).slice(0, top || Infinity)
   .map(([k, v]) => `${esc(k)} ${Number(v).toFixed(2)}`).join(" / ") : "";
 const kv = (o) => `<div class="kv">${Object.entries(o || {}).map(([k, v]) => `<span>${esc(k)} <b>${esc(v)}</b></span>`).join("")}</div>`;
 
@@ -191,11 +193,18 @@ function renderTrace(d) {
     parts.push(`<h4>为什么被选中</h4><div>当前 ${fmt(c.pct)}%（0~-3% 低吸区间）｜近 5 日 ${fmt(c.ret5)}%｜候选排名 ${c.rank}/${c.of}｜现价 ${fmt(c.price)}</div>`);
   }
   if (t.notices) {
-    parts.push(`<h4>公告排雷（近 90 天 ${t.notices.length} 条）</h4>` + (t.notices.length ? table(["日期", "标题", "判定", "依据"],
-      t.notices.map((n) => [esc(n.date), esc(n.title),
-        esc(n.label) + (n.mine ? " ❌" : "") + (n.unsure ? " ⚠️拿不准" : ""),
-        n.source === "keyword" ? "标题关键词命中，未调用 Jev"
-          : `Jev：${probsTxt(n.probabilities)}（置信度 ${fmt(n.confidence)}）`])) : '<div class="tag">无公告</div>'));
+    const flagged = t.notices.filter((n) => n.mine || n.unsure);
+    const rest = t.notices.filter((n) => !(n.mine || n.unsure));
+    const restShown = noticesExpanded ? rest : rest.slice(0, 5);
+    const remaining = rest.length - restShown.length;
+    const ordered = [...flagged, ...restShown];
+    const noticeRow = (n) => [esc(n.date), esc(n.title),
+      esc(n.label) + (n.mine ? " ❌" : "") + (n.unsure ? " ⚠️拿不准" : ""),
+      n.source === "keyword" ? "标题关键词命中，未调用 Jev"
+        : `Jev：${probsTxt(n.probabilities, 2)}（置信度 ${fmt(n.confidence)}）`];
+    parts.push(`<h4>公告排雷（近 90 天 ${t.notices.length} 条）</h4>` +
+      (t.notices.length ? table(["日期", "标题", "判定", "依据"], ordered.map(noticeRow), [1]) : '<div class="tag">无公告</div>') +
+      (remaining > 0 ? `<div class="tag" id="noticesExpand" style="cursor:pointer;color:var(--accent)">展开全部 ${remaining} 条</div>` : ""));
   }
   if (t.news) {
     parts.push(`<h4>消息面（近 24 小时 ${t.news.news.length} 条）→ ${esc(t.news.label)}</h4>`
@@ -228,14 +237,19 @@ async function renderTab() {
     body.innerHTML = filterBar + (detail ? renderTrace(detail) : "") + `<div class="clickable">${table(["", "时间", "代码", "名称", "结果", "理由"],
       rows.map((d) => [d.has_trace ? "▸" : "", d.time, esc(d.code), esc(d.name), VERDICT[d.verdict] || esc(d.verdict), esc(d.detail)]))}</div>`;
     body.querySelectorAll("[data-strategy]").forEach((b) => b.onclick = () => {
-      strategyFilter = b.dataset.strategy || null; selectedId = null; renderTab();
+      strategyFilter = b.dataset.strategy || null; selectedId = null; noticesExpanded = false; renderTab();
     });
     body.querySelectorAll(".clickable tr").forEach((tr, i) => {
       if (i === 0) return;                                   // 表头
       const d = rows[i - 1];
       tr.dataset.id = d.id;
-      tr.onclick = () => { selectedId = selectedId === d.id ? null : d.id; renderTab(); };
+      tr.onclick = () => {
+        if (selectedId !== d.id) noticesExpanded = false;    // 切换到另一条决策，重置展开状态
+        selectedId = selectedId === d.id ? null : d.id; renderTab();
+      };
     });
+    const expandBtn = body.querySelector("#noticesExpand");
+    if (expandBtn) expandBtn.onclick = () => { noticesExpanded = true; renderTab(); };
   } else if (tab === "board") {
     const rows = await api.board_stats();
     body.innerHTML = table(["时段", "样本数", "次日平均高开", "次日平均收盘", "次日连板率"],
@@ -281,7 +295,7 @@ window.addEventListener("pywebviewready", async () => {
   $("btnStop").onclick = async () => { await api.stop(); refresh(); };
   document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
     document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
-    tab = b.dataset.tab; selectedId = null; renderTab();
+    tab = b.dataset.tab; selectedId = null; noticesExpanded = false; renderTab();
   });
   await refresh();
   await renderTab();

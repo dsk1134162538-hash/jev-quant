@@ -19,6 +19,8 @@ TODAY = date(2026, 9, 23)
     ("甲:关于股东减持计划实施完毕的公告", None),
     ("甲:关于控股股东权益变动的提示性公告", None),
     ("甲:2026年半年度报告", None),
+    ("先导基电:关于控股股东自愿承诺未来12个月不减持公司股份的公告", None),
+    ("甲:关于股东减持计划的公告", "新增减持"),
 ])
 def test_keyword(title, label):
     assert classify_by_keyword(title) == label
@@ -114,6 +116,23 @@ def test_trace_records_each_notice_with_source_and_probs():
     judge2 = NoticeJudge(conn, FakeJev({}))                 # 全部走缓存
     judge2.check("600001", TODAY)
     assert {t["title"]: t["probabilities"] for t in judge2.last_trace}[titles[1]] == {"其他": 0.8}
+
+
+def test_stale_keyword_cache_is_rejudged_when_negation_added():
+    """A notice cached under the old (pre-fix) keyword rule as 新增减持 must be
+    re-sent to Jev now that its title matches a negation phrase, instead of
+    trusting the stale cached label."""
+    title = "先导基电:关于控股股东自愿承诺未来12个月不减持公司股份的公告"
+    conn = setup(title)
+    notice_id = conn.execute("SELECT id FROM notices").fetchone()[0]
+    conn.execute("INSERT INTO notice_verdicts(id, label, confidence, source, probs) VALUES (?, ?, ?, ?, ?)",
+                 (notice_id, "新增减持", 1.0, "keyword", None))
+    conn.commit()
+    jev = FakeJev({title: "其他"}, confidence=0.9)
+    verdict, _ = NoticeJudge(conn, jev).check("600001", TODAY)
+    assert jev.calls == 1 and verdict == "pass"
+    saved = conn.execute("SELECT label, source FROM notice_verdicts WHERE id=?", (notice_id,)).fetchone()
+    assert saved == ("其他", "jev")
 
 
 def test_partial_batch_failure_caches_successes():
