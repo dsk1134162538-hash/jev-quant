@@ -167,6 +167,25 @@ function mdToHtml(md) {
 }
 
 const VERDICT = {pass: "通过", reject: "否决", error: "出错", sentiment: "情绪", skip: "跳过"};
+function sentimentDetail(raw) {
+  try {
+    const j = JSON.parse(raw);
+    const label = j.label || "未知";
+    const stats = j.stats || {};
+    const bits = [];
+    if (stats["涨停家数"] != null) bits.push(`涨停 ${esc(stats["涨停家数"])}`);
+    if (stats["跌停家数"] != null) bits.push(`跌停 ${esc(stats["跌停家数"])}`);
+    if (stats["炸板率%"] != null) bits.push(`炸板率 ${esc(stats["炸板率%"])}%`);
+    if (stats["最高连板"] != null) bits.push(`最高 ${esc(stats["最高连板"])} 连板`);
+    if (stats["上涨家数"] != null && stats["下跌家数"] != null)
+      bits.push(`涨 ${esc(stats["上涨家数"])} / 跌 ${esc(stats["下跌家数"])}`);
+    if (stats["成交额较昨日同期%"] != null) bits.push(`成交额较昨日同期 ${esc(stats["成交额较昨日同期%"])}%`);
+    return bits.length ? `情绪 ${esc(label)}｜${bits.join(" · ")}` : `情绪 ${esc(label)}`;
+  } catch (e) {
+    return "情绪 未知";
+  }
+}
+const formatDetail = (verdict, detail) => verdict === "sentiment" ? sentimentDetail(detail) : esc(detail);
 const probsTxt = (p, top) => p ? Object.entries(p).sort((a, b) => b[1] - a[1]).slice(0, top || Infinity)
   .map(([k, v]) => `${esc(k)} ${Number(v).toFixed(2)}`).join(" / ") : "";
 const kv = (o) => `<div class="kv">${Object.entries(o || {}).map(([k, v]) => `<span>${esc(k)} <b>${esc(v)}</b></span>`).join("")}</div>`;
@@ -179,7 +198,7 @@ function marketBlock(title, label, tr) {
 
 function renderTrace(d) {
   const t = d.trace;
-  const head = `<h3>${esc(d.code)} ${esc(d.name)}　${esc(d.time)}　${VERDICT[d.verdict] || esc(d.verdict)}　<span class="tag">${esc(d.detail)}</span></h3>`;
+  const head = `<h3>${esc(d.code)} ${esc(d.name)}　${esc(d.time)}　${VERDICT[d.verdict] || esc(d.verdict)}　<span class="tag">${formatDetail(d.verdict, d.detail)}</span></h3>`;
   if (!t) return `<div class="detail">${head}<div class="tag">这条记录没有留痕数据</div></div>`;
   if (!t.candidate) return `<div class="detail">${head}${marketBlock("市场情绪", t.label, t)}</div>`;
   const c = t.candidate, parts = [head];
@@ -235,7 +254,7 @@ async function renderTab() {
     const filterBar = `<div class="tabs">${filters.map(([v, label]) =>
       `<button data-strategy="${v ?? ""}" class="${strategyFilter === v ? "active" : ""}">${esc(label)}</button>`).join("")}</div>`;
     body.innerHTML = filterBar + (detail ? renderTrace(detail) : "") + `<div class="clickable">${table(["", "时间", "代码", "名称", "结果", "理由"],
-      rows.map((d) => [d.has_trace ? "▸" : "", d.time, esc(d.code), esc(d.name), VERDICT[d.verdict] || esc(d.verdict), esc(d.detail)]))}</div>`;
+      rows.map((d) => [d.has_trace ? "▸" : "", d.time, esc(d.code), esc(d.name), VERDICT[d.verdict] || esc(d.verdict), formatDetail(d.verdict, d.detail)]))}</div>`;
     body.querySelectorAll("[data-strategy]").forEach((b) => b.onclick = () => {
       strategyFilter = b.dataset.strategy || null; selectedId = null; noticesExpanded = false; renderTab();
     });
