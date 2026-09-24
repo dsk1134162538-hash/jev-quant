@@ -90,11 +90,15 @@ def held_codes(ledger: Ledger, day: date) -> list[str]:
 
 def run_day(once: bool = False, stop: threading.Event | None = None,
             log: Callable[[str], None] = print, state: dict | None = None,
-            notifier: Notifier | None = None) -> Path | None:
+            notifier: Notifier | None = None,
+            after_close: Callable[[object, date], None] | None = None) -> Path | None:
     """跑一个交易日。stop 被置位时尽快退出（不写报告）；state 供桌面面板读取运行状态。
 
     原则（spec §7）：出问题宁可不买，但不能卖不掉——盘前任何一步失败都降级为只卖模式，
     盘中单轮出错只记日志、下一分钟继续。
+
+    after_close(conn, today)：报告写完后的可选回调（daemon 用它触发每日导出）。只在报告
+    真正写出时调用；调用方自己决定异常怎么处理——这里不吞它的异常，因为这一步应该看得见。
     """
     stop = stop or threading.Event()
     state = state if state is not None else {}
@@ -102,7 +106,7 @@ def run_day(once: bool = False, stop: threading.Event | None = None,
     with hold_run_lock(Path(DB_PATH).parent / "runner.lock"):
         conn = db.connect(DB_PATH)
         try:
-            return _run_day(conn, once, stop, log, state, notifier)
+            return _run_day(conn, once, stop, log, state, notifier, after_close)
         except Exception as e:
             notifier.once("run_day_exception", "⚠️ 模拟盘提醒", f"运行异常：{e!r}")
             raise
@@ -111,7 +115,8 @@ def run_day(once: bool = False, stop: threading.Event | None = None,
 
 
 def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None],
-             state: dict, notifier: Notifier) -> Path | None:
+             state: dict, notifier: Notifier,
+             after_close: Callable[[object, date], None] | None = None) -> Path | None:
     ledger = Ledger(conn)
     today = now().date()
     acct_names = accounts_mod.account_names(conn, today)
@@ -350,6 +355,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     report_accounts = accounts_mod.all_accounts(conn, today)
     log(f"复盘报告 {path}；" + "，".join(f"{a} {ledger.equity(a, prices):,.2f}" for a in report_accounts))
     _notify_close_summary(notifier, ledger, today, prices, log)
+    if after_close is not None:
+        after_close(conn, today)
     return path
 
 

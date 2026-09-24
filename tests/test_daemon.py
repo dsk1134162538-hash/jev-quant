@@ -1,11 +1,26 @@
 import importlib
 import os
+import sys
 import threading
 from datetime import date, datetime, timedelta
 
 import daemon
 import desktop
 from jevq.runlock import HELD_MSG, hold_run_lock
+
+
+def _no_git_rev_parse(repo):
+    """测试专用：从不真的调用 git，模拟读不到当前运行提交（视为「总是需要检查」）。"""
+    return None
+
+
+def _no_sync(repo, today, log, notifier, python_exe, running_commit):
+    """测试专用：从不真的同步/上线，直接说「不需要上线」。"""
+    return {"deploy": False}
+
+
+def _boom_restart(repo, python_exe):
+    raise AssertionError("real restart in tests")
 
 
 def test_importing_daemon_and_desktop_does_not_change_cwd():
@@ -71,7 +86,9 @@ def test_main_calls_runner_once_then_stops(monkeypatch, tmp_path):
         stop.set()
 
     stop = FakeStop()
-    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=stop)
+    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=stop,
+                     git_rev_parse=_no_git_rev_parse, sync_and_deploy=_no_sync,
+                     restart=_boom_restart)
     assert rc == 0
     assert calls == [1]
 
@@ -89,7 +106,9 @@ def test_main_logs_runner_exception_and_does_not_crash(monkeypatch, tmp_path):
     # 第一次运行后 last_run == today，plan_next_run 会算到明天；FakeStop 在被
     # 等待几次后置位，让主循环在不真的睡眠的情况下退出。
     stop = FakeStop(trip_after=3)
-    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=stop)
+    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=stop,
+                     git_rev_parse=_no_git_rev_parse, sync_and_deploy=_no_sync,
+                     restart=_boom_restart)
     assert rc == 0
     assert calls == [1]
     assert any("已有另一个交易进程在运行" in m for m in logged)
@@ -109,7 +128,9 @@ def test_main_retries_runner_on_lock_contention_until_success(monkeypatch, tmp_p
             raise RuntimeError(HELD_MSG)
 
     stop = FakeStop(trip_after=3)
-    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=stop)
+    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=stop,
+                     git_rev_parse=_no_git_rev_parse, sync_and_deploy=_no_sync,
+                     restart=_boom_restart)
     assert rc == 0
     assert len(calls) == 3
     assert any("60 秒后重试" in m for m in logged)
@@ -127,7 +148,9 @@ def test_main_gives_up_retry_after_report_at(monkeypatch, tmp_path):
         raise RuntimeError(HELD_MSG)
 
     stop = FakeStop(trip_after=3)
-    rc = daemon.main(runner=runner, clock=lambda: datetime(2026, 9, 23, 15, 6), stop=stop)
+    rc = daemon.main(runner=runner, clock=lambda: datetime(2026, 9, 23, 15, 6), stop=stop,
+                     git_rev_parse=_no_git_rev_parse, sync_and_deploy=_no_sync,
+                     restart=_boom_restart)
     assert rc == 0
     assert len(calls) == 1                          # 已过 15:05，不重试
     assert any("放弃重试" in m for m in logged)
@@ -144,8 +167,99 @@ def test_main_exits_immediately_when_daemon_lock_already_held(monkeypatch, tmp_p
         calls.append(1)
 
     with hold_run_lock(tmp_path / "daemon.lock"):
-        rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=FakeStop())
+        rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=FakeStop(),
+                          git_rev_parse=_no_git_rev_parse, sync_and_deploy=_no_sync,
+                          restart=_boom_restart)
 
     assert rc == 0
     assert calls == []
     assert logged
+
+
+def test_main_calls_sync_and_deploy_when_runner_returns_a_report_path(monkeypatch, tmp_path):
+    """runner 返回报告路径（说明今天是交易日、报告已写完）之后，daemon 应该调用
+    sync_and_deploy，并把启动时记下的 running_commit 传进去。"""
+    monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "jevq.sqlite"))
+
+    def runner(stop, log):
+        stop.set()
+        return tmp_path / "reports" / "2026-09-23.md"
+
+    sync_calls = []
+
+    def fake_sync(repo, today, log, notifier, python_exe, running_commit):
+        sync_calls.append((today, running_commit))
+        return {"deploy": False}
+
+    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=FakeStop(),
+                     git_rev_parse=lambda repo: "abc1234",
+                     sync_and_deploy=fake_sync, restart=_boom_restart)
+    assert rc == 0
+    assert sync_calls == [(date(2026, 9, 23), "abc1234")]
+
+
+def test_main_skips_sync_when_runner_returns_none(monkeypatch, tmp_path):
+    """非交易日/报告没写出来时 runner 返回 None，不应该触发同步/上线。"""
+    monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "jevq.sqlite"))
+
+    def runner(stop, log):
+        stop.set()
+        return None
+
+    def fake_sync(*a, **kw):
+        raise AssertionError("不该在非交易日调用同步")
+
+    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=FakeStop(),
+                     git_rev_parse=_no_git_rev_parse, sync_and_deploy=fake_sync,
+                     restart=_boom_restart)
+    assert rc == 0
+
+
+def test_main_restarts_and_exits_loop_when_deploy_succeeds(monkeypatch, tmp_path):
+    """sync_and_deploy 返回 deploy=True：应该调用注入的自我重启函数，并且主循环随之退出
+    （不再等待/调用下一轮 runner）——当前进程该释放 daemon.lock 正常退出了。"""
+    monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "jevq.sqlite"))
+    calls = []
+
+    def runner(stop, log):
+        calls.append(1)
+        return tmp_path / "reports" / "2026-09-23.md"
+
+    def fake_sync(repo, today, log, notifier, python_exe, running_commit):
+        return {"deploy": True, "commit": "def4567"}
+
+    restart_calls = []
+
+    def fake_restart(repo, python_exe):
+        restart_calls.append((repo, python_exe))
+
+    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=FakeStop(trip_after=3),
+                     repo=tmp_path, git_rev_parse=lambda repo: "abc1234",
+                     sync_and_deploy=fake_sync, restart=fake_restart)
+    assert rc == 0
+    assert len(calls) == 1                 # 上线后立即退出，没有进入下一轮
+    assert restart_calls == [(tmp_path, daemon.Path(sys.executable))]
+
+
+def test_main_sync_exception_does_not_crash_and_next_day_still_runs(monkeypatch, tmp_path):
+    """同步/上线过程本身抛异常：只记日志，不能打断守护进程——main() 正常继续它的主循环
+    （沿用其他测试同样的断言方式：不崩、rc==0、异常被记进日志、runner 正常跑过一次）。"""
+    monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "jevq.sqlite"))
+    logged = []
+    monkeypatch.setattr(daemon, "file_log", lambda msg: logged.append(msg))
+    calls = []
+
+    def runner(stop, log):
+        calls.append(1)
+        return tmp_path / "reports" / "2026-09-23.md"
+
+    def fake_sync(*a, **kw):
+        raise RuntimeError("网络炸了")
+
+    stop = FakeStop(trip_after=3)
+    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=stop,
+                     git_rev_parse=lambda repo: "abc1234",
+                     sync_and_deploy=fake_sync, restart=_boom_restart)
+    assert rc == 0
+    assert calls == [1]
+    assert any("同步/上线异常" in m for m in logged)

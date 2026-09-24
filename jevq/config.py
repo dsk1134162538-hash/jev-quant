@@ -66,3 +66,7 @@ def builtin_accounts() -> tuple[str, ...]:
 
 # 自定义策略
 MAX_CUSTOM_ENABLED = 5
+
+# 每日 GitHub 同步 + 收盘后自动上线
+SYNC_ENABLED = True
+DEPLOY_ENABLED = True

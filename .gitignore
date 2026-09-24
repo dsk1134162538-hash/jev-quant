@@ -1,6 +1,5 @@
 .venv/
 __pycache__/
 /data/
-/reports/
 *.sqlite
-.superpowers/
+.superpowers/**/*.diff
