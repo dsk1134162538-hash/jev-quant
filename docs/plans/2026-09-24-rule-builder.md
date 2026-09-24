@@ -407,6 +407,15 @@ def test_fields_meta_shape():
 ```
 - Commit `feat: custom rule engine (fields, evaluation, validation, ranking)`
 
+### Task 3b: 扩展盘口指标（用户截图要求，2026-09-24）
+**Files:** `jevq/models.py`, `jevq/data/tencent.py`, `jevq/data/features.py`, `jevq/rules/custom.py`, tests
+- 腾讯字段（2026-09-24 用中南文化与行情 App 截图逐项核对）：`39` 市盈(TTM)、`52` 市盈(动)、`53` 市盈(静)、`46` 市净率、`43` 振幅%、`7` 外盘（手）、`8` 内盘（手）、`51` 均价、`62` 今年来涨幅%、`72` 流通股本（股）、`73` 总股本（股）、五档：买量 `10/12/14/16/18`、卖量 `20/22/24/26/28`、买一价 `9`。
+- `Quote` 新增（均带默认值）：`pe_ttm, pe_dyn, pe_static, pb, amplitude, outer_vol, inner_vol, avg_price, ytd_pct, float_shares, total_shares, bid_vols: tuple, ask_vols: tuple, bid1: float`；解析失败置默认值，不丢报价。
+- 派生值（在取值函数里计算，缺数据返回 None）：`committee` 委比% = (Σ买量−Σ卖量)/(Σ买量+Σ卖量)×100；`outer_ratio` 外盘占比% = 外/(外+内)×100；`avg_pct` 均价% = (均价/昨收−1)×100；`body_pct` 实体% = (现价−开盘)/昨收×100；`seal_amount` 封单额（亿，仅封死涨停时 = 买一量×100×涨停价/1e8，否则 None）；`seal_ratio` 封成比 = 封单额/成交额；`up_streak` 连涨天数（features 里按收盘价计算，截至昨日，再看今日是否上涨）。
+- 字段注册表新增（名称按行情 App 习惯）：振幅、委比、外盘占比、市盈(动)、市盈(静)、市盈(TTM)、市净率、均价%、实体%、封单额、封成比、今年来、连涨天、流通股本（亿股）、总股本（亿股）；每个字段有合理的 `lo/hi`；并为每个字段加 `default: dict`（该字段被选中时的默认条件，例如涨幅 `between [-3,0]`、量比 `>= 2`、换手 `between [3,15]`、市盈(动) `between [0,80]`、封单额 `>= 1`），`fields_meta()` 输出 `default` 与分组 `group`（价格/量能/估值/历史/题材/持仓/环境）。
+- Tests：解析新字段；各派生值计算（含缺数据 → None、未封死封单额 None）；注册表与 `fields_meta` 含 default/group；`validate` 接受新字段的默认条件。
+- Commit `feat: extended quote metrics for rule builder (PE/PB/amplitude/committee/seal...)`
+
 ### Task 4: 存储、版本与动态账户
 **Files:** Create `jevq/data/custom_store.py`; Modify `jevq/db.py`, `jevq/config.py`, `jevq/ledger.py`, `jevq/engine.py`, `run.py`, `jevq/report.py`, `jevq/app/api.py`; Tests.
 - 表 `custom_strategies(id, version, name, spec, created, active_from, enabled, PRIMARY KEY(id, version))`；迁移给 `fills`、`decisions` 加 `version INTEGER`。
@@ -441,7 +450,10 @@ def test_fields_meta_shape():
 
 ### Task 8: 面板「规则」页与动态展示
 **Files:** `jevq/app/ui.html`
-- 新标签「规则」：左侧列表（内置只读、自定义可编辑/复制/停用/历史）；右侧编辑器：名称、资金、选股（全部/任一 + 条件行）、排序（字段 + N + 方向）、买点、卖出（可增删、上移下移、每条有名称）、Jev 两个开关；条件行 = 字段下拉（按区域过滤）→ N（有 params 时）→ 运算符（按类型）→ 值控件（数值/区间两个数/是否/多选/时间）；右侧实时体检（调用 `rule_validate`，防抖 500ms）显示错误（红）与警告（黄）；「试跑」显示预览表；「保存（明日生效）」错误存在时禁用。
+- 新标签「规则」：左侧策略列表（内置只读、自定义可编辑/复制/停用/历史）；右侧编辑器顶部：名称、资金、Jev 两个开关、排序（字段 + N + 方向）。
+- **盘口指标墙**（用户截图要求，仿行情 App「盘口数据」）：选股、买点、卖出三个区域各一面指标墙，指标按 `group` 分组、每组网格排列（每行 3 个，窄窗口 2 个）。每个方块：未选中灰色显示指标名；点击 → 选中高亮并弹出小框（运算符下拉 + 值控件 + N 选择，预填 `default`），确定后方块显示条件摘要（如「涨幅 -3%~0%」「量比 ≥ 2」）；再次点击 → 编辑；弹框内「取消选择」清除。每个区域顶部切换「全部满足 / 任一满足」。只显示该区域可用的字段（持仓类只在卖出区出现）。
+- 卖出区：可添加多条卖出规则，每条是一面折叠的小指标墙 + 规则名，可上移下移调整优先级。
+- 右侧：实时体检（`rule_validate`，防抖 500ms，错误红、警告黄）；「试跑」预览表（命中总数 + 前 20 只及所选指标当前值）；每次选中/修改方块后自动刷新命中数。「保存（明日生效）」在有错误时禁用。
 - 账户卡片、净值曲线、决策筛选、成交表按动态策略生成（颜色按序分配，图例）；决策明细对自定义策略显示「命中条件」列表（hits）。
 - 所有外部字符串经 `esc()`；表单值只经 JSON 发送，不拼 HTML。
 - 控制者做可视化验收。
