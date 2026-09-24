@@ -101,16 +101,17 @@ def _sync_and_deploy(repo: Path, today: date, log, notifier, python_exe: Path,
     if code_dirty:
         log("本机有未提交的代码改动，跳过自动上线（数据仍会正常推送）")
 
-    staged = run_git(["diff", "--cached", "--name-only"])
+    staged = run_git(["diff", "--cached", "--name-only", "--", *DATA_PATHS])
     if (getattr(staged, "stdout", "") or "").strip():
         hits = scan_staged(run_git)
         if hits:
             log("密钥扫描命中，中止提交：" + "；".join(hits))
             notifier.send("⚠️ 模拟盘提醒", "同步中止：暂存区检测到疑似密钥 " + "；".join(hits))
-            run_git(["reset"])
+            run_git(["reset", "--", *DATA_PATHS])
             return {"deploy": False}
         commit_msg = f"chore: daily sync {today.isoformat()}\n\n{_COMMIT_TRAILER}"
-        commit = run_git(["commit", "-m", commit_msg])
+        # 带路径提交：暂存区里别人手上的代码改动（如未完成的 ui.html）不会被捎带进每日同步
+        commit = run_git(["commit", "-m", commit_msg, "--", *DATA_PATHS])
         if commit.returncode != 0:
             log(f"git commit 失败：{commit.stderr}")
             return {"deploy": False}

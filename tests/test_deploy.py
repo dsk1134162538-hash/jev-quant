@@ -166,7 +166,7 @@ def test_secret_hit_aborts_commit(tmp_path):
     assert result == {"deploy": False}
     assert not any(c[0] == "commit" for c in run_git.calls)
     assert not any(c[0] == "push" for c in run_git.calls)
-    assert ["reset"] in run_git.calls                            # 撤销暂存，不是 reset --hard
+    assert any(c[:2] == ["reset", "--"] for c in run_git.calls)                           # 撤销暂存，不是 reset --hard
     assert any("密钥" in content for _, content in notifier.sent)
     _never_destructive(run_git.calls)
 
@@ -206,3 +206,13 @@ def test_never_calls_reset_hard_clean_or_force_push(tmp_path):
         sync_and_deploy(tmp_path, TODAY, lambda m: None, FakeNotifier(), Path("python"),
                         "old111", run_git=run_git, run_tests=lambda *a: (True, "ok"))
         _never_destructive(run_git.calls)
+
+
+def test_daily_commit_is_limited_to_data_paths(tmp_path):
+    """暂存区里别人未完成的代码（如 ui.html）不能被每日同步捎带提交。"""
+    from jevq.sync.deploy import DATA_PATHS
+    run_git = make_run_git(staged_names="reports/2026-09-23.md\n")
+    sync_and_deploy(tmp_path, TODAY, lambda m: None, FakeNotifier(), Path("python"),
+                    "abc1234", run_git=run_git, run_tests=lambda *a: (True, "ok"))
+    commits = [c for c in run_git.calls if c[0] == "commit"]
+    assert commits and commits[0][-len(DATA_PATHS) - 1:] == ["--", *DATA_PATHS]
