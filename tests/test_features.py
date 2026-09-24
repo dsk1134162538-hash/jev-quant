@@ -96,13 +96,35 @@ def test_no_history_returns_empty_dict():
     c = conn()
     assert history_features(c, ["600005"], TODAY) == {
         "600005": {"ret": {}, "limit_up": {3: False, 5: False, 10: False, 20: False},
-                   "boards": 0, "ma": {}}
+                   "boards": 0, "ma": {}, "up_streak": 0}
     }
 
 
 def test_no_codes_returns_empty():
     c = conn()
     assert history_features(c, [], TODAY) == {}
+
+
+def test_up_streak_counts_trailing_consecutive_gains():
+    c = conn()
+    dates = dates_before(TODAY, 21)
+    # 最后三天逐日上涨（不要求涨停），倒数第四天走平/下跌，不计入
+    closes = [10.0] * 17 + [10.0, 10.1, 10.5, 11.0]
+    seed(c, "600009", dates, closes)
+    feats = history_features(c, ["600009"], TODAY)["600009"]
+    assert feats["up_streak"] == 3
+
+
+def test_up_streak_does_not_cross_missing_day_gap():
+    c = conn()
+    dates = dates_before(TODAY, 21)
+    seed(c, "FILLER", dates, [10.0] * 21)
+
+    own_dates = dates[:-2] + dates[-1:]  # 缺倒数第二天
+    own_closes = [10.0] * (len(own_dates) - 1) + [12.0]
+    seed(c, "600010", own_dates, own_closes)
+    feats = history_features(c, ["600010"], TODAY)["600010"]
+    assert feats["up_streak"] == 0
 
 
 def test_boards_does_not_bridge_a_gap_between_two_streaks():

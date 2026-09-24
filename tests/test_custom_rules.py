@@ -96,3 +96,33 @@ def test_fields_meta_shape():
     meta = {m["key"]: m for m in fields_meta()}
     assert meta["hold_days"]["scopes"] == ["exit"] and meta["ret_n"]["params"] == [3, 5, 10, 20]
     assert {o["op"] for o in meta["pct"]["ops"]} == {">", ">=", "<", "<=", "between"}
+
+
+def test_fields_meta_has_group_and_default_for_every_field():
+    meta = fields_meta()
+    assert meta  # 非空
+    for m in meta:
+        assert m["group"], f"{m['key']} 缺少 group"
+        assert m["default"] is not None, f"{m['key']} 缺少 default"
+        assert "op" in m["default"] and "value" in m["default"]
+
+
+def test_fields_meta_new_metrics_present_with_expected_group():
+    meta = {m["key"]: m for m in fields_meta()}
+    assert meta["pe_dyn"]["group"] == "估值" and meta["pe_dyn"]["default"] == {"op": "between", "value": [0, 80]}
+    assert meta["volume_ratio"]["default"] == {"op": ">=", "value": 2}
+    assert meta["turnover"]["default"] == {"op": "between", "value": [3, 15]}
+    assert meta["pct"]["default"] == {"op": "between", "value": [-3, 0]}
+    assert meta["seal_amount"]["default"] == {"op": ">=", "value": 1}
+    for key in ("amplitude", "committee", "outer_ratio", "pe_dyn", "pe_static", "pe_ttm", "pb",
+                "avg_pct", "body_pct", "seal_amount", "seal_ratio", "ytd_pct", "up_streak",
+                "float_shares", "total_shares"):
+        assert key in meta, f"缺少新字段 {key}"
+
+
+def test_validate_accepts_new_field_default_conditions():
+    s = good()
+    s["select"]["conditions"] = [C("pe_dyn", "between", [0, 80]), C("committee", ">=", 10)]
+    s["entry"]["conditions"] = [C("seal_amount", ">=", 1)]
+    errors, _ = validate(s)
+    assert errors == []

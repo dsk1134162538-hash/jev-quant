@@ -43,7 +43,16 @@ def parse_quotes(text: str) -> dict[str, Quote]:
                       limit_up=float(f[47]), limit_down=float(f[48]),
                       ts=datetime.strptime(f[30], "%Y%m%d%H%M%S"),
                       turnover=_safe_float(f, 38), volume_ratio=_safe_float(f, 49),
-                      float_mcap=_safe_float(f, 44), total_mcap=_safe_float(f, 45))
+                      float_mcap=_safe_float(f, 44), total_mcap=_safe_float(f, 45),
+                      pe_ttm=_safe_float(f, 39), pe_dyn=_safe_float(f, 52),
+                      pe_static=_safe_float(f, 53), pb=_safe_float(f, 46),
+                      amplitude=_safe_float(f, 43), outer_vol=_safe_float(f, 7),
+                      inner_vol=_safe_float(f, 8), avg_price=_safe_float(f, 51),
+                      ytd_pct=_safe_float(f, 62), float_shares=_safe_float(f, 72),
+                      total_shares=_safe_float(f, 73),
+                      bid_vols=tuple(int(_safe_float(f, i)) for i in (10, 12, 14, 16, 18)),
+                      ask_vols=tuple(int(_safe_float(f, i)) for i in (20, 22, 24, 26, 28)),
+                      bid1=_safe_float(f, 9))
         except (ValueError, IndexError):
             continue
         if q.pre_close > 0:

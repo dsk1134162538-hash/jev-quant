@@ -10,7 +10,8 @@ MA_NS = (5, 10, 20)
 def history_features(conn, codes: Iterable[str], today: date) -> dict[str, dict]:
     """最近 21 个不同日期（date < today）算历史特征，一次性查询，按代码返回。
 
-    每只代码返回 {"ret": {n: 涨幅}, "limit_up": {n: 是否涨停过}, "boards": 连板数, "ma": {n: 均线}}。
+    每只代码返回 {"ret": {n: 涨幅}, "limit_up": {n: 是否涨停过}, "boards": 连板数, "ma": {n: 均线},
+    "up_streak": 连涨天数（截至昨日）}。
     ret/ma 数据不足对应 n 时该键缺失；limit_up 按已有的相邻日对判断，始终存在。
     """
     codes = list(codes)
@@ -20,7 +21,8 @@ def history_features(conn, codes: Iterable[str], today: date) -> dict[str, dict]
         "SELECT DISTINCT date FROM closes WHERE date < ? ORDER BY date DESC LIMIT 21",
         (today.isoformat(),)).fetchall()]
     if not dates:
-        return {c: {"ret": {}, "limit_up": {n: False for n in LIMIT_UP_NS}, "boards": 0, "ma": {}}
+        return {c: {"ret": {}, "limit_up": {n: False for n in LIMIT_UP_NS}, "boards": 0, "ma": {},
+                    "up_streak": 0}
                 for c in codes}
     dates.sort()  # 升序，方便按相邻两天比较
 
@@ -68,5 +70,17 @@ def history_features(conn, codes: Iterable[str], today: date) -> dict[str, dict]
                 break
             boards += 1
 
-        out[code] = {"ret": ret, "limit_up": limit_up, "boards": boards, "ma": ma}
+        # 连涨天数：按收盘价逐日比较（不要求涨停），截至昨日；今日是否上涨由调用方另行判断。
+        up_flags: list[bool] = []
+        for i in range(1, len(dates)):
+            prev, cur = vals.get(dates[i - 1]), vals.get(dates[i])
+            up_flags.append(prev is not None and cur is not None and cur > prev)
+
+        up_streak = 0
+        for f in reversed(up_flags):
+            if not f:
+                break
+            up_streak += 1
+
+        out[code] = {"ret": ret, "limit_up": limit_up, "boards": boards, "ma": ma, "up_streak": up_streak}
     return out

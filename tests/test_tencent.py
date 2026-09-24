@@ -47,6 +47,41 @@ def test_parse_quotes_skips_garbage():
     assert parse_quotes('v_pv_none_match="1";') == {}
 
 
+def test_parse_quotes_extended_metrics():
+    f = [""] * 74
+    f[0], f[1], f[2], f[3], f[4], f[5], f[6] = "1", "中南文化", "002445", "3.20", "3.10", "3.12", "1000"
+    f[30], f[32], f[33], f[34], f[37], f[47], f[48] = "20260924100547", "3.23", "3.25", "3.05", "500", "3.41", "2.79"
+    f[7], f[8] = "800", "300"                       # 外盘/内盘
+    f[9] = "3.19"                                     # 买一价
+    f[10], f[12], f[14], f[16], f[18] = "500", "400", "300", "200", "100"   # 买一~买五量
+    f[20], f[22], f[24], f[26], f[28] = "600", "700", "800", "900", "1000"  # 卖一~卖五量
+    f[39], f[43], f[46] = "168.59", "3.54", "3.26"    # 市盈(TTM)、振幅、市净率
+    f[51], f[52], f[53] = "3.14", "121.99", "99.94"   # 均价、市盈(动)、市盈(静)
+    f[62] = "20.77"                                    # 今年来
+    f[72], f[73] = "1500000000", "1800000000"          # 流通股本/总股本
+    text = f'v_sz002445="{"~".join(f)}";'
+    q = parse_quotes(text)["002445"]
+    assert q.pe_ttm == 168.59 and q.pe_dyn == 121.99 and q.pe_static == 99.94
+    assert q.pb == 3.26 and q.amplitude == 3.54
+    assert q.outer_vol == 800.0 and q.inner_vol == 300.0
+    assert q.avg_price == 3.14 and q.ytd_pct == 20.77
+    assert q.float_shares == 1_500_000_000.0 and q.total_shares == 1_800_000_000.0
+    assert q.bid_vols == (500, 400, 300, 200, 100)
+    assert q.ask_vols == (600, 700, 800, 900, 1000)
+    assert q.bid1 == 3.19
+
+
+def test_parse_quotes_new_metrics_default_when_fields_missing():
+    text = tencent_line("sz000001", "平安银行", "000001", "11.59", "11.71", "11.68",
+                        "11.71", "11.58", "97618", "11302.5", "12.88", "10.54")
+    q = parse_quotes(text)["000001"]
+    assert q.pe_ttm == 0.0 and q.pe_dyn == 0.0 and q.pe_static == 0.0 and q.pb == 0.0
+    assert q.amplitude == 0.0 and q.outer_vol == 0.0 and q.inner_vol == 0.0
+    assert q.avg_price == 0.0 and q.ytd_pct == 0.0
+    assert q.float_shares == 0.0 and q.total_shares == 0.0
+    assert q.bid_vols == (0, 0, 0, 0, 0) and q.ask_vols == (0, 0, 0, 0, 0) and q.bid1 == 0.0
+
+
 def test_five_day_return_excludes_today():
     rows = [("2026-09-15", 10.0), ("2026-09-16", 10.2), ("2026-09-17", 10.4),
             ("2026-09-18", 10.6), ("2026-09-21", 10.8), ("2026-09-22", 11.0),
