@@ -6,10 +6,12 @@
 """
 import json
 import sqlite3
+from collections import deque
 from collections.abc import Callable
 from datetime import date, datetime
 
-from jevq.config import MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE, STRATEGIES
+from jevq.config import (MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE, REBOUND_FLOW_MINUTES,
+                         STRATEGIES)
 from jevq.ledger import Ledger, affordable_shares
 from jevq.models import Fill, Quote
 from jevq.rules.buy import buy_window_open, rank_rebound, rebound_mode
@@ -34,6 +36,8 @@ class ReboundStrategy:
         self.calendar = sorted(trade_days) if trade_days else None     # 交易日历；None = 不可用
         self.rejected: set[str] = set()
         self._rejected_day: date | None = None
+        # 持仓票每分钟的 (分钟, 外盘, 内盘) 快照，用来算最近几分钟的主买/主卖增量
+        self._flow: dict[str, deque] = {}
 
     def on_minute(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         if self._rejected_day != now.date():
@@ -69,10 +73,27 @@ class ReboundStrategy:
                 q = quotes.get(pos.code)
                 if q is None or q.ts.date() < now.date():
                     continue
-                d = decide_rebound_sell(pos, q, now, self._hold_days(pos.buy_date, now.date()))
+                d = decide_rebound_sell(pos, q, now, self._hold_days(pos.buy_date, now.date()),
+                                        buy_pressure=self._buy_pressure(q, now))
                 if d.sell and (f := self.ledger.sell(account, pos, q, now, d.reason)):
                     fills.append(f)
         return fills
+
+    def _buy_pressure(self, q: Quote, now: datetime) -> bool:
+        """最近 REBOUND_FLOW_MINUTES 分钟外盘（主动买）增量是否大于内盘（主动卖）增量。
+        外盘/内盘是全天累计值，这里记每分钟快照取差值。快照不够两个（刚开盘/刚重启）或数据异常 → False（照常卖）。"""
+        minute = now.strftime("%Y-%m-%d %H:%M")
+        snaps = self._flow.setdefault(q.code, deque(maxlen=REBOUND_FLOW_MINUTES + 1))
+        if not snaps or snaps[-1][0] != minute:
+            if snaps and snaps[-1][0][:10] != minute[:10]:
+                snaps.clear()
+            snaps.append((minute, q.outer_vol, q.inner_vol))
+        if len(snaps) < 2:
+            return False
+        d_out, d_in = snaps[-1][1] - snaps[0][1], snaps[-1][2] - snaps[0][2]
+        if d_out < 0 or d_in < 0:
+            return False
+        return d_out > d_in
 
     def _hold_days(self, buy_date: date, today: date) -> int | None:
         """持有交易日数：日历里晚于买入日、不晚于今天的天数。日历不可用返回 None（卖出规则当天尾盘清仓）。"""

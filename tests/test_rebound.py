@@ -212,3 +212,35 @@ def test_trailing_take_profit_in_strategy():
     q = type(q)(**{**q.__dict__, "high": 10.25})
     fills = strat.on_minute({"600002": q}, at(10, 30))
     assert [(f.side, f.reason) for f in fills] == [("sell", "跟踪止盈")]
+
+
+def _flow_q(t, price, high, outer, inner):
+    q = quote("600002", pct=round((price / 10 - 1) * 100, 2), ts=t)
+    return type(q)(**{**q.__dict__, "price": price, "high": high, "outer_vol": outer, "inner_vol": inner})
+
+
+def test_trailing_waits_while_recent_buying_dominates_then_sells():
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    _hold(conn)
+    strat = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {}, set(), PREV_DAY, lambda: "正常",
+                            enabled=False, trade_days=[PREV_DAY, TODAY])
+    # 10:00–10:02 冲到 10.25，外盘增量一直大于内盘
+    for m, (out, inn) in enumerate([(100, 100), (160, 120), (230, 140)]):
+        assert strat.on_minute({"600002": _flow_q(at(10, m), 10.25, 10.25, out, inn)}, at(10, m)) == []
+    # 10:03 回落到 +1.7%（回落 0.8 点），但最近 3 分钟外盘 +150 > 内盘 +60 → 留着
+    assert strat.on_minute({"600002": _flow_q(at(10, 3), 10.17, 10.25, 250, 160)}, at(10, 3)) == []
+    # 10:04 最近 3 分钟外盘 +50 < 内盘 +150 → 跟踪止盈卖
+    fills = strat.on_minute({"600002": _flow_q(at(10, 4), 10.17, 10.25, 210 + 0, 270)}, at(10, 4))
+    assert [(f.side, f.reason) for f in fills] == [("sell", "跟踪止盈")]
+
+
+def test_buy_pressure_needs_two_snapshots():
+    """刚开盘/刚重启只有一个快照：没有主买优势，照常卖。"""
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    _hold(conn)
+    strat = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {}, set(), PREV_DAY, lambda: "正常",
+                            enabled=False, trade_days=[PREV_DAY, TODAY])
+    fills = strat.on_minute({"600002": _flow_q(at(10, 30), 10.17, 10.25, 9999, 1)}, at(10, 30))
+    assert [(f.side, f.reason) for f in fills] == [("sell", "跟踪止盈")]

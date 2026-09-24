@@ -34,6 +34,9 @@ REBOUND_STOP = -2.0            # 卖出：相对买入价止损（%）
 REBOUND_TRAIL_START = 1.5      # 卖出：当天最高相对买入价达到这个盈利（%）后启动跟踪止盈
 REBOUND_TRAIL_PULLBACK = 0.8   # 卖出：从当天最高回落这么多个点（相对买入价）卖
 REBOUND_MAX_HOLD_DAYS = 2      # 卖出：最多拿几个交易日，最后一天 14:55 清仓
+REBOUND_LOW_OPEN = -1.5        # 卖出：开盘相对昨收 ≤ 这个值算低开（%）
+REBOUND_LOW_OPEN_BOUNCE = 0.8  # 卖出：低开后从当天最低拉起这么多个点（相对昨收）必须卖
+REBOUND_FLOW_MINUTES = 3       # 卖出：跟踪止盈触发时看最近几分钟的主买/主卖增量，主买多先留着
 
 # 时间
 MARKET_OPEN = time(9, 30)

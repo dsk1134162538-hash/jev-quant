@@ -62,9 +62,11 @@ def builtin_summaries() -> list[dict]:
              {"title": "买点", "lines": [
                  f"只看情绪：偏弱或冰点时只在尾盘 {hm(config.TAIL_BUY_START)}~{hm(config.BUY_END)} 买，否则盘中可买（不看外围）",
                  f"主账户经 Jev 公告排雷 + 消息面判断，每分钟最多检查 {config.MAX_CHECKS_PER_TICK} 只"]},
-             {"title": "卖出（次日起，按相对买入价）", "lines": [
-                 f"亏到 {config.REBOUND_STOP:g}% 止损",
-                 f"当天最高盈利到 +{config.REBOUND_TRAIL_START:g}% 后，从最高回落 {config.REBOUND_TRAIL_PULLBACK:g} 个点卖",
+             {"title": "卖出（次日起）", "lines": [
+                 f"相对买入价亏到 {config.REBOUND_STOP:g}% 止损",
+                 f"开盘 ≤ {config.REBOUND_LOW_OPEN:g}% 时，从当天最低拉起 {config.REBOUND_LOW_OPEN_BOUNCE:g} 个点必须卖",
+                 f"当天最高盈利到 +{config.REBOUND_TRAIL_START:g}% 后，从最高回落 {config.REBOUND_TRAIL_PULLBACK:g} 个点卖；"
+                 f"最近 {config.REBOUND_FLOW_MINUTES} 分钟主买大于主卖时先留着，跌回成本价必卖",
                  f"最多拿 {config.REBOUND_MAX_HOLD_DAYS} 个交易日，最后一天 {hm(config.EOD_SELL)} 清仓"]}]},
     ]
 

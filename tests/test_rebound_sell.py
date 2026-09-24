@@ -31,10 +31,32 @@ def test_stop_loss_relative_to_buy_price():
     assert not decide_rebound_sell(pos(), q(9.81), D1, hold_days=1).sell
 
 
-def test_low_open_then_partial_recovery_holds():
-    """用户问的例子：低开 -1.5%、拉到 -0.5%，买入价 9.80 → 持仓约 -0.7%，不卖。"""
+def test_low_open_bounce_must_sell_even_at_a_loss():
+    """用户定的：低开 ≤ -1.5% 后从当天最低拉起 0.8 个点必须卖（买入 9.80，持仓还亏着也卖）。"""
     d = decide_rebound_sell(pos(9.80), q(9.73, open_=9.63, pre_close=9.78), D1, hold_days=1)
-    assert not d.sell
+    assert d.sell and d.reason == "低开反抽"
+
+
+def test_low_open_bounce_measured_from_day_low():
+    # 开盘 -1.5%，先砸到 -2.5%（9.75），反弹到 -1.7%（9.83）：从最低拉起 0.8 → 卖
+    qq = q(9.83, open_=9.85, pre_close=10.0)
+    qq = type(qq)(**{**qq.__dict__, "low": 9.75})
+    d = decide_rebound_sell(pos(9.90), qq, D1, hold_days=1)
+    assert d.sell and d.reason == "低开反抽"
+    # 只拉起 0.7 → 不卖
+    qq = type(qq)(**{**qq.__dict__, "price": 9.82})
+    assert not decide_rebound_sell(pos(9.90), qq, D1, hold_days=1).sell
+
+
+def test_low_open_bounce_needs_low_open():
+    # 开盘 -1.4%，从最低拉起 1 个点：不是低开，不触发
+    qq = q(9.96, open_=9.86, pre_close=10.0)
+    assert not decide_rebound_sell(pos(9.90), qq, D1, hold_days=1).sell
+
+
+def test_low_open_bounce_ignores_buy_pressure():
+    d = decide_rebound_sell(pos(9.80), q(9.73, open_=9.63, pre_close=9.78), D1, hold_days=1, buy_pressure=True)
+    assert d.sell and d.reason == "低开反抽"
 
 
 def test_trailing_not_armed_below_start():
@@ -48,6 +70,21 @@ def test_trailing_take_profit_after_pullback():
     assert d.sell and d.reason == "跟踪止盈"
     # 回落 0.7 点 → 继续拿
     assert not decide_rebound_sell(pos(), q(10.18, high=10.25), D1, hold_days=1).sell
+
+
+def test_buy_pressure_delays_trailing_take_profit():
+    assert not decide_rebound_sell(pos(), q(10.17, high=10.25), D1, hold_days=1, buy_pressure=True).sell
+
+
+def test_back_to_cost_sells_even_with_buy_pressure():
+    """保底：启动过跟踪止盈（最高 +2.5%）的票，跌回成本价就卖，主买多也卖。"""
+    d = decide_rebound_sell(pos(), q(10.0, high=10.25), D1, hold_days=1, buy_pressure=True)
+    assert d.sell and d.reason == "回到成本"
+
+
+def test_stop_loss_ignores_buy_pressure():
+    d = decide_rebound_sell(pos(), q(9.80), D1, hold_days=1, buy_pressure=True)
+    assert d.sell and d.reason == "止损"
 
 
 def test_first_day_eod_keeps_second_day_eod_clears():
