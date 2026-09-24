@@ -1,9 +1,10 @@
 import json
 from datetime import datetime
 
-import run
 from jevq import db
 from jevq.models import Fill
+from jevq.notify_content import buy_push_content, close_summary_content, sell_push_content
+import run
 
 
 def insert_decision(conn, code, strategy, ts, trace):
@@ -46,15 +47,15 @@ LOWBUY_TRACE = {
 }
 
 
-def test_board_buy_push_content_includes_jev_detail():
+def test_board_buy_push_content_includes_full_basic_line_and_jev_detail():
     conn = db.connect(":memory:")
     ts = datetime(2026, 9, 24, 9, 31)
     insert_decision(conn, "600001", "board", ts.isoformat(timespec="seconds"), BOARD_TRACE)
     f = Fill("board_main", "600001", "buy", 11.0, 1000, 6.6, ts, "扫板9.5%")
 
-    content = run._buy_push_content(conn, f)
+    content = buy_push_content(conn, f, "甲股份")
 
-    assert "09:31｜1000 股｜金额 11,000" in content
+    assert "09:31 600001 甲股份 1000股 @11.0｜扫板9.5%｜金额 11,000" in content
     assert "▍为什么选它" in content
     assert "题材A" in content and "龙头分 6" in content
     assert "第1/成交额第2/5日第1" in content
@@ -78,9 +79,9 @@ def test_lowbuy_buy_push_content_includes_market_section_and_empty_news():
     insert_decision(conn, "600002", "lowbuy", ts.isoformat(timespec="seconds"), LOWBUY_TRACE)
     f = Fill("main", "600002", "buy", 9.8, 500, 5.1, ts, "低吸-1.5%｜5日4.2%｜公告无雷")
 
-    content = run._buy_push_content(conn, f)
+    content = buy_push_content(conn, f, "乙股份")
 
-    assert "10:00｜500 股｜金额 4,900" in content
+    assert "10:00 600002 乙股份 500股 @9.8｜低吸-1.5%｜5日4.2%｜公告无雷｜金额 4,900" in content
     assert "跌幅 -1.5%｜近 5 日 +4.20%｜候选排名 1/3" in content
     assert "▍Jev 公告排雷（近 90 天 0 条，全部放行）" in content
     assert "无新闻，按中性" in content
@@ -88,14 +89,14 @@ def test_lowbuy_buy_push_content_includes_market_section_and_empty_news():
     assert "0.50" in content   # 情绪概率有格式化
 
 
-def test_buy_push_content_missing_trace_still_has_basic_line():
+def test_buy_push_content_missing_trace_still_has_full_basic_line():
     conn = db.connect(":memory:")
     ts = datetime(2026, 9, 24, 10, 5)
     f = Fill("main", "600003", "buy", 10.0, 200, 5.0, ts, "低吸-2%")
 
-    content = run._buy_push_content(conn, f)
+    content = buy_push_content(conn, f, "丁股份")
 
-    assert content == "10:05｜200 股｜金额 2,000"
+    assert content == "10:05 600003 丁股份 200股 @10.0｜低吸-2%｜金额 2,000"
 
 
 def test_sell_push_content_computes_pnl_from_buy_fill_history():
@@ -108,22 +109,23 @@ def test_sell_push_content_computes_pnl_from_buy_fill_history():
     conn.commit()
     f = Fill("main", "600004", "sell", 10.5, 1000, 12.65, sell_ts, "止盈")
 
-    content = run._sell_push_content(conn, f)
+    content = sell_push_content(conn, f, "戊股份")
 
     cost = 10.0 * 1000 + 5.15
     proceeds = 10.5 * 1000 - 12.65
     pct = round((proceeds / cost - 1) * 100, 2)
     amount = round(proceeds - cost, 2)
-    assert content == f"14:00｜1000 股｜止盈｜持有 2 天｜盈亏 {pct:+.2f}%（{amount:+,.0f} 元）"
+    assert content == (f"14:00 600004 戊股份 1000股 @10.5｜止盈｜持有 2 天｜"
+                       f"盈亏 {pct:+.2f}%（{amount:+,.0f} 元）")
 
 
 def test_sell_push_content_missing_buy_history_gives_basic_line_only():
     conn = db.connect(":memory:")
     f = Fill("main", "600005", "sell", 10.5, 1000, 12.65, datetime(2026, 9, 24, 14, 0), "止盈")
 
-    content = run._sell_push_content(conn, f)
+    content = sell_push_content(conn, f, "己股份")
 
-    assert content == "14:00｜1000 股｜止盈"
+    assert content == "14:00 600005 己股份 1000股 @10.5｜止盈"
 
 
 def test_notify_fills_uses_bracket_titles_for_buy_and_sell():
@@ -142,3 +144,12 @@ def test_notify_fills_uses_bracket_titles_for_buy_and_sell():
 
     assert sent[0][0] == "【低吸·主(Jev) 买入】丙股份 @10.0"
     assert sent[1][0] == "【低吸·主(Jev) 卖出】丙股份 @11.0"
+
+
+def test_close_summary_content_moved_to_notify_content():
+    conn = db.connect(":memory:")
+    from jevq.ledger import Ledger
+    from datetime import date
+    ledger = Ledger(conn)
+    content = close_summary_content(ledger, date(2026, 9, 24), {})
+    assert "净值" in content and "今日成交" in content

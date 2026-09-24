@@ -10,6 +10,17 @@ import requests
 PUSHPLUS_URL = "https://www.pushplus.plus/send"
 
 
+def _redact_value(value):
+    """递归脱敏：任何名字里带 "token"（大小写不敏感）的键，值一律替换成 "***"。
+    响应体把请求里的 token 原样回显是最容易泄漏的路径，所以先在键名这一层挡一道，
+    再由 Notifier._redact 兜底抹掉字符串里可能残留的真实 token 值。"""
+    if isinstance(value, dict):
+        return {k: ("***" if "token" in str(k).lower() else _redact_value(v)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(v) for v in value]
+    return value
+
+
 class Notifier:
     """token 为空则 enabled=False，所有方法静默返回。
 
@@ -44,19 +55,14 @@ class Notifier:
     def send(self, title: str, content: str) -> None:
         if not self.enabled:
             return
-        today = self._today()
-        with self._count_lock:
-            if self._sent_day != today:
-                self._sent_day, self._sent_count = today, 0
-            if self._sent_count >= self._max_per_day:
-                self._log(f"今日推送已达上限（{self._max_per_day}），跳过：{title}")
-                return
-            self._sent_count += 1
-        with self._cv:
-            self._pending += 1
-        self._queue.put((title, content))
+        if not self._reserve_quota():
+            self._log(f"今日推送已达上限（{self._max_per_day}），跳过：{title}")
+            return
+        self._enqueue(title, content)
 
     def once(self, key: str, title: str, content: str) -> None:
+        """同一 key 当天只发一次。被每日上限挡下的这次不算「已发」——不占用 key，
+        当天配额恢复（或调用方提高了上限）后同一 key 还能再发一次。"""
         if not self.enabled:
             return
         today = self._today()
@@ -65,13 +71,33 @@ class Notifier:
                 self._once_day, self._once_keys = today, set()
             if key in self._once_keys:
                 return
+        if not self._reserve_quota():
+            self._log(f"今日推送已达上限（{self._max_per_day}），跳过：{title}")
+            return
+        with self._count_lock:
             self._once_keys.add(key)
-        self.send(title, content)
+        self._enqueue(title, content)
 
     def flush(self, timeout: float = 5.0) -> None:
         """测试专用：等后台线程把队列里的消息都发完（或超时）。"""
         with self._cv:
             self._cv.wait_for(lambda: self._pending == 0, timeout=timeout)
+
+    def _reserve_quota(self) -> bool:
+        """按本地日期占用一条今日配额；额度用完返回 False（调用方只 log，不发）。"""
+        today = self._today()
+        with self._count_lock:
+            if self._sent_day != today:
+                self._sent_day, self._sent_count = today, 0
+            if self._sent_count >= self._max_per_day:
+                return False
+            self._sent_count += 1
+            return True
+
+    def _enqueue(self, title: str, content: str) -> None:
+        with self._cv:
+            self._pending += 1
+        self._queue.put((title, content))
 
     def _worker(self) -> None:
         while True:
@@ -89,17 +115,24 @@ class Notifier:
                                                     "content": content, "template": "txt"},
                               timeout=5)
         except Exception as e:
-            self._log(f"推送失败：{e!r}")
+            self._log(self._redact(f"推送失败：{e!r}"))
             return
         try:
             if resp.status_code != 200:
-                self._log(f"推送失败：HTTP {resp.status_code}")
+                self._log(self._redact(f"推送失败：HTTP {resp.status_code}"))
                 return
             data = resp.json()
             if data.get("code") != 200:
-                self._log(f"推送失败：接口返回 {data}")
+                self._log(self._redact(f"推送失败：接口返回 {_redact_value(data)}"))
         except Exception as e:
-            self._log(f"推送响应解析失败：{e!r}")
+            self._log(self._redact(f"推送响应解析失败：{e!r}"))
+
+    def _redact(self, text: str) -> str:
+        """token 绝不进日志：把响应/异常文本里可能出现的真实 token 字符串都抹掉，
+        这是最后一道防线（键名层面的脱敏见 _redact_value）。"""
+        if self.token:
+            text = text.replace(self.token, "***")
+        return text
 
 
 def _windows_env_fallback(name: str) -> str | None:

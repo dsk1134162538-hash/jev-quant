@@ -1,16 +1,13 @@
 import argparse
-import json
 import os
 import sys
 import threading
-from collections import Counter
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
-from jevq import db
-from jevq.config import (ACCOUNT_NAMES, ACCOUNT_STRATEGY, ACCOUNTS, DB_PATH, INITIAL_CASH,
-                         NOTICE_LOOKBACK_DAYS, REPORT_DIR)
+from jevq import db, notify_content
+from jevq.config import ACCOUNT_NAMES, ACCOUNTS, DB_PATH, REPORT_DIR
 from jevq.data import akdata, board_events, closes, concepts, tencent
 from jevq.data.notice_store import sync_notices
 from jevq.engine import Engine
@@ -349,159 +346,15 @@ def _notify_close_summary(notifier: Notifier, ledger: Ledger, today: date, price
                           log: Callable[[str], None]) -> None:
     """收盘小结：四个账户各一行净值/收益率/今日成交笔数。任何问题只记日志，不影响报告已写入的事实。"""
     try:
-        counts = Counter(f.account for f in ledger.fills_on(today))
-        lines = []
-        for a in ACCOUNTS:
-            value = ledger.equity(a, prices)
-            pct = (value / INITIAL_CASH - 1) * 100
-            lines.append(f"{ACCOUNT_NAMES[a]} 净值 {value:,.2f}（{pct:+.2f}%）今日成交 {counts.get(a, 0)} 笔")
-        notifier.send(f"收盘 {today.isoformat()}", "\n".join(lines))
+        notifier.send(f"收盘 {today.isoformat()}", notify_content.close_summary_content(ledger, today, prices))
     except Exception as e:
         log(f"收盘小结推送失败：{e!r}")
 
 
-def _sell_pnl(conn, f) -> tuple[float, float, int] | None:
-    """卖出这笔的 (盈亏%, 盈亏金额, 持有天数)。优先用买入那笔的成本价+费用对卖出净得算金额；
-    找不到对应买入成交（比如非本程序建的仓）就返回 None（调用方退化为只显示基本信息）。"""
-    row = conn.execute(
-        "SELECT price, fee, ts FROM fills WHERE account=? AND code=? AND side='buy' AND ts<? "
-        "ORDER BY ts DESC LIMIT 1",
-        (f.account, f.code, f.ts.isoformat())).fetchone()
-    if not row or not row[0]:
-        return None
-    buy_price, buy_fee, buy_ts = row
-    cost = buy_price * f.shares + (buy_fee or 0.0)
-    proceeds = f.price * f.shares - f.fee
-    pct = round((proceeds / cost - 1) * 100, 2) if cost else round((f.price / buy_price - 1) * 100, 2)
-    amount = round(proceeds - cost, 2)
-    held_days = (f.ts.date() - datetime.fromisoformat(buy_ts).date()).days
-    return pct, amount, held_days
-
-
-def _load_buy_trace(conn, f) -> dict | None:
-    """找到这笔主账户买入对应的决策留痕：同代码、同策略、当天，按 id 倒序第一条
-    trace.outcome.bought 为真的记录（板块策略会在同一 trace 对象上追加「后来封死了」之类的信息，
-    所以要拿最新一条，不是最早那条买入时的快照）。"""
-    strategy = ACCOUNT_STRATEGY.get(f.account)
-    rows = conn.execute(
-        "SELECT trace FROM decisions WHERE code=? AND strategy=? AND substr(ts, 1, 10)=? "
-        "AND trace IS NOT NULL ORDER BY id DESC",
-        (f.code, strategy, f.ts.date().isoformat())).fetchall()
-    for (raw,) in rows:
-        try:
-            trace = json.loads(raw)
-        except Exception:
-            continue
-        if isinstance(trace, dict) and trace.get("outcome", {}).get("bought") is True:
-            return trace
-    return None
-
-
-def _fmt_probs(probs: dict | None, top: int | None = None) -> str:
-    if not probs:
-        return ""
-    items = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)
-    if top:
-        items = items[:top]
-    return "/".join(f"{k}{v:.2f}" for k, v in items)
-
-
-def _fmt_judge_label(label, trace: dict | None) -> str:
-    if not trace:
-        return "未知"
-    probs = _fmt_probs(trace.get("probabilities"))
-    return f"{label}（{probs}）" if probs else f"{label}"
-
-
-def _buy_push_notices_line(notices: list) -> list[str]:
-    lines = [f"▍Jev 公告排雷（近 {NOTICE_LOOKBACK_DAYS} 天 {len(notices)} 条，全部放行）"]
-    for item in notices[:5]:
-        date_str = (item.get("date") or "")[5:10]
-        title = (item.get("title") or "")[:20]
-        if item.get("source") == "keyword":
-            lines.append(f"· {date_str} {title} → 标题关键词判定，未调用 Jev")
-        else:
-            probs = _fmt_probs(item.get("probabilities"), top=2)
-            line = f"· {date_str} {title} → {item.get('label')}"
-            lines.append(f"{line} {probs}" if probs else line)
-    return lines
-
-
-def _buy_push_news_lines(news: dict | None) -> list[str]:
-    items = (news or {}).get("news") or []
-    if not items:
-        return ["▍Jev 消息面：无新闻，按中性"]
-    conf = news.get("confidence")
-    conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "未知"
-    lines = [f"▍Jev 消息面：{news.get('label')}（{_fmt_probs(news.get('probabilities'))}，"
-             f"置信度 {conf_str}）"]
-    lines += [f"· {n[:30]}" for n in items[:2]]
-    lines.append(f"（共 {len(items)} 条）")
-    return lines
-
-
-def _buy_push_content(conn, f) -> str:
-    """成交推送正文（买入）：基本一行 + Jev 留痕明细。缺留痕/字段一律不抛异常、缺哪块就跳过哪块。"""
-    lines = [f"{f.ts:%H:%M}｜{f.shares} 股｜金额 {f.shares * f.price:,.0f}"]
-    trace = _load_buy_trace(conn, f)
-    if not trace:
-        return "\n".join(lines)
-    strategy = trace.get("strategy")
-    cand = trace.get("candidate") or {}
-    try:
-        lines.append("▍为什么选它")
-        if strategy == "board":
-            ranks = cand.get("ranks") or {}
-            lines.append(f"题材 {cand.get('concept')}（{cand.get('heat')} 只涨超 5%）｜"
-                         f"龙头分 {cand.get('score')}（涨幅第{ranks.get('pct')}/成交额第{ranks.get('amount')}/"
-                         f"5日第{ranks.get('ret5')}）")
-            sealed = "已封死" if trace.get("sealed_at_snapshot") else "未封死"
-            lines.append(f"扫板触发 +{cand.get('pct')}%，快照时{sealed}")
-        elif strategy == "lowbuy":
-            ret5 = cand.get("ret5")
-            ret5_str = f"{ret5:+.2f}" if isinstance(ret5, (int, float)) else "未知"
-            lines.append(f"跌幅 {cand.get('pct')}%｜近 5 日 {ret5_str}%｜"
-                         f"候选排名 {cand.get('rank')}/{cand.get('of')}")
-        else:
-            lines.pop()
-    except Exception:
-        pass
-    try:
-        notices = trace.get("notices")
-        if notices is not None:
-            lines += _buy_push_notices_line(notices)
-    except Exception:
-        pass
-    try:
-        lines += _buy_push_news_lines(trace.get("news"))
-    except Exception:
-        pass
-    if strategy == "lowbuy":
-        try:
-            market = trace.get("market") or {}
-            mode_label = "盘中可买" if market.get("mode") == "intraday" else "只在尾盘买"
-            sent = _fmt_judge_label(market.get("sentiment"), market.get("sentiment_trace"))
-            over = _fmt_judge_label(market.get("overseas"), market.get("overseas_trace"))
-            lines.append(f"▍当时市场：{mode_label}｜情绪 {sent}｜外围 {over}")
-        except Exception:
-            pass
-    return "\n".join(lines)
-
-
-def _sell_push_content(conn, f) -> str:
-    """成交推送正文（卖出）：基本信息 + 持有天数 + 盈亏（找不到对应买入记录就只给基本信息）。"""
-    parts = [f"{f.ts:%H:%M}｜{f.shares} 股｜{f.reason}"]
-    info = _sell_pnl(conn, f)
-    if info is not None:
-        pct, amount, held_days = info
-        parts.append(f"持有 {held_days} 天")
-        parts.append(f"盈亏 {pct:+.2f}%（{amount:+,.0f} 元）")
-    return "｜".join(parts)
-
-
 def _notify_fills(notifier: Notifier, conn, fills: list, names: dict,
                   log: Callable[[str], None]) -> None:
-    """成交推送：只推主账户（main / board_main），影子账户不推。任何问题只记日志，不影响交易。"""
+    """成交推送：只推主账户（main / board_main），影子账户不推。任何问题只记日志，不影响交易。
+    正文明细的构建都在 jevq.notify_content 里，这里只是薄薄一层：拼标题、挑账户、兜底记日志。"""
     for f in fills:
         if f.account not in ("main", "board_main"):
             continue
@@ -509,10 +362,10 @@ def _notify_fills(notifier: Notifier, conn, fills: list, names: dict,
             stock_name = names.get(f.code, f.code)
             if f.side == "buy":
                 title = f"【{ACCOUNT_NAMES[f.account]} 买入】{stock_name} @{f.price}"
-                content = _buy_push_content(conn, f)
+                content = notify_content.buy_push_content(conn, f, stock_name)
             else:
                 title = f"【{ACCOUNT_NAMES[f.account]} 卖出】{stock_name} @{f.price}"
-                content = _sell_push_content(conn, f)
+                content = notify_content.sell_push_content(conn, f, stock_name)
             notifier.send(title, content)
         except Exception as e:
             log(f"成交推送失败：{e!r}")
