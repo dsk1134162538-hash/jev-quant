@@ -16,6 +16,10 @@ class Quote:
     limit_up: float
     limit_down: float
     ts: datetime
+    turnover: float = 0.0      # 换手率 %
+    volume_ratio: float = 0.0  # 量比
+    float_mcap: float = 0.0    # 流通市值，亿
+    total_mcap: float = 0.0    # 总市值，亿
 
     def _pct(self, p: float) -> float:
         return round((p / self.pre_close - 1) * 100, 2)

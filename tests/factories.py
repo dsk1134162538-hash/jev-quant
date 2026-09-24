@@ -8,13 +8,16 @@ def _p(pre_close: float, pct: float) -> float:
 
 
 def quote(code="600001", pct=0.0, open_pct=None, low_pct=None, pre_close=10.0,
-          name="测试股份", volume=1000, amount=1e7, ts=datetime(2026, 9, 24, 10, 0)):
+          name="测试股份", volume=1000, amount=1e7, ts=datetime(2026, 9, 24, 10, 0),
+          turnover=0.0, volume_ratio=0.0, float_mcap=0.0, total_mcap=0.0):
     price = _p(pre_close, pct)
     op = price if open_pct is None else _p(pre_close, open_pct)
     low = min(price, op) if low_pct is None else _p(pre_close, low_pct)
     return Quote(code=code, name=name, price=price, pre_close=pre_close, open=op,
                  high=max(price, op), low=low, volume=volume, amount=amount,
-                 limit_up=_p(pre_close, 10), limit_down=_p(pre_close, -10), ts=ts)
+                 limit_up=_p(pre_close, 10), limit_down=_p(pre_close, -10), ts=ts,
+                 turnover=turnover, volume_ratio=volume_ratio, float_mcap=float_mcap,
+                 total_mcap=total_mcap)
 
 
 def position(code="600001", account="main", shares=1000, buy_price=10.0,

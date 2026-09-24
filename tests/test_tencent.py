@@ -8,10 +8,12 @@ from jevq.data.tencent import (fetch_kline, five_day_return, parse_index_pcts, p
 
 
 def tencent_line(sym, name, code, price, pre, op, high, low, vol, amount_wan, up, down,
-                 pct="0.00", ts="20260923100547"):
+                 pct="0.00", ts="20260923100547", turnover="", float_mcap="", total_mcap="",
+                 volume_ratio=""):
     f = [""] * 50
     f[0], f[1], f[2], f[3], f[4], f[5], f[6] = "1", name, code, price, pre, op, vol
     f[30], f[32], f[33], f[34], f[37], f[47], f[48] = ts, pct, high, low, amount_wan, up, down
+    f[38], f[44], f[45], f[49] = turnover, float_mcap, total_mcap, volume_ratio
     return f'v_{sym}="{"~".join(f)}";'
 
 
@@ -22,7 +24,9 @@ def test_symbol():
 
 def test_parse_quotes():
     text = (tencent_line("sh603136", "天目湖", "603136", "9.36", "9.32", "9.33", "9.40",
-                         "9.21", "53106", "4972", "10.25", "8.39")
+                         "9.21", "53106", "4972", "10.25", "8.39",
+                         turnover="1.23", float_mcap="45.6", total_mcap="78.9",
+                         volume_ratio="1.05")
             + "\n" + tencent_line("sz000001", "平安银行", "000001", "11.59", "11.71", "11.68",
                                   "11.71", "11.58", "97618", "11302.5", "12.88", "10.54"))
     qs = parse_quotes(text)
@@ -32,6 +36,11 @@ def test_parse_quotes():
     assert q.limit_up == 10.25 and q.limit_down == 8.39
     assert q.ts.hour == 10 and q.ts.minute == 5
     assert qs["000001"].pct == -1.02
+    assert q.turnover == 1.23 and q.float_mcap == 45.6 and q.total_mcap == 78.9
+    assert q.volume_ratio == 1.05
+    q2 = qs["000001"]
+    assert q2.turnover == 0.0 and q2.float_mcap == 0.0 and q2.total_mcap == 0.0
+    assert q2.volume_ratio == 0.0
 
 
 def test_parse_quotes_skips_garbage():

@@ -24,6 +24,13 @@ def _records(text: str):
         yield key.replace("v_", "", 1).strip(), body.rstrip('"').split("~")
 
 
+def _safe_float(f: list[str], i: int) -> float:
+    try:
+        return float(f[i])
+    except (ValueError, IndexError):
+        return 0.0
+
+
 def parse_quotes(text: str) -> dict[str, Quote]:
     out = {}
     for _, f in _records(text):
@@ -34,7 +41,9 @@ def parse_quotes(text: str) -> dict[str, Quote]:
                       open=float(f[5]), high=float(f[33]), low=float(f[34]),
                       volume=int(float(f[6])), amount=float(f[37]) * 10000,
                       limit_up=float(f[47]), limit_down=float(f[48]),
-                      ts=datetime.strptime(f[30], "%Y%m%d%H%M%S"))
+                      ts=datetime.strptime(f[30], "%Y%m%d%H%M%S"),
+                      turnover=_safe_float(f, 38), volume_ratio=_safe_float(f, 49),
+                      float_mcap=_safe_float(f, 44), total_mcap=_safe_float(f, 45))
         except (ValueError, IndexError):
             continue
         if q.pre_close > 0:
