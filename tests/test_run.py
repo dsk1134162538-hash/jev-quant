@@ -65,6 +65,7 @@ class FakeEngine:
         self.universe, self.ret5, self.prev_day, self.overseas = universe, ret5, prev_day, overseas
         self.fetch_quotes, self.accounts_provider = fetch_quotes, accounts_provider
         self.ticks, self.last_quotes, self.sentiment_label = [], {}, "正常"
+        self.sentiment_trace = None
         FakeEngine.instances.append(self)
 
     def tick(self, now):
@@ -1053,3 +1054,60 @@ def test_custom_holding_outside_universe_is_sold_and_pushed(env):
         conn.close()
     assert reasons == ["止损"]
     assert any(t.startswith("【测试规则·主(Jev) 卖出】") for t, _ in notifier.sent)
+
+
+# ---- 超跌反弹接入运行循环 ----
+
+class SpyRebound(run.ReboundStrategy):
+    instances: list = []
+    boom_once = False
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.calls = []
+        SpyRebound.instances.append(self)
+
+    def on_minute(self, quotes, now):
+        self.calls.append(bool(quotes))
+        if SpyRebound.boom_once:
+            SpyRebound.boom_once = False
+            raise RuntimeError("rebound boom")
+        return super().on_minute(quotes, now)
+
+
+@pytest.fixture
+def spy_rebound(monkeypatch):
+    SpyRebound.instances, SpyRebound.boom_once = [], False
+    monkeypatch.setattr(run, "ReboundStrategy", SpyRebound)
+    return SpyRebound
+
+
+def test_rebound_driven_every_minute_and_exception_isolated(env, spy_rebound):
+    spy_rebound.boom_once = True
+    FakeEngine.behavior = feeding_tick
+    env.feed["quotes"] = {"600001": quote("600001", pct=-1, ts=datetime(2026, 9, 23, 10, 0))}
+    path = env.run()
+    assert path is not None and Path(path).exists(), env.log_text()
+    [strat] = spy_rebound.instances
+    assert strat.enabled
+    assert len(strat.calls) == 240 and all(strat.calls)
+    assert len(FakeEngine.instances[0].ticks) == 240                  # 低吸照常
+    assert "超跌反弹本轮出错：RuntimeError('rebound boom')" in env.log_text()
+    assert "超跌反弹：近 " in env.log_text()
+
+
+def test_rebound_sell_only_when_board_exclusion_fails(env, spy_rebound, monkeypatch):
+    monkeypatch.setattr(run.closes, "consecutive_board_codes",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("db boom")))
+    env.run(once=True)
+    [strat] = spy_rebound.instances
+    assert not strat.enabled
+    assert "超跌反弹连板排除计算失败，今日只卖不买" in env.log_text()
+
+
+def test_rebound_reads_sentiment_from_lowbuy_engine(env, spy_rebound):
+    env.run(once=True)
+    [strat] = spy_rebound.instances
+    FakeEngine.instances[0].sentiment_label = "冰点"
+    assert strat.sentiment_provider() == "冰点"
+

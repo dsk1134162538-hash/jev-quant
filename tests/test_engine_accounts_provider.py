@@ -24,7 +24,7 @@ def _engine(conn, ledger, fetch, accounts_provider=None):
                  {"600001": 5.0}, date(2026, 9, 22), "中性", accounts_provider=accounts_provider)
 
 
-def test_default_accounts_provider_fetches_builtin_four_accounts_positions():
+def test_default_accounts_provider_fetches_builtin_accounts_positions():
     conn = db.connect(":memory:")
     ledger = Ledger(conn)
     ledger.buy("board_main", quote("600099", pct=-1.0), datetime(2026, 9, 23, 10, 0), "x")
@@ -55,7 +55,7 @@ def test_custom_accounts_provider_used_instead_of_default():
     assert "600077" in seen[0]                        # 只有注入的 provider 能让引擎看到这个自定义账户的持仓
 
 
-def test_default_accounts_provider_ignores_accounts_not_in_builtin_four():
+def test_default_accounts_provider_ignores_accounts_not_builtin():
     conn = db.connect(":memory:")
     ledger = Ledger(conn)
     ledger.ensure_account("c1_main", 30000)

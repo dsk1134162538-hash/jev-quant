@@ -23,10 +23,14 @@ A 股主板 T+1 模拟盘：规则选股 + Jev（TypeSafe System One 模型）�
   3. Jev 返回 `error` 判定计入熔断；可买性预检（停牌/封死/不够一手）不消耗 Jev 调用。
   4. 自动上线重启：新进程带 `--after-deploy`，最多等 60 秒让旧进程释放 `daemon.lock`（原来可能见锁即退，上线后后台消失）。
   5. `custom_store.save` 拒绝未知策略 id。
+- **新增第三个内置策略「超跌反弹」**（家里，同在 `review-fixes` 分支，未推送）。设计：`docs/specs/2026-09-24-rebound-design.md`。
+  用户实盘打法：近 5 日跌 0~20%、近 40 个交易日没出现过 2 连板的票，当日回调到 0~-3% 时买，5 日跌得多的优先；
+  买入时机只看情绪（正常/火热盘中，偏弱/冰点尾盘 14:50，不看外围）；卖出与低吸完全相同。账户 `rebound_main`/`rebound_shadow`。
+  同时情绪刷新 30 → 10 分钟（低吸共用）。
 
 ## 回公司电脑要做
 1. `git fetch`，把 `review-fixes` 合进 master（用户确认后），跑全量测试。
-2. Task 9 剩余（只能在公司电脑）：用新浪补足本地收盘价到 ≥ 21 个交易日（`start_date=20260801`）。
+2. Task 9 剩余（只能在公司电脑）：用新浪补足本地收盘价——**超跌反弹的连板排除需要 ≥ 41 个交易日，补到 ≥ 60 个交易日**（`start_date` 往前推到 2026-06 下旬）。不补也能跑，但日志会提示「收盘价库只有 N 天，排除可能不全」。
 3. 收盘后重启后台以启用新代码——仅当工作区干净、全量测试通过。步骤（PowerShell）：结束命令行包含 `daemon.py` 的 pythonw 进程 → 从 HKCU 读 `TYPESAFE_API_KEY`、`PUSHPLUS_TOKEN` 设到当前进程环境 → `Start-Process .venv\Scripts\pythonw.exe daemon.py -WorkingDirectory D:\claude\jev-quant -WindowStyle Hidden` → 移除这两个环境变量 → 确认进程存在、`data/daemon.log`/`data/run-*.log` 无报错。**不要在盘中（09:15–15:05）重启。**
 4. 推送 GitHub 前做密钥扫描（`sk-`、`apikey_`、`gho_` 等不得出现在提交里）。
 

@@ -128,6 +128,11 @@ def buy_push_content(conn, f: Fill, stock_name: str) -> str:
             ret5_str = f"{ret5:+.2f}" if isinstance(ret5, (int, float)) else "未知"
             lines.append(f"跌幅 {cand.get('pct')}%｜近 5 日 {ret5_str}%｜"
                          f"候选排名 {cand.get('rank')}/{cand.get('of')}")
+        elif strategy == "rebound":
+            ret5 = cand.get("ret5")
+            ret5_str = f"{ret5:+.2f}" if isinstance(ret5, (int, float)) else "未知"
+            lines.append(f"当前 {cand.get('pct')}%｜近 5 日 {ret5_str}%｜"
+                         f"候选排名 {cand.get('rank')}/{cand.get('of')}（5 日跌得多的优先）")
         elif accounts_mod._is_custom_strategy(strategy or ""):
             lines += [f"· {h.get('desc')}（当时 {h.get('value')}）" for h in cand.get("hits") or []]
         else:
@@ -154,6 +159,15 @@ def buy_push_content(conn, f: Fill, stock_name: str) -> str:
             sent = fmt_judge_label(market.get("sentiment"), market.get("sentiment_trace"))
             over = fmt_judge_label(market.get("overseas"), market.get("overseas_trace"))
             lines.append(f"▍当时市场：{mode_label}｜情绪 {sent}｜外围 {over}")
+        except Exception:
+            pass
+    elif strategy == "rebound":      # 超跌反弹的买入时机只看情绪，不看外围
+        try:
+            market = trace.get("market") or {}
+            mode_label = "盘中可买" if market.get("mode") == "intraday" else "只在尾盘买"
+            trace_s = market.get("sentiment_trace")
+            sent = fmt_judge_label(market.get("sentiment"), trace_s) if trace_s else (market.get("sentiment") or "未知")
+            lines.append(f"▍当时市场：{mode_label}｜情绪 {sent}")
         except Exception:
             pass
     return "\n".join(lines)
