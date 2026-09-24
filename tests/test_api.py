@@ -288,3 +288,43 @@ def test_start_defers_to_daemon_when_daemon_lock_held(paths):
     assert result == {"ok": False, "msg": "后台程序已接管今日交易，面板只需查看"}
     assert not api.is_running()
     assert not started.wait(0.2)
+
+
+def test_status_accounts_carry_capital_baseline(paths):
+    """面板净值曲线按各账户自己的本金折算收益率，status 要把基准资金带出来。"""
+    conn = db.connect(paths[0])
+    today = _date.today()
+    yesterday = today.fromordinal(today.toordinal() - 1)
+    spec = {"name": "大资金", "capital": 100000,
+            "select": {"conditions": [{"field": "pct", "op": "between", "value": [-2, 0]}]},
+            "exits": [{"when": {"conditions": [{"field": "pct", "op": "<=", "value": -3}]}, "reason": "止损"}]}
+    custom_store.save(conn, spec, yesterday, [yesterday, today])
+    Ledger(conn, init=False).ensure_account("c1_main", 100000)
+    conn.close()
+    s = make_api(paths).status()
+    by_id = {a["id"]: a for a in s["accounts"]}
+    assert by_id["main"]["baseline"] == 30000
+    assert by_id["c1_main"]["baseline"] == 100000
+    # c1_shadow 还没开户（交易进程尚未构造 CustomStrategy）：按本金空仓显示，status 不能抛异常
+    shadow = by_id["c1_shadow"]
+    assert shadow["equity"] == 100000 and shadow["return_pct"] == 0.0 and shadow["positions"] == []
+
+
+def test_fills_carry_account_id(paths):
+    """成交表按账户上色，需要账户 id（显示名可能重名/改名）。"""
+    conn = db.connect(paths[0])
+    Ledger(conn).buy("board_main", quote("600001", pct=-1.0), T, "首板")
+    conn.close()
+    f = make_api(paths).fills("2026-09-23")[0]
+    assert f["account_id"] == "board_main" and f["account"] == "首板·主(Jev)"
+
+
+def test_rules_list_includes_builtin_readonly_summaries(paths):
+    result = make_api(paths).rules_list()
+    assert result["ok"] and result["rules"] == []
+    builtin = {b["id"]: b for b in result["builtin"]}
+    assert set(builtin) == {"lowbuy", "board"}
+    assert builtin["lowbuy"]["accounts"] == ["main", "shadow"]
+    titles = [s["title"] for s in builtin["board"]["sections"]]
+    assert titles[0] == "选股" and all(s["lines"] for s in builtin["board"]["sections"])
+    assert any("-3%" in line for s in builtin["lowbuy"]["sections"] for line in s["lines"])

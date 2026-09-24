@@ -6,11 +6,11 @@
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --text:#1d2129; --muted:#86909c; --line:#e5e6eb;
           --up:#d93026; --down:#1a9e5c; --accent:#3370ff; --shadow:#8f5cf7;
-          --board-accent:#e08b00; --board-shadow:#14b8a6; }
+          --board-accent:#e08b00; --board-shadow:#14b8a6; --warn:#c77700; --tile:#f2f3f5; }
   @media (prefers-color-scheme: dark) {
     :root { --bg:#17181a; --card:#232429; --text:#e8e9eb; --muted:#8a8f98; --line:#34363c;
             --up:#f5584a; --down:#2fbf71; --accent:#5b8cff; --shadow:#a98bff;
-            --board-accent:#f0a83a; --board-shadow:#3ad6c0; }
+            --board-accent:#f0a83a; --board-shadow:#3ad6c0; --warn:#f0a83a; --tile:#2b2d33; }
   }
   * { box-sizing:border-box; }
   body { margin:0; font:14px/1.5 "Microsoft YaHei UI", system-ui, sans-serif; background:var(--bg); color:var(--text); }
@@ -24,6 +24,7 @@
   button { border:1px solid var(--line); background:var(--card); color:var(--text); padding:6px 16px; border-radius:6px; cursor:pointer; font:inherit; }
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
   button:disabled { opacity:.45; cursor:default; }
+  input, select { font:inherit; color:var(--text); background:var(--card); border:1px solid var(--line); border-radius:6px; padding:5px 8px; }
   main { padding:16px 20px; display:grid; gap:16px; }
   .cards { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px; margin-bottom:12px; }
   .cards:last-child { margin-bottom:0; }
@@ -37,13 +38,14 @@
   th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
   td.wrap { white-space:normal; }
   th { color:var(--muted); font-weight:500; }
-  .tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:10px; }
+  .tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:10px; flex-wrap:wrap; }
   .tabs button { border:none; border-radius:0; border-bottom:2px solid transparent; background:none; padding:8px 14px; }
   .tabs button.active { border-bottom-color:var(--accent); color:var(--accent); }
   .empty { color:var(--muted); padding:16px 8px; }
   #curve svg { width:100%; height:180px; display:block; }
-  .legend span { margin-right:14px; color:var(--muted); }
-  .legend i { display:inline-block; width:10px; height:3px; vertical-align:middle; margin-right:4px; }
+  .legend span { margin-right:14px; color:var(--muted); white-space:nowrap; }
+  .sw { display:inline-block; width:12px; height:3px; vertical-align:middle; margin-right:5px; background:var(--c); }
+  .sw.dash { background:repeating-linear-gradient(90deg, var(--c) 0 4px, transparent 4px 7px); }
   #log { font:12px/1.6 Consolas, monospace; max-height:360px; overflow:auto; white-space:pre-wrap; }
   .layout { display:grid; grid-template-columns:200px minmax(0, 1fr); gap:16px; }
   .report-list button { display:block; width:100%; text-align:left; margin-bottom:4px; }
@@ -56,6 +58,83 @@
   .detail h4 { margin:12px 0 4px; font-size:13px; color:var(--muted); font-weight:500; }
   .detail ul { margin:4px 0; padding-left:18px; }
   .kv span { margin-right:14px; }
+
+  /* ---- 规则页 ---- */
+  .rules-layout { display:grid; grid-template-columns:190px minmax(0, 1fr) 340px; gap:16px; align-items:start; }
+  @media (max-width: 1150px) {
+    .rules-layout { grid-template-columns:170px minmax(0, 1fr); }
+    .rule-aside { grid-column:2; }
+  }
+  .rule-list { display:flex; flex-direction:column; gap:4px; }
+  .rule-list .rl-title { font-size:12px; color:var(--muted); margin:10px 0 2px; }
+  .rl-item { text-align:left; padding:7px 10px; display:flex; flex-direction:column; gap:2px; }
+  .rl-item b { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rl-item .rl-meta { font-size:12px; color:var(--muted); }
+  .rl-item.active { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 8%, var(--card)); }
+  .badge { display:inline-block; font-size:11px; padding:0 6px; border-radius:8px; border:1px solid var(--line); color:var(--muted); }
+  .badge.on { color:var(--down); border-color:var(--down); }
+  .badge.pending { color:var(--accent); border-color:var(--accent); }
+  .badge.off { color:var(--muted); }
+  .rule-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+  .rule-head .rh-title { font-size:15px; font-weight:600; }
+  button.danger { background:var(--up); border-color:var(--up); color:#fff; }
+  button.link { border:none; background:none; color:var(--up); padding:6px 4px; }
+  button.icon { padding:2px 8px; }
+  .form-grid { display:flex; flex-wrap:wrap; gap:10px 18px; align-items:center; padding:10px 12px; border:1px solid var(--line); border-radius:8px; margin-bottom:14px; }
+  .form-grid .lbl { color:var(--muted); margin-right:6px; }
+  .form-grid input[type=number] { width:110px; }
+  .form-grid #rName { width:180px; }
+  .form-grid label { white-space:nowrap; }
+  .form-grid select { margin-right:4px; }
+  .wall-area { margin-bottom:18px; }
+  .wall-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+  .wall-head h3 { font-size:14px; margin:0; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .seg button { border:none; border-radius:0; padding:2px 10px; font-size:12px; background:var(--card); color:var(--muted); }
+  .seg button.on { background:var(--accent); color:#fff; }
+  .wall-group { margin-top:8px; }
+  .wall-group .g-title { font-size:12px; color:var(--muted); margin-bottom:4px; }
+  .wall-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:6px; }
+  @media (max-width: 1000px) { .wall-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+  .tile { display:flex; justify-content:space-between; align-items:center; gap:6px; padding:7px 10px; border-radius:6px;
+          border:1px solid transparent; background:var(--tile); color:var(--muted); text-align:left; min-height:36px; }
+  .tile:hover { border-color:color-mix(in srgb, var(--accent) 50%, transparent); }
+  .tile .t-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tile .t-val { font-variant-numeric:tabular-nums; white-space:nowrap; font-weight:600; }
+  .tile.on { background:color-mix(in srgb, var(--accent) 14%, var(--card)); border-color:var(--accent); color:var(--text); }
+  .tile.on .t-val { color:var(--accent); }
+  .tile.editing { border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); color:var(--text); }
+  .exit-rule { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:8px; }
+  .exit-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .exit-no { font-weight:600; color:var(--muted); min-width:14px; }
+  .exit-name { width:160px; }
+  .exit-sum { margin-top:6px; cursor:pointer; }
+  .rule-pop { position:absolute; z-index:50; width:300px; background:var(--card); border:1px solid var(--accent); border-radius:10px;
+              padding:10px 12px; box-shadow:0 8px 24px rgba(0,0,0,.18); }
+  .rule-pop .pop-title { display:flex; align-items:center; gap:6px; font-weight:600; margin-bottom:8px; }
+  .rule-pop .pop-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+  .rule-pop input[type=number] { width:96px; }
+  .rule-pop .pop-actions { display:flex; align-items:center; gap:6px; margin-top:4px; }
+  .rule-pop .chk { margin-right:8px; white-space:nowrap; }
+  .rule-aside { display:flex; flex-direction:column; gap:12px; position:sticky; top:10px; }
+  .aside-card { border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .aside-card h4 { margin:0 0 6px; font-size:13px; }
+  .chk-box { padding:6px 10px; border-radius:6px; margin-bottom:6px; }
+  .chk-box ul { margin:4px 0 0; padding-left:18px; }
+  .chk-box.err { background:color-mix(in srgb, var(--up) 12%, transparent); color:var(--up); }
+  .chk-box.warn { background:color-mix(in srgb, var(--warn) 14%, transparent); color:var(--warn); }
+  .chk-box.ok { background:color-mix(in srgb, var(--down) 12%, transparent); color:var(--down); }
+  .chk-box.pending { color:var(--muted); background:var(--tile); }
+  .hit { margin:4px 0 8px; }
+  .hit .big-num { font-size:22px; color:var(--accent); }
+  .err-text { color:var(--up); }
+  .notice { margin-top:8px; }
+  .notice.ok { color:var(--down); } .notice.err { color:var(--up); }
+  button.wide { width:100%; }
+  .preview { margin-top:8px; max-height:420px; overflow:auto; }
+  .builtin-sec h4 { margin:12px 0 4px; font-size:13px; color:var(--muted); font-weight:500; }
+  .builtin-sec ul { margin:4px 0; padding-left:18px; }
+  .history { margin-bottom:12px; }
 </style>
 </head>
 <body>
@@ -74,14 +153,11 @@
 <main>
   <section id="accounts"></section>
   <section class="card" id="curve">
-    <h2>净值曲线 <span class="legend">
-      <span><i style="background:var(--accent)"></i>低吸·主(Jev)</span><span><i style="background:var(--shadow)"></i>低吸·影子</span>
-      <span><i style="background:var(--board-accent)"></i>首板·主(Jev)</span><span><i style="background:var(--board-shadow)"></i>首板·影子</span>
-    </span></h2>
+    <h2>净值曲线 <span class="legend" id="curveLegend"></span></h2>
     <div id="curveBody"></div>
   </section>
   <section class="card">
-    <div class="tabs">
+    <div class="tabs" id="mainTabs">
       <button data-tab="fills" class="active">今日成交</button>
       <button data-tab="decisions">Jev 判断</button>
       <button data-tab="board">封板统计</button>
@@ -94,13 +170,50 @@
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = (n, d = 2) => n == null ? "–" : Number(n).toLocaleString("zh-CN", {minimumFractionDigits:d, maximumFractionDigits:d});
 const signCls = (n) => n > 0 ? "up" : n < 0 ? "down" : "";
 let api, tab = "fills", today = "";
 let selectedId = null;
 let strategyFilter = null;
 let noticesExpanded = false;
+
+// ---- 账户颜色与名称：内置四个固定色，自定义策略按 c{n} 的序号分配颜色，影子账户用虚线 ----
+const BUILTIN_ORDER = ["main", "shadow", "board_main", "board_shadow"];
+const BUILTIN_COLORS = {main: "var(--accent)", shadow: "var(--shadow)",
+  board_main: "var(--board-accent)", board_shadow: "var(--board-shadow)"};
+const PALETTE = ["#e8590c", "#0ea5e9", "#c026d3", "#65a30d", "#e11d48", "#0d9488", "#7c3aed", "#ca8a04"];
+const CUSTOM_ACCOUNT = /^c(\d+)_(main|shadow)$/;
+const CUSTOM_ID = /^c\d+$/;
+let accountMeta = {};   // 账户 id → {name, baseline, strategy, strategyName}（来自最近一次 status）
+let ruleNames = {};     // 自定义策略 id → 名称（来自 rules_list）
+
+function accountColor(id) {
+  if (BUILTIN_COLORS[id]) return BUILTIN_COLORS[id];
+  const m = CUSTOM_ACCOUNT.exec(id || "");
+  return m ? PALETTE[(Number(m[1]) - 1) % PALETTE.length] : "var(--muted)";
+}
+const isDashed = (id) => CUSTOM_ACCOUNT.test(id || "") && id.endsWith("_shadow");
+const swatch = (id) => `<i class="sw${isDashed(id) ? " dash" : ""}" style="--c:${accountColor(id)}"></i>`;
+function accountName(id) {
+  if (accountMeta[id]) return accountMeta[id].name;
+  const m = CUSTOM_ACCOUNT.exec(id || "");
+  if (m && ruleNames["c" + m[1]]) return `${ruleNames["c" + m[1]]}·${m[2] === "main" ? "主(Jev)" : "影子"}`;
+  return id;
+}
+function accountSortKey(id) {
+  const b = BUILTIN_ORDER.indexOf(id);
+  if (b >= 0) return [0, b, 0];
+  const m = CUSTOM_ACCOUNT.exec(id);
+  return m ? [1, Number(m[1]), m[2] === "main" ? 0 : 1] : [2, 0, 0];
+}
+function sortAccounts(ids) {
+  return [...ids].sort((a, b) => {
+    const ka = accountSortKey(a), kb = accountSortKey(b);
+    for (let i = 0; i < 3; i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+}
 
 function table(headers, rows, wrapCols) {
   if (!rows.length) return '<div class="empty">暂无数据</div>';
@@ -111,12 +224,12 @@ function table(headers, rows, wrapCols) {
 
 function accountCard(a) {
   return `<div class="card">
-      <h2>${esc(a.name)}</h2>
+      <h2>${swatch(a.id)}${esc(a.name)}</h2>
       <div class="big">${fmt(a.equity)} <span class="${signCls(a.return_pct)}" style="font-size:15px">${a.return_pct > 0 ? "+" : ""}${fmt(a.return_pct)}%</span></div>
-      <div class="tag">现金 ${fmt(a.cash)}</div>
+      <div class="tag">现金 ${fmt(a.cash)}${a.baseline != null && a.baseline !== 30000 ? `　本金 ${fmt(a.baseline, 0)}` : ""}</div>
       ${table(["代码", "名称", "股数", "成本价", "现价", "盈亏", "买入日"], a.positions.map((p) => [
-        esc(p.code), esc(p.name), p.shares, fmt(p.buy_price), fmt(p.price),
-        `<span class="${signCls(p.pnl_pct)}">${p.pnl_pct == null ? "–" : fmt(p.pnl_pct) + "%"}</span>`, esc(p.buy_date.slice(5))]))}
+        esc(p.code), esc(p.name), esc(p.shares), fmt(p.buy_price), fmt(p.price),
+        `<span class="${signCls(p.pnl_pct)}">${p.pnl_pct == null ? "–" : fmt(p.pnl_pct) + "%"}</span>`, esc(String(p.buy_date || "").slice(5))]))}
     </div>`;
 }
 
@@ -131,21 +244,27 @@ function renderAccounts(accounts) {
     <div class="cards">${group.map(accountCard).join("")}</div>`).join("");
 }
 
+// 净值曲线：各账户本金可能不同（自定义策略资金可设），统一画「相对本金的收益率 %」
 function renderCurve(curve) {
-  const series = [["main", "var(--accent)"], ["shadow", "var(--shadow)"],
-    ["board_main", "var(--board-accent)"], ["board_shadow", "var(--board-shadow)"]];
-  const all = series.flatMap(([k]) => curve[k] || []);
+  const ids = sortAccounts(Object.keys(curve || {})).filter((id) => (curve[id] || []).length);
+  const base = (id) => (accountMeta[id] && accountMeta[id].baseline) || 30000;
+  const series = ids.map((id) => ({id, pts: curve[id].map(([d, v]) => [d, (v / base(id) - 1) * 100])}));
+  $("curveLegend").innerHTML = series.map((s) => `<span>${swatch(s.id)}${esc(accountName(s.id))}</span>`).join("");
+  const all = series.flatMap((s) => s.pts);
   if (all.length < 2) { $("curveBody").innerHTML = '<div class="empty">收盘后生成第一条记录，满两天开始画线</div>'; return; }
   const dates = [...new Set(all.map((p) => p[0]))].sort();
-  const vals = all.map((p) => p[1]).concat([30000]);
-  const lo = Math.min(...vals), hi = Math.max(...vals), W = 1000, H = 180, pad = 10;
+  const vals = all.map((p) => p[1]).concat([0]);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi - lo < 1) { const mid = (hi + lo) / 2; lo = mid - 0.5; hi = mid + 0.5; }
+  const W = 1000, H = 180, pad = 10;
   const x = (d) => pad + (dates.indexOf(d) / Math.max(1, dates.length - 1)) * (W - 2 * pad);
-  const y = (v) => H - pad - ((v - lo) / Math.max(1, hi - lo)) * (H - 2 * pad);
-  const lines = series.map(([k, color]) => `<polyline fill="none" stroke="${color}" stroke-width="2"
-      points="${(curve[k] || []).map((p) => `${x(p[0])},${y(p[1])}`).join(" ")}"/>`).join("");
+  const y = (v) => H - pad - ((v - lo) / (hi - lo)) * (H - 2 * pad);
+  const lines = series.map((s) => `<polyline fill="none" stroke="${accountColor(s.id)}" stroke-width="2"
+      vector-effect="non-scaling-stroke"${isDashed(s.id) ? ' stroke-dasharray="6 4"' : ""}
+      points="${s.pts.map((p) => `${x(p[0])},${y(p[1])}`).join(" ")}"/>`).join("");
   $("curveBody").innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-    <line x1="0" x2="${W}" y1="${y(30000)}" y2="${y(30000)}" stroke="var(--line)" stroke-dasharray="4 4"/>${lines}</svg>
-    <div class="tag">${esc(dates[0])} → ${esc(dates[dates.length - 1])}　虚线为初始资金 30,000</div>`;
+    <line x1="0" x2="${W}" y1="${y(0)}" y2="${y(0)}" stroke="var(--line)" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>${lines}</svg>
+    <div class="tag">${esc(dates[0])} → ${esc(dates[dates.length - 1])}　纵轴为相对各自本金的收益率（${fmt(lo)}% ~ ${fmt(hi)}%），虚线为 0%</div>`;
 }
 
 function mdToHtml(md) {
@@ -197,20 +316,34 @@ function marketBlock(title, label, tr) {
     <div class="tag">Jev：${probsTxt(tr.probabilities)}${tr.confidence != null ? `（置信度 ${fmt(tr.confidence)}）` : ""}</div>`;
 }
 
+function hitValue(v) {
+  if (v == null) return "—";
+  if (typeof v === "boolean") return v ? "是" : "否";
+  if (typeof v === "number") return String(Math.round(v * 100) / 100);
+  return String(v);
+}
+
 function renderTrace(d) {
   const t = d.trace;
   const head = `<h3>${esc(d.code)} ${esc(d.name)}　${esc(d.time)}　${VERDICT[d.verdict] || esc(d.verdict)}　<span class="tag">${formatDetail(d.verdict, d.detail)}</span></h3>`;
   if (!t) return `<div class="detail">${head}<div class="tag">这条记录没有留痕数据</div></div>`;
   if (!t.candidate) return `<div class="detail">${head}${marketBlock("市场情绪", t.label, t)}</div>`;
   const c = t.candidate, parts = [head];
+  const isCustom = CUSTOM_ID.test(t.strategy || "");
   if (t.strategy === "board") {
     const r = c.ranks || {};
     const sealed = t.sealed_at_snapshot;
     parts.push(`<h4>为什么被选中</h4><div>题材 ${esc(c.concept)}（热度 ${fmt(c.heat, 0)} 只涨超 5%）｜龙头分 ${fmt(c.score, 0)}` +
       `（涨幅第${fmt(r.pct, 0)}、成交额第${fmt(r.amount, 0)}、5 日涨幅第${fmt(r.ret5, 0)}）｜当前 ${fmt(c.pct)}%｜` +
       `${sealed === undefined ? "是否封死未知" : sealed ? "快照时已封死" : "快照时未封死"}</div>`);
+  } else if (isCustom) {
+    const hits = Array.isArray(c.hits) ? c.hits : [];
+    const who = ruleNames[t.strategy] || t.strategy;
+    parts.push(`<h4>命中条件（${esc(who)} v${esc(t.version ?? "?")}）</h4>` + (hits.length
+      ? `<ul>${hits.map((h) => `<li>${esc(h.desc || h.field)}<span class="tag">　当时 ${esc(hitValue(h.value))}</span></li>`).join("")}</ul>`
+      : '<div class="tag">没有记录命中条件</div>'));
   } else {
-    parts.push(`<h4>为什么被选中</h4><div>当前 ${fmt(c.pct)}%（0~-3% 低吸区间）｜近 5 日 ${fmt(c.ret5)}%｜候选排名 ${c.rank}/${c.of}｜现价 ${fmt(c.price)}</div>`);
+    parts.push(`<h4>为什么被选中</h4><div>当前 ${fmt(c.pct)}%（0~-3% 低吸区间）｜近 5 日 ${fmt(c.ret5)}%｜候选排名 ${esc(c.rank)}/${esc(c.of)}｜现价 ${fmt(c.price)}</div>`);
   }
   if (t.notices) {
     const flagged = t.notices.filter((n) => n.mine || n.unsure);
@@ -227,19 +360,29 @@ function renderTrace(d) {
       (remaining > 0 ? `<div class="tag" id="noticesExpand" style="cursor:pointer;color:var(--accent)">展开全部 ${remaining} 条</div>` : ""));
   }
   if (t.news) {
-    parts.push(`<h4>消息面（近 24 小时 ${t.news.news.length} 条）→ ${esc(t.news.label)}</h4>`
-      + (t.news.news.length ? `<ul>${t.news.news.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : '<div class="tag">无新闻，按中性处理</div>')
+    const news = t.news.news || [];
+    parts.push(`<h4>消息面（近 24 小时 ${news.length} 条）→ ${esc(t.news.label)}</h4>`
+      + (news.length ? `<ul>${news.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : '<div class="tag">无新闻，按中性处理</div>')
       + (t.news.probabilities ? `<div class="tag">Jev：${probsTxt(t.news.probabilities)}${t.news.confidence != null ? `（置信度 ${fmt(t.news.confidence)}）` : ""}</div>` : ""));
   }
-  if (t.strategy !== "board") {          // 市场/情绪/外围是低吸的买入条件，扫首板不用，不显示
+  if (!t.strategy || t.strategy === "lowbuy") {   // 市场/情绪/外围是低吸的买入条件，扫首板和自定义策略不用，不显示
     const m = t.market || {};
     parts.push(`<h4>当时市场：${m.mode === "tail" ? "只在尾盘买" : "盘中可买"}</h4>`);
     parts.push(marketBlock("市场情绪", m.sentiment, m.sentiment_trace));
     parts.push(marketBlock("外围", m.overseas, m.overseas_trace));
   }
   const o = t.outcome || {};
-  parts.push(`<h4>结论</h4><div>${o.bought ? `买入 ${o.shares} 股 @ ${fmt(o.price)}` : `未买入（${esc(d.detail)}）`}</div>`);
+  parts.push(`<h4>结论</h4><div>${o.bought ? `买入 ${esc(o.shares)} 股 @ ${fmt(o.price)}` : `未买入（${esc(d.detail)}）`}</div>`);
   return `<div class="detail">${parts.join("")}</div>`;
+}
+
+function strategyFilters() {
+  const out = [[null, "全部"], ["lowbuy", "低吸"], ["board", "扫首板"]];
+  const custom = {...ruleNames};
+  for (const m of Object.values(accountMeta)) if (CUSTOM_ID.test(m.strategy || "")) custom[m.strategy] = m.strategyName;
+  Object.keys(custom).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))
+    .forEach((id) => out.push([id, custom[id] || id]));
+  return out;
 }
 
 async function renderTab() {
@@ -247,15 +390,16 @@ async function renderTab() {
   if (tab === "fills") {
     const rows = await api.fills(today);
     body.innerHTML = table(["时间", "账户", "代码", "名称", "方向", "价格", "股数", "费用", "理由"],
-      rows.map((f) => [f.time, esc(f.account), esc(f.code), esc(f.name), f.side, fmt(f.price), f.shares, fmt(f.fee), esc(f.reason)]));
+      rows.map((f) => [esc(f.time), swatch(f.account_id) + esc(f.account), esc(f.code), esc(f.name), esc(f.side),
+        fmt(f.price), esc(f.shares), fmt(f.fee), esc(f.reason)]));
   } else if (tab === "decisions") {
     const rows = await api.decisions(today, strategyFilter);
     const detail = selectedId != null ? await api.decision(selectedId) : null;
-    const filters = [[null, "全部"], ["lowbuy", "低吸"], ["board", "扫首板"]];
+    const filters = strategyFilters();
     const filterBar = `<div class="tabs">${filters.map(([v, label]) =>
-      `<button data-strategy="${v ?? ""}" class="${strategyFilter === v ? "active" : ""}">${esc(label)}</button>`).join("")}</div>`;
+      `<button data-strategy="${esc(v ?? "")}" class="${strategyFilter === v ? "active" : ""}">${esc(label)}</button>`).join("")}</div>`;
     body.innerHTML = filterBar + (detail ? renderTrace(detail) : "") + `<div class="clickable">${table(["", "时间", "代码", "名称", "结果", "理由"],
-      rows.map((d) => [d.has_trace ? "▸" : "", d.time, esc(d.code), esc(d.name), VERDICT[d.verdict] || esc(d.verdict), formatDetail(d.verdict, d.detail)]))}</div>`;
+      rows.map((d) => [d.has_trace ? "▸" : "", esc(d.time), esc(d.code), esc(d.name), VERDICT[d.verdict] || esc(d.verdict), formatDetail(d.verdict, d.detail)]))}</div>`;
     body.querySelectorAll("[data-strategy]").forEach((b) => b.onclick = () => {
       strategyFilter = b.dataset.strategy || null; selectedId = null; noticesExpanded = false; renderTab();
     });
@@ -273,29 +417,9 @@ async function renderTab() {
   } else if (tab === "board") {
     const rows = await api.board_stats();
     body.innerHTML = table(["时段", "样本数", "次日平均高开", "次日平均收盘", "次日连板率"],
-      rows.map((r) => [esc(r.bucket), r.count, fmt(r.avg_next_open) + "%", fmt(r.avg_next_close) + "%", fmt(r.board_rate, 1) + "%"]));
+      rows.map((r) => [esc(r.bucket), esc(r.count), fmt(r.avg_next_open) + "%", fmt(r.avg_next_close) + "%", fmt(r.board_rate, 1) + "%"]));
   } else if (tab === "rules") {
-    const result = await api.rules_list();
-    if (!result.ok) {
-      body.innerHTML = `<div class="empty" style="color:var(--up)">加载失败：${esc(result.error || "未知错误")}</div>`;
-      return;
-    }
-    const rules = result.rules || [];
-    if (!rules.length) {
-      body.innerHTML = '<div class="empty">暂无自定义规则。前往规则编辑器创建第一条规则。</div>';
-      return;
-    }
-    const ruleRows = rules.map((r) => [
-      esc(r.id),
-      esc(r.name),
-      r.can_buy ? '<span style="color:var(--down)">●</span> 启用' : '<span style="color:var(--muted)">○</span> 停用',
-      `v${r.version}`,
-      esc((r.spec && r.spec.capital) || "–")
-    ]);
-    body.innerHTML = `<div style="margin-bottom:12px"><button id="btnCreateRule" class="primary">+ 新建规则</button></div>` +
-      table(["ID", "名称", "状态", "版本", "资金"], ruleRows);
-    const createBtn = body.querySelector("#btnCreateRule");
-    if (createBtn) createBtn.onclick = () => alert("规则编辑器功能待实现");
+    await renderRulesTab(body);
   } else if (tab === "reports") {
     const names = await api.reports();
     if (!names.length) { body.innerHTML = '<div class="empty">还没有复盘报告，第一个交易日 15:05 后生成</div>'; return; }
@@ -311,9 +435,699 @@ async function renderTab() {
   }
 }
 
+// ======================= 规则页：策略列表 + 盘口指标墙编辑器 =======================
+// 所有状态放在 R 里；定义（R.draft）只以 JSON 对象经 Api 发送，从不拼进 HTML。
+// 页面上出现的外部字符串（策略名、字段名、错误信息、股票名……）一律经 esc()。
+const GROUP_ORDER = ["价格", "量能", "估值", "历史", "题材", "持仓", "环境", "其他"];
+const OP_SIGN = {">": ">", ">=": "≥", "<": "<", "<=": "≤"};
+const R = {
+  fields: null, byKey: {}, rules: [], builtin: [], loadError: "",
+  sel: null,            // {kind: "builtin"|"custom"|"new", id}
+  draft: null, sid: null, open: [],
+  errors: [], warnings: [], checking: false, vTimer: null, vSeq: 0,
+  preview: null, previewErr: "", previewing: false, showTable: false, pTimer: null, pSeq: 0,
+  pop: null, history: null, confirmDisable: false, saving: false, notice: null,
+};
+const clone = (o) => JSON.parse(JSON.stringify(o));
+
+function blankSpec() {
+  return {name: "", capital: 30000,
+    select: {mode: "all", conditions: []}, rank: null, entry: {mode: "all", conditions: []},
+    exits: [{reason: "止损", when: {mode: "all", conditions: [{field: "pnl_pct", op: "<=", value: -3}]}}],
+    jev: {notices: true, news: true}};
+}
+
+function normalizeSpec(spec) {       // 已保存的定义补齐成编辑器用的统一形状
+  const s = clone(spec || {});
+  const grp = (g) => ({mode: g && g.mode === "any" ? "any" : "all",
+    conditions: g && Array.isArray(g.conditions) ? g.conditions : []});
+  const jev = s.jev || {};
+  return {name: s.name || "", capital: s.capital ?? 30000, select: grp(s.select), rank: s.rank || null,
+    entry: grp(s.entry),
+    exits: (Array.isArray(s.exits) ? s.exits : []).map((e, i) => ({reason: e.reason || `卖出规则${i + 1}`, when: grp(e.when)})),
+    jev: {notices: jev.notices !== false, news: jev.news !== false}};
+}
+
+function specOut() {
+  const d = R.draft;
+  return clone({name: String(d.name || "").trim(), capital: d.capital, select: d.select, rank: d.rank,
+    entry: d.entry, exits: d.exits, jev: d.jev});
+}
+
+const errText = (res, fallback) => ((res && (res.errors || (res.error ? [res.error] : null))) || [fallback]).join("；");
+
+async function loadRules() {
+  let res;
+  try { res = await api.rules_list(); } catch (e) { res = {ok: false, errors: [String(e)]}; }
+  if (!res || !res.ok) { R.loadError = errText(res, "未知错误"); return; }
+  R.loadError = ""; R.rules = res.rules || []; R.builtin = res.builtin || [];
+  ruleNames = Object.fromEntries(R.rules.map((r) => [r.id, r.name]));
+}
+
+async function ensureFields() {
+  if (R.fields) return true;
+  let res;
+  try { res = await api.rule_fields(); } catch (e) { res = null; }
+  if (!res || !res.ok) return false;
+  R.fields = res.fields || [];
+  R.byKey = Object.fromEntries(R.fields.map((f) => [f.key, f]));
+  return true;
+}
+
+async function renderRulesTab(body) {
+  const ok = await ensureFields();
+  await loadRules();
+  if (tab !== "rules") return;
+  if (!ok) { body.innerHTML = '<div class="empty err-text">指标定义加载失败，请重开面板</div>'; return; }
+  body.innerHTML = `<div class="rules-layout"><div class="rule-list" id="ruleList"></div>
+    <div id="ruleMain"></div><div class="rule-aside" id="ruleAside"></div></div>`;
+  $("ruleList").onclick = onRuleListClick;
+  renderRuleList();
+  renderRuleMain();
+}
+
+function ruleBadge(r) {
+  const pending = r.active_from && today && r.active_from > today;
+  if (r.enabled) {
+    if (!r.running) return ["pending", `${r.active_from} 生效`];
+    return pending ? ["on", `运行中 · v${r.version} 于 ${r.active_from} 生效`] : ["on", "运行中"];
+  }
+  if (r.running) return pending ? ["on", `运行中 · ${r.active_from} 停用`] : ["off", "已停用 · 清仓中"];
+  return ["off", "已停用"];
+}
+
+function renderRuleList() {
+  const el = $("ruleList");
+  if (!el) return;
+  const selKey = R.sel ? `${R.sel.kind}:${R.sel.id || ""}` : "";
+  const item = (key, title, meta) =>
+    `<button class="rl-item${selKey === key ? " active" : ""}" data-sel="${esc(key)}"><b>${esc(title)}</b><span class="rl-meta">${meta}</span></button>`;
+  const custom = R.rules.map((r) => {
+    const [cls, text] = ruleBadge(r);
+    return item(`custom:${r.id}`, r.name, `<span class="badge ${cls}">${esc(text)}</span> ${esc(r.id)} · v${esc(r.version)}`);
+  });
+  if (R.sel && R.sel.kind === "new") custom.unshift(item("new:", (R.draft && R.draft.name) || "新策略", '<span class="badge pending">未保存</span>'));
+  el.innerHTML = `<button class="primary" data-sel="new:">+ 新建策略</button>
+    <div class="rl-title">内置（只读）</div>
+    ${R.builtin.map((b) => item(`builtin:${b.id}`, b.name, "内置")).join("")}
+    <div class="rl-title">自定义</div>
+    ${custom.length ? custom.join("") : '<div class="tag">还没有自定义策略</div>'}
+    ${R.loadError ? `<div class="err-text">列表加载失败：${esc(R.loadError)}</div>` : ""}`;
+}
+
+function onRuleListClick(ev) {
+  const b = ev.target.closest("[data-sel]");
+  if (!b) return;
+  const [kind, ...rest] = b.dataset.sel.split(":");
+  selectRule(kind, rest.join(":"));
+}
+
+function resetEditorState() {
+  closePop();
+  clearTimeout(R.vTimer); clearTimeout(R.pTimer);
+  R.vSeq++; R.pSeq++;
+  Object.assign(R, {errors: [], warnings: [], checking: false, preview: null, previewErr: "", previewing: false,
+    showTable: false, history: null, confirmDisable: false, notice: null});
+}
+
+function selectRule(kind, id) {
+  resetEditorState();
+  if (kind === "builtin") {
+    R.sel = {kind, id}; R.draft = null; R.sid = null;
+  } else if (kind === "custom") {
+    const r = R.rules.find((x) => x.id === id);
+    if (!r) return;
+    R.sel = {kind, id}; R.sid = id; R.draft = normalizeSpec(r.spec);
+    R.open = R.draft.exits.map(() => false);
+  } else {
+    R.sel = {kind: "new", id: ""}; R.sid = null; R.draft = blankSpec(); R.open = [true];
+  }
+  renderRuleList();
+  renderRuleMain();
+  if (R.draft) kick(true);
+}
+
+function renderRuleMain() {
+  const main = $("ruleMain"), aside = $("ruleAside");
+  if (!main) return;
+  if (!R.sel) {
+    main.innerHTML = '<div class="empty">左边选一个策略查看；或点「新建策略」，在指标墙上点选条件搭一个自己的策略。</div>';
+    aside.innerHTML = "";
+    return;
+  }
+  if (R.sel.kind === "builtin") {
+    const b = R.builtin.find((x) => x.id === R.sel.id);
+    if (!b) { main.innerHTML = '<div class="empty">找不到这个内置策略</div>'; aside.innerHTML = ""; return; }
+    main.innerHTML = `<div class="rule-head"><span class="rh-title">${esc(b.name)}</span>
+        <span class="tag">内置 · 只读 · 账户 ${(b.accounts || []).map((a) => swatch(a) + esc(accountName(a))).join("　")}</span></div>
+      ${(b.sections || []).map((s) => `<div class="builtin-sec"><h4>${esc(s.title)}</h4>
+        <ul>${(s.lines || []).map((l) => `<li>${esc(l)}</li>`).join("")}</ul></div>`).join("")}
+      <div class="tag" style="margin-top:12px">内置策略的参数写在代码里，这里只展示。想试别的思路，点「新建策略」。</div>`;
+    aside.innerHTML = "";
+    return;
+  }
+  main.innerHTML = `<div class="rule-head" id="ruleHead"></div><div id="ruleHistory"></div>
+    <div class="form-grid">
+      <label><span class="lbl">名称</span><input id="rName" maxlength="20" placeholder="最多 20 个字"></label>
+      <label><span class="lbl">资金</span><input id="rCapital" type="number" min="1000" max="10000000" step="1000"${R.sid ? " disabled" : ""}></label>
+      ${R.sid ? '<span class="tag">资金创建后不可改，要换资金请「复制」成新策略</span>' : ""}
+      <span><span class="lbl">Jev 拦截（仅主账户）</span>
+        <label><input type="checkbox" id="rJevNotices"> 公告排雷</label>
+        <label><input type="checkbox" id="rJevNews"> 消息面</label></span>
+      <span id="rankRow"></span>
+    </div>
+    <div id="wallsBox"></div>`;
+  const d = R.draft;
+  $("rName").value = d.name;
+  $("rCapital").value = d.capital ?? "";
+  $("rJevNotices").checked = d.jev.notices;
+  $("rJevNews").checked = d.jev.news;
+  $("rName").oninput = (e) => { d.name = e.target.value; changed(false); };
+  $("rCapital").oninput = (e) => {
+    const v = e.target.value.trim();
+    d.capital = v === "" || !Number.isFinite(Number(v)) ? null : Number(v);
+    changed(false);
+  };
+  $("rJevNotices").onchange = (e) => { d.jev.notices = e.target.checked; changed(false); };
+  $("rJevNews").onchange = (e) => { d.jev.news = e.target.checked; changed(false); };
+  $("wallsBox").onclick = onWallsClick;
+  $("wallsBox").oninput = onWallsInput;
+  renderHead();
+  renderHistory();
+  renderRank();
+  renderWalls();
+  renderAside();
+}
+
+function renderHead() {
+  const el = $("ruleHead");
+  if (!el) return;
+  const r = R.sid ? R.rules.find((x) => x.id === R.sid) : null;
+  el.innerHTML = r
+    ? `<span class="rh-title">${esc(r.name)}</span><span class="tag">${esc(r.id)} · 最新 v${esc(r.version)} · ${esc(r.active_from)} 生效</span>
+       <span class="spacer"></span>
+       <button id="btnCopyRule">复制</button>
+       <button id="btnHistory">${R.history ? "收起历史" : "版本历史"}</button>
+       ${r.enabled ? `<button id="btnDisable" class="${R.confirmDisable ? "danger" : ""}">${R.confirmDisable ? "确认停用（明日生效）" : "停用"}</button>` : ""}`
+    : `<span class="rh-title">新建策略</span><span class="tag">点指标方块设置条件，右侧实时体检</span>`;
+  if (!r) return;
+  $("btnCopyRule").onclick = copyRule;
+  $("btnHistory").onclick = toggleHistory;
+  if ($("btnDisable")) $("btnDisable").onclick = disableRule;
+}
+
+function renderRank() {
+  const el = $("rankRow");
+  if (!el) return;
+  const d = R.draft, rk = d.rank, f = rk && R.byKey[rk.field];
+  const opts = R.fields.filter((x) => x.kind === "num" && (x.scopes || []).includes("select"));
+  el.innerHTML = `<span class="lbl">排序</span><select id="rRankField"><option value="">不排序</option>${opts.map((o) =>
+      `<option value="${esc(o.key)}">${esc(o.label)}</option>`).join("")}</select>` +
+    (f && f.params.length ? `<select id="rRankN">${f.params.map((n) => `<option value="${esc(n)}">N=${esc(n)}</option>`).join("")}</select>` : "") +
+    (f ? '<select id="rRankOrder"><option value="desc">从高到低</option><option value="asc">从低到高</option></select>' : "");
+  $("rRankField").value = f ? rk.field : "";
+  if ($("rRankN")) $("rRankN").value = String((rk.param || {}).n ?? f.params[0]);
+  if ($("rRankOrder")) $("rRankOrder").value = rk.order === "asc" ? "asc" : "desc";
+  $("rRankField").onchange = (e) => {
+    const nf = R.byKey[e.target.value];
+    d.rank = nf ? {field: nf.key, order: (d.rank && d.rank.order) || "desc"} : null;
+    if (nf && nf.params.length) d.rank.param = {n: nf.params[0]};
+    renderRank(); changed(true);
+  };
+  if ($("rRankN")) $("rRankN").onchange = (e) => { d.rank.param = {n: Number(e.target.value)}; changed(true); };
+  if ($("rRankOrder")) $("rRankOrder").onchange = (e) => { d.rank.order = e.target.value; changed(true); };
+}
+
+// ---- 指标墙 ----
+function groupOf(area, idx) { return area === "exit" ? R.draft.exits[idx].when : R.draft[area]; }
+
+function fieldLabel(f, c) {
+  const n = c && c.param ? c.param.n : null;
+  return n != null && f.label.includes("N") ? f.label.replace("N", n) : f.label;
+}
+function valText(f, v) {
+  if (v == null || v === "" || (typeof v === "number" && Number.isNaN(v))) return "?";
+  return f.kind === "num" ? `${v}${f.unit || ""}` : String(v);
+}
+function condText(f, c) {
+  const v = c.value;
+  if (c.op === "between") return Array.isArray(v) ? `${valText(f, v[0])}~${valText(f, v[1])}` : "?";
+  if (c.op === "is") return v ? "是" : "否";
+  if (c.op === "in") return Array.isArray(v) && v.length ? v.join("/") : "?";
+  return `${OP_SIGN[c.op] || c.op} ${valText(f, v)}`;
+}
+function condLine(c) {
+  const f = R.byKey[c.field];
+  return f ? `${fieldLabel(f, c)} ${condText(f, c)}` : String(c.field);
+}
+
+function modeSeg(area, idx, mode) {
+  return `<span class="seg">${[["all", "全部满足"], ["any", "任一满足"]].map(([m, label]) =>
+    `<button type="button" data-mode="${m}" data-area="${area}" data-exit="${idx}" class="${mode === m ? "on" : ""}">${label}</button>`).join("")}</span>`;
+}
+
+function tileHtml(area, idx, f, group) {
+  const same = group.conditions.filter((c) => c.field === f.key);
+  const c = same[0];
+  const editing = R.pop && R.pop.area === area && R.pop.exit === idx && R.pop.key === f.key;
+  const val = c ? esc(condText(f, c)) + (same.length > 1 ? ` <small>+${same.length - 1}</small>` : "") : (editing ? "设置中…" : "—");
+  return `<button type="button" class="tile${c ? " on" : ""}${editing ? " editing" : ""}" data-tile="${esc(f.key)}"
+    data-area="${area}" data-exit="${idx}" title="${esc(f.label)}"><span class="t-label">${esc(c ? fieldLabel(f, c) : f.label)}</span><span class="t-val">${val}</span></button>`;
+}
+
+function wallHtml(area, idx, group) {
+  const fields = R.fields.filter((f) => (f.scopes || []).includes(area));
+  const groupName = (f) => GROUP_ORDER.includes(f.group) ? f.group : "其他";
+  return GROUP_ORDER.map((g) => {
+    const fs = fields.filter((f) => groupName(f) === g);
+    if (!fs.length) return "";
+    return `<div class="wall-group"><div class="g-title">${esc(g)}</div>
+      <div class="wall-grid">${fs.map((f) => tileHtml(area, idx, f, group)).join("")}</div></div>`;
+  }).join("");
+}
+
+function areaHtml(area, title, hint) {
+  const g = R.draft[area];
+  return `<section class="wall-area"><div class="wall-head"><h3>${title}</h3>${modeSeg(area, -1, g.mode)}
+    <span class="tag">${hint}　已选 ${g.conditions.length} 个</span></div>${wallHtml(area, -1, g)}</section>`;
+}
+
+function exitHtml(e, i) {
+  const n = R.draft.exits.length, open = R.open[i];
+  const summary = e.when.conditions.map(condLine).join(e.when.mode === "any" ? " 或 " : " 且 ");
+  return `<div class="exit-rule"><div class="exit-head">
+      <button type="button" class="icon" data-exit-act="toggle" data-i="${i}" title="${open ? "收起" : "展开"}">${open ? "▾" : "▸"}</button>
+      <span class="exit-no">${i + 1}</span>
+      <input class="exit-name" data-exit-name="${i}" maxlength="20" placeholder="规则名（写进成交理由）">
+      ${modeSeg("exit", i, e.when.mode)}
+      <span class="spacer"></span>
+      <button type="button" class="icon" data-exit-act="up" data-i="${i}"${i === 0 ? " disabled" : ""} title="上移（更优先）">↑</button>
+      <button type="button" class="icon" data-exit-act="down" data-i="${i}"${i === n - 1 ? " disabled" : ""} title="下移">↓</button>
+      <button type="button" class="icon" data-exit-act="del" data-i="${i}" title="删除这条卖出规则">✕</button>
+    </div>${open ? wallHtml("exit", i, e.when)
+      : `<div class="exit-sum${summary ? "" : " tag"}" data-exit-act="toggle" data-i="${i}">${summary ? esc(summary) : "还没选条件，点开设置"}</div>`}</div>`;
+}
+
+function renderWalls() {
+  const box = $("wallsBox");
+  if (!box || !R.draft) return;
+  const d = R.draft;
+  box.innerHTML = areaHtml("select", "选股", "每分钟对股票池求值，满足的进入候选") +
+    areaHtml("entry", "买点", "对排好序的候选逐只检查；一个不选 = 候选直接买") +
+    `<section class="wall-area"><div class="wall-head"><h3>卖出</h3>
+      <span class="tag">从上往下检查，第一条满足的触发卖出；必须有一条止损</span><span class="spacer"></span>
+      <button type="button" id="btnAddExit">+ 添加卖出规则</button></div>
+      ${d.exits.length ? d.exits.map(exitHtml).join("") : '<div class="empty">还没有卖出规则</div>'}</section>`;
+  box.querySelectorAll("[data-exit-name]").forEach((el) => { el.value = d.exits[Number(el.dataset.exitName)].reason || ""; });
+}
+
+function onWallsClick(ev) {
+  const t = ev.target.closest("button, [data-exit-act]");
+  if (!t || t.disabled) return;
+  const d = R.draft;
+  if (t.dataset.tile) { openPop(t.dataset.area, Number(t.dataset.exit), t.dataset.tile); return; }
+  if (t.dataset.mode) {
+    groupOf(t.dataset.area, Number(t.dataset.exit)).mode = t.dataset.mode;
+    closePop(); renderWalls(); changed(t.dataset.area !== "exit");
+    return;
+  }
+  if (t.id === "btnAddExit") {
+    d.exits.push({reason: `卖出规则${d.exits.length + 1}`, when: {mode: "all", conditions: []}});
+    R.open.push(true);
+    closePop(); renderWalls(); changed(false);
+    return;
+  }
+  const act = t.dataset.exitAct, i = Number(t.dataset.i);
+  if (!act || !(i >= 0 && i < d.exits.length)) return;
+  closePop();
+  if (act === "toggle") R.open[i] = !R.open[i];
+  else if (act === "del") { d.exits.splice(i, 1); R.open.splice(i, 1); }
+  else {
+    const j = act === "up" ? i - 1 : i + 1;
+    if (j < 0 || j >= d.exits.length) return;
+    [d.exits[i], d.exits[j]] = [d.exits[j], d.exits[i]];
+    [R.open[i], R.open[j]] = [R.open[j], R.open[i]];
+  }
+  renderWalls();
+  if (act !== "toggle") changed(false);
+}
+
+function onWallsInput(ev) {
+  const el = ev.target;
+  if (el.dataset.exitName == null) return;
+  R.draft.exits[Number(el.dataset.exitName)].reason = el.value;
+  changed(false);
+}
+
+// ---- 方块弹框：运算符 + 值 + N ----
+function defaultCond(f) {
+  const base = f.default ? clone(f.default)
+    : f.kind === "bool" ? {op: "is", value: true}
+    : f.kind === "enum" ? {op: "in", value: [f.choices[0]]}
+    : f.kind === "time" ? {op: ">=", value: "09:30"}
+    : {op: ">=", value: f.lo ?? 0};
+  if (f.params.length && !(base.param && base.param.n != null)) base.param = {n: f.params[0]};
+  return {field: f.key, ...base};
+}
+
+function findTile() {
+  const p = R.pop;
+  if (!p) return null;
+  return document.querySelector(`#wallsBox [data-tile="${CSS.escape(p.key)}"][data-area="${p.area}"][data-exit="${p.exit}"]`);
+}
+
+function openPop(area, idx, key) {
+  const f = R.byKey[key];
+  if (!f) return;
+  const g = groupOf(area, idx);
+  const i = g.conditions.findIndex((c) => c.field === key);
+  R.pop = {area, exit: idx, key, isNew: i < 0, cond: i >= 0 ? clone(g.conditions[i]) : defaultCond(f)};
+  renderWalls();
+  drawPop();
+}
+
+function closePop() {
+  R.pop = null;
+  const el = $("rulePop");
+  if (el) el.remove();
+}
+
+function valueControlHtml(f, op) {
+  if (f.kind === "bool") return '<select id="popV0"><option value="true">是</option><option value="false">否</option></select>';
+  if (f.kind === "enum") return f.choices.map((ch, k) => `<label class="chk"><input type="checkbox" data-k="${k}"> ${esc(ch)}</label>`).join("");
+  const input = (id) => f.kind === "time" ? `<input type="time" id="${id}">` : `<input type="number" step="any" id="${id}">`;
+  const unit = f.unit ? `<span class="tag">${esc(f.unit)}</span>` : "";
+  return op === "between" ? `${input("popV0")} ~ ${input("popV1")} ${unit}` : `${input("popV0")} ${unit}`;
+}
+
+function fillValues(f, c) {
+  const el = $("rulePop"), v = c.value;
+  if (f.kind === "bool") { $("popV0").value = v ? "true" : "false"; return; }
+  if (f.kind === "enum") {
+    el.querySelectorAll("[data-k]").forEach((cb) => { cb.checked = Array.isArray(v) && v.includes(f.choices[Number(cb.dataset.k)]); });
+    return;
+  }
+  const put = (id, x) => { if ($(id)) $(id).value = x == null ? "" : String(x); };
+  if (c.op === "between") { put("popV0", Array.isArray(v) ? v[0] : v); put("popV1", Array.isArray(v) ? v[1] : v); }
+  else put("popV0", Array.isArray(v) ? v[0] : v);
+}
+
+function readValues(f, c) {     // 弹框里的值 → c.value（数字转成 number，空/非法为 null，交给服务端体检报错）
+  const el = $("rulePop");
+  if (!el) return;
+  if (f.kind === "bool") { c.value = $("popV0").value === "true"; return; }
+  if (f.kind === "enum") {
+    c.value = f.choices.filter((_, k) => { const cb = el.querySelector(`[data-k="${k}"]`); return cb && cb.checked; });
+    return;
+  }
+  const get = (id) => {
+    const raw = $(id) ? $(id).value.trim() : "";
+    if (f.kind === "time") return raw ? raw.slice(0, 5) : null;
+    return raw === "" || !Number.isFinite(Number(raw)) ? null : Number(raw);
+  };
+  c.value = c.op === "between" ? [get("popV0"), get("popV1")] : get("popV0");
+}
+
+function convertValue(f, c, newOp) {     // 切换运算符时尽量保留已填的值
+  const cur = c.value;
+  if (newOp === "between") {
+    if (Array.isArray(cur)) return cur;
+    if (cur == null && f.default && f.default.op === "between") return clone(f.default.value);
+    return [cur, cur];
+  }
+  if (Array.isArray(cur)) return newOp === "<" || newOp === "<=" ? cur[1] : cur[0];
+  return cur;
+}
+
+function drawPop() {
+  const p = R.pop;
+  if (!p) return;
+  const f = R.byKey[p.key], c = p.cond;
+  let el = $("rulePop");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "rulePop"; el.className = "rule-pop";
+    document.body.appendChild(el);
+    el.onclick = onPopClick;
+    el.onchange = onPopChange;
+    el.onkeydown = (ev) => { if (ev.key === "Enter" && ev.target.tagName === "INPUT") { ev.preventDefault(); confirmPop(); } };
+  }
+  const ops = f.ops || [];
+  el.innerHTML = `<div class="pop-title">${esc(f.label)}${f.unit ? `<span class="tag">（${esc(f.unit)}）</span>` : ""}
+      <span class="spacer"></span><button type="button" class="icon" data-pop="close" title="关闭（不保存）">✕</button></div>
+    <div class="pop-row">
+      ${f.params.length ? `<select id="popN">${f.params.map((n) => `<option value="${esc(n)}">N=${esc(n)}</option>`).join("")}</select>` : ""}
+      ${ops.length > 1 ? `<select id="popOp">${ops.map((o) => `<option value="${esc(o.op)}">${esc(o.label)}</option>`).join("")}</select>`
+        : `<span>${esc((ops[0] || {}).label || "")}</span>`}
+    </div>
+    <div class="pop-row" id="popVal">${valueControlHtml(f, c.op)}</div>
+    ${f.kind === "num" && f.lo != null && f.hi != null ? `<div class="tag">可填 ${esc(f.lo)} ~ ${esc(f.hi)}</div>` : ""}
+    <div class="pop-actions"><button type="button" class="link" data-pop="clear">取消选择</button>
+      <span class="spacer"></span><button type="button" class="primary" data-pop="ok">确定</button></div>`;
+  if ($("popN")) $("popN").value = String((c.param || {}).n ?? f.params[0]);
+  if ($("popOp")) $("popOp").value = c.op;
+  fillValues(f, c);
+  placePop();
+  const first = el.querySelector("#popV0");
+  if (first && first.tagName === "INPUT") first.focus();
+}
+
+function placePop() {
+  const el = $("rulePop"), tile = findTile();
+  if (!el || !tile) return;
+  const r = tile.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
+  const left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
+  let top = r.bottom + 6;
+  if (top + h > window.innerHeight - 8 && r.top - h - 6 > 8) top = r.top - h - 6;
+  el.style.left = `${left + window.scrollX}px`;
+  el.style.top = `${top + window.scrollY}px`;
+}
+
+function onPopChange(ev) {
+  const p = R.pop;
+  if (!p) return;
+  const f = R.byKey[p.key];
+  if (ev.target.id === "popN") { p.cond.param = {n: Number(ev.target.value)}; return; }
+  if (ev.target.id === "popOp") {
+    readValues(f, p.cond);
+    const newOp = ev.target.value;
+    p.cond.value = convertValue(f, p.cond, newOp);
+    p.cond.op = newOp;
+    $("popVal").innerHTML = valueControlHtml(f, newOp);
+    fillValues(f, p.cond);
+    placePop();
+  }
+}
+
+function onPopClick(ev) {
+  const b = ev.target.closest("[data-pop]");
+  if (!b || !R.pop) return;
+  const act = b.dataset.pop;
+  if (act === "ok") { confirmPop(); return; }
+  if (act === "clear") {
+    const p = R.pop, g = groupOf(p.area, p.exit);
+    const i = g.conditions.findIndex((c) => c.field === p.key);
+    closePop();
+    if (i >= 0) { g.conditions.splice(i, 1); changed(p.area !== "exit"); }
+    renderWalls();
+    return;
+  }
+  closePop(); renderWalls();
+}
+
+function confirmPop() {
+  const p = R.pop;
+  if (!p) return;
+  const f = R.byKey[p.key];
+  readValues(f, p.cond);
+  if ($("popN")) p.cond.param = {n: Number($("popN").value)};
+  const g = groupOf(p.area, p.exit);
+  const i = g.conditions.findIndex((c) => c.field === p.key);
+  if (i >= 0) g.conditions[i] = p.cond; else g.conditions.push(p.cond);
+  closePop();
+  renderWalls();
+  changed(p.area !== "exit");
+}
+
+document.addEventListener("mousedown", (ev) => {
+  if (!R.pop || ev.target.closest("#rulePop") || ev.target.closest("[data-tile]")) return;
+  closePop(); renderWalls();
+});
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && R.pop) { closePop(); renderWalls(); } });
+window.addEventListener("resize", placePop);
+
+// ---- 体检 / 试跑 / 保存 ----
+function kick(affectsPreview) {
+  R.checking = true;
+  R.vSeq++;
+  clearTimeout(R.vTimer);
+  R.vTimer = setTimeout(runCheck, 500);
+  if (affectsPreview) {
+    R.pSeq++;
+    clearTimeout(R.pTimer);
+    R.pTimer = setTimeout(runPreview, 800);
+  }
+  renderAside();
+}
+function changed(affectsPreview) {
+  R.notice = null; R.confirmDisable = false;
+  kick(affectsPreview);
+}
+
+async function runCheck() {
+  if (!R.draft) return;
+  const seq = ++R.vSeq;
+  let res;
+  try { res = await api.rule_validate(specOut()); } catch (e) { res = {ok: false, errors: [String(e)]}; }
+  if (seq !== R.vSeq || !R.draft) return;
+  R.checking = false;
+  if (res && res.ok) { R.errors = res.errors || []; R.warnings = res.warnings || []; }
+  else { R.errors = [`体检失败：${errText(res, "未知错误")}`]; R.warnings = []; }
+  renderAside();
+}
+
+async function runPreview() {
+  if (!R.draft) return;
+  const seq = ++R.pSeq;
+  if (!R.draft.select.conditions.length) {
+    R.preview = null; R.previewErr = ""; R.previewing = false; renderAside(); return;
+  }
+  R.previewing = true; renderAside();
+  let res;
+  try { res = await api.rule_preview(specOut()); } catch (e) { res = {ok: false, errors: [String(e)]}; }
+  if (seq !== R.pSeq || !R.draft) return;
+  R.previewing = false;
+  if (res && res.ok) { R.preview = {total: res.total, rows: res.rows || []}; R.previewErr = ""; }
+  else { R.preview = null; R.previewErr = errText(res, "试跑失败"); }
+  renderAside();
+}
+
+function previewTableHtml() {
+  if (R.previewing && !R.preview) return '<div class="tag">试跑中…（第一次要拉全市场行情，稍等几秒）</div>';
+  if (!R.preview) return "";
+  const rows = R.preview.rows;
+  if (!rows.length) return '<div class="empty">当前行情下没有命中</div>';
+  const keys = Object.keys(rows[0].values || {});
+  return `<div class="preview">${table(["#", "代码", "名称", ...keys.map(esc)],
+    rows.map((r) => [esc(r.rank), esc(r.code), esc(r.name), ...keys.map((k) => esc((r.values || {})[k]))]), [])}</div>`;
+}
+
+function renderAside() {
+  const el = $("ruleAside");
+  if (!el || !R.draft) return;
+  const list = (xs) => `<ul>${xs.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
+  const check = R.checking ? '<div class="chk-box pending">体检中…</div>'
+    : (R.errors.length ? `<div class="chk-box err"><b>错误 ${R.errors.length} 条（改完才能保存）</b>${list(R.errors)}</div>`
+      : '<div class="chk-box ok">✓ 体检通过</div>') +
+      (R.warnings.length ? `<div class="chk-box warn"><b>提醒</b>${list(R.warnings)}</div>` : "");
+  const noSelect = !R.draft.select.conditions.length;
+  const hit = noSelect ? '<span class="tag">先在「选股」墙上选指标</span>'
+    : R.previewing ? '<span class="tag">计算命中数…</span>'
+    : R.previewErr ? `<span class="err-text">${esc(R.previewErr)}</span>`
+    : R.preview ? `命中 <b class="big-num">${esc(R.preview.total)}</b> 只`
+    : '<span class="tag">—</span>';
+  const saveDisabled = R.checking || R.errors.length > 0 || R.saving;
+  el.innerHTML = `<div class="aside-card"><h4>体检</h4>${check}</div>
+    <div class="aside-card"><h4>试跑 <span class="tag">当前行情 · 不调用 Jev、不下单</span></h4>
+      <div class="hit">${hit}</div>
+      <button type="button" id="btnPreview"${noSelect ? " disabled" : ""}>${R.showTable ? "重新试跑" : "试跑（看前 20 只）"}</button>
+      ${R.showTable && !noSelect ? previewTableHtml() : ""}</div>
+    <div class="aside-card"><button type="button" id="btnSaveRule" class="primary wide"${saveDisabled ? " disabled" : ""}>${R.saving ? "保存中…" : "保存（明日生效）"}</button>
+      ${R.notice ? `<div class="notice ${R.notice.ok ? "ok" : "err"}">${esc(R.notice.text)}</div>` : ""}
+      <div class="tag" style="margin-top:6px">新版本从下一个交易日开始生效，今天仍按旧版本运行。</div></div>`;
+  $("btnPreview").onclick = () => { R.showTable = true; clearTimeout(R.pTimer); runPreview(); };
+  $("btnSaveRule").onclick = saveRule;
+}
+
+async function saveRule() {
+  if (R.saving || !R.draft) return;
+  R.saving = true; renderAside();
+  const spec = specOut();
+  let res;
+  try { res = R.sid ? await api.rule_update(R.sid, spec) : await api.rule_create(spec); }
+  catch (e) { res = {ok: false, errors: [String(e)]}; }
+  R.saving = false;
+  if (!res || !res.ok) {
+    R.notice = {ok: false, text: `保存失败：${errText(res, "未知错误")}`};
+    renderAside();
+    return;
+  }
+  const sid = res.id || R.sid;
+  await loadRules();
+  const r = R.rules.find((x) => x.id === sid);
+  R.sel = {kind: "custom", id: sid}; R.sid = sid;
+  if (r) R.draft = normalizeSpec(r.spec);
+  R.history = null; R.confirmDisable = false;
+  R.notice = {ok: true, text: `已保存 ${sid} v${res.version}，${r ? r.active_from : "下一个交易日"} 起生效`};
+  renderRuleList();
+  renderRuleMain();
+}
+
+function copyRule() {
+  if (!R.draft) return;
+  const name = R.draft.name;
+  R.sid = null; R.sel = {kind: "new", id: ""};
+  R.draft.name = `${name}·副本`.slice(0, 20);
+  R.history = null; R.confirmDisable = false;
+  renderRuleList();
+  renderRuleMain();
+  kick(true);
+  R.notice = {ok: true, text: "已复制为新策略（还没保存），资金可以改"};
+  renderAside();
+}
+
+async function toggleHistory() {
+  if (R.history) { R.history = null; renderHead(); renderHistory(); return; }
+  let res;
+  try { res = await api.rule_detail(R.sid); } catch (e) { res = {ok: false, errors: [String(e)]}; }
+  R.history = res && res.ok ? (res.history || []) : {error: errText(res, "读取失败")};
+  renderHead();
+  renderHistory();
+}
+
+function renderHistory() {
+  const el = $("ruleHistory");
+  if (!el) return;
+  if (!R.history) { el.innerHTML = ""; return; }
+  if (R.history.error) { el.innerHTML = `<div class="err-text history">版本历史读取失败：${esc(R.history.error)}</div>`; return; }
+  const rows = R.history.slice().reverse();
+  el.innerHTML = `<div class="history">${table(["版本", "名称", "保存日", "生效日", "状态", ""], rows.map((h) => [
+    `v${esc(h.version)}`, esc(h.name), esc(h.created), esc(h.active_from), h.enabled ? "启用" : "停用",
+    `<button type="button" data-load-ver="${esc(h.version)}">载入编辑</button>`]), [])}</div>`;
+  el.querySelectorAll("[data-load-ver]").forEach((b) => b.onclick = () => {
+    const h = R.history.find((x) => String(x.version) === b.dataset.loadVer);
+    if (!h) return;
+    closePop();
+    R.draft = normalizeSpec(h.spec);
+    R.open = R.draft.exits.map(() => false);
+    const keep = R.history;
+    renderRuleMain();
+    R.history = keep; renderHead(); renderHistory();
+    kick(true);
+    R.notice = {ok: true, text: `已载入 v${h.version}，保存后成为新版本`};
+    renderAside();
+  });
+}
+
+async function disableRule() {
+  if (!R.confirmDisable) { R.confirmDisable = true; renderHead(); return; }
+  R.confirmDisable = false;
+  let res;
+  try { res = await api.rule_disable(R.sid); } catch (e) { res = {ok: false, errors: [String(e)]}; }
+  await loadRules();
+  renderRuleList();
+  renderHead();
+  R.notice = res && res.ok
+    ? {ok: true, text: "已停用：下一个交易日起不再开新仓，已有持仓按原卖出规则处理完"}
+    : {ok: false, text: `停用失败：${errText(res, "未知错误")}`};
+  renderAside();
+}
+
 async function refresh() {
   const s = await api.status();
   today = s.today;
+  accountMeta = Object.fromEntries((s.accounts || []).map((a) => [a.id,
+    {name: a.name, baseline: a.baseline ?? 30000, strategy: a.strategy, strategyName: a.strategy_name}]));
   $("dot").className = "dot" + (s.running || s.background ? " on" : "");
   $("phase").textContent = s.running ? s.phase : (s.background ? "后台任务运行中" : "未运行");
   $("overseas").textContent = s.overseas || "–";
@@ -326,19 +1140,21 @@ async function refresh() {
   $("daemonMsg").innerHTML = esc(s.daemon ? "后台程序已接管今日交易，面板只需查看" : "");
   $("btnStart").disabled = s.running || s.background || s.daemon;
   $("btnStop").disabled = !s.running;
-  renderAccounts(s.accounts);
+  renderAccounts(s.accounts || []);
   renderCurve(await api.equity_curve());
-  if (tab !== "reports") await renderTab();
+  if (tab !== "reports" && tab !== "rules") await renderTab();   // 规则页是编辑器，定时刷新会冲掉正在编辑的内容
 }
 
 window.addEventListener("pywebviewready", async () => {
   api = window.pywebview.api;
   $("btnStart").onclick = async () => { await api.start(); refresh(); };
   $("btnStop").onclick = async () => { await api.stop(); refresh(); };
-  document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
-    document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
+  document.querySelectorAll("#mainTabs button").forEach((b) => b.onclick = () => {
+    document.querySelectorAll("#mainTabs button").forEach((x) => x.classList.toggle("active", x === b));
+    closePop();
     tab = b.dataset.tab; selectedId = null; noticesExpanded = false; renderTab();
   });
+  await loadRules();          // 策略名给图例、决策筛选、命中条件标题用
   await refresh();
   await renderTab();
   setInterval(refresh, 5000);

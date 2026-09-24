@@ -15,6 +15,45 @@ from jevq.ledger import Ledger
 from jevq.rules import custom as rules_custom
 from jevq.strategies import custom as custom_runtime
 
+
+def builtin_summaries() -> list[dict]:
+    """内置策略的只读说明（面板「规则」页左侧列表），数字取自配置常量，改参数时说明跟着变。"""
+    from jevq.rules import board as board_rules
+    from jevq.rules import board_sell
+
+    hm = lambda t: t.strftime("%H:%M")      # noqa: E731
+    windows = "、".join(f"{hm(a)}~{hm(b)}" for a, b in board_rules.SCAN_WINDOWS)
+    return [
+        {"id": "lowbuy", "name": STRATEGIES["lowbuy"]["name"], "accounts": list(STRATEGIES["lowbuy"]["accounts"]),
+         "sections": [
+             {"title": "选股", "lines": [
+                 f"主板 60/00、非 ST、上市满 {config.MIN_LISTED_TRADING_DAYS} 个交易日",
+                 f"当前涨幅在 {config.BUY_ZONE_LOW:g}% ~ {config.BUY_ZONE_HIGH:g}% 之间",
+                 "按近 5 日涨幅从高到低排序"]},
+             {"title": "买点", "lines": [
+                 f"情绪偏弱或外围偏弱时只在尾盘 {hm(config.TAIL_BUY_START)}~{hm(config.BUY_END)} 买，否则盘中可买",
+                 f"主账户经 Jev 公告排雷 + 消息面判断，每分钟最多检查 {config.MAX_CHECKS_PER_TICK} 只"]},
+             {"title": "卖出（次日起）", "lines": [
+                 f"跌到 {config.STOP_LOSS:g}% 止损",
+                 f"高开 ≥ {config.TAKE_PROFIT:g}% 止盈；开盘 > {config.LOW_OPEN:g}% 时摸到 +{config.TAKE_PROFIT:g}% 卖",
+                 f"低开时回到 {config.ZERO_LINE:g}% 或从最低反弹 {config.REBOUND:g} 点卖",
+                 f"{hm(config.EOD_SELL)} 尾盘清仓"]}]},
+        {"id": "board", "name": STRATEGIES["board"]["name"], "accounts": list(STRATEGIES["board"]["accounts"]),
+         "sections": [
+             {"title": "选股", "lines": [
+                 f"题材内至少 {board_rules.HOT_MIN} 只涨超 {board_rules.HOT_PCT:g}%",
+                 f"首板（昨日未涨停），涨幅 ≥ {board_rules.ENTER_PCT:g}% 进观察池，最多 {board_rules.WATCH_MAX} 只，"
+                 f"跌破 {board_rules.EXIT_PCT:g}% 移出"]},
+             {"title": "买点", "lines": [
+                 f"扫描窗口 {windows} 内每 3 秒检查，涨幅到 {board_rules.TRIGGER_PCT:g}% 触发",
+                 "主账户经 Jev 排雷，影子账户不拦截"]},
+             {"title": "卖出（次日起）", "lines": [
+                 f"跌到 {board_sell.STOP:g}% 止损；封死涨停继续持有",
+                 f"炸板卖；冲高回落 {board_sell.PULLBACK:g} 点卖",
+                 f"{hm(config.EOD_SELL)} 尾盘清仓"]}]},
+    ]
+
+
 REPORT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 PREVIEW_TTL = 60.0      # 试跑行情缓存秒数
 
@@ -127,6 +166,15 @@ class Api:
     def _account(self, ledger: Ledger, account: str, prices: dict[str, float], names: dict[str, str],
                 account_names: dict[str, str], account_strategy: dict[str, str],
                 strategy_names: dict[str, str]) -> dict:
+        strategy = account_strategy.get(account, "")
+        baseline = accounts_mod.capital_baseline(ledger.conn, strategy)
+        opened = ledger.conn.execute("SELECT 1 FROM cash WHERE account=?", (account,)).fetchone()
+        if opened is None:
+            # 自定义策略今天生效、但交易进程还没构造 CustomStrategy 开户（盘前/进程未起）：
+            # 没有现金行，按本金空仓显示，不能让 status 跨桥抛异常把整个面板拖垮
+            return {"id": account, "name": account_names.get(account, account), "equity": baseline,
+                    "cash": baseline, "baseline": baseline, "return_pct": 0.0, "positions": [],
+                    "strategy": strategy, "strategy_name": strategy_names.get(strategy, strategy)}
         value = ledger.equity(account, prices)
         positions = []
         for p in ledger.positions(account):
@@ -135,10 +183,8 @@ class Api:
                               "buy_price": p.buy_price,
                               "buy_date": p.buy_date.isoformat(), "price": price,
                               "pnl_pct": None if price is None else round((price / p.buy_price - 1) * 100, 2)})
-        strategy = account_strategy.get(account, "")
-        baseline = accounts_mod.capital_baseline(ledger.conn, strategy)
         return {"id": account, "name": account_names.get(account, account), "equity": value,
-                "cash": round(ledger.cash(account), 2),
+                "cash": round(ledger.cash(account), 2), "baseline": baseline,
                 "return_pct": round((value / baseline - 1) * 100, 2), "positions": positions,
                 "strategy": strategy, "strategy_name": strategy_names.get(strategy, strategy)}
 
@@ -151,7 +197,7 @@ class Api:
             conn.close()
         names = self._lookup_names({f.code for f in fills})
         return [{"time": f.ts.strftime("%H:%M"), "account": account_names.get(f.account, f.account),
-                 "code": f.code, "name": names[f.code],
+                 "account_id": f.account, "code": f.code, "name": names[f.code],
                  "side": "买" if f.side == "buy" else "卖", "price": f.price, "shares": f.shares,
                  "fee": f.fee, "reason": f.reason}
                 for f in fills]
@@ -290,9 +336,9 @@ class Api:
                 rules.append({"id": sid, "name": latest["name"], "version": latest["version"],
                               "spec": latest["spec"], "active_from": latest["active_from"],
                               "enabled": latest["enabled"], "running": sid in running,
-                              "can_buy": latest["enabled"],      # 面板（Task 8 WIP）用它显示启用/停用
+                              "can_buy": latest["enabled"],      # 兼容旧字段，与 enabled 相同
                               "held": sid in held})
-            return {"ok": True, "rules": rules}
+            return {"ok": True, "rules": rules, "builtin": builtin_summaries()}
         except Exception as e:
             return {"ok": False, "error": str(e), "errors": [str(e)]}
         finally:
