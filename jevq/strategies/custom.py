@@ -492,6 +492,8 @@ class CustomStrategy:
         if field.unit:
             desc_parts.append(field.unit)
 
+        if isinstance(value, time):  # 「时间」字段取值是 datetime.time，要能写进 JSON trace
+            value = value.strftime("%H:%M")
         return {"field": field.label, "value": value, "desc": "".join(desc_parts)}
 
     def _make_getter(self, code: str, q: Quote, pos: Position | None, t: time,

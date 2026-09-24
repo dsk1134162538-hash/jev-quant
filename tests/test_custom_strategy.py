@@ -423,3 +423,24 @@ def test_error_count_halts_at_3():
 
     # 错误计数达到 3 次后停止
     assert strat.error_count == 3
+
+
+def test_time_condition_hit_is_json_serializable():
+    """用了「时间」条件的策略：hits 里的当时取值（datetime.time）必须能写进决策 trace，否则永远买不进。"""
+    spec = {
+        "name": "尾盘",
+        "capital": 30000,
+        "select": {"conditions": [{"field": "pct", "op": ">=", "value": 5.0}]},
+        "entry": {"conditions": [{"field": "time", "op": ">=", "value": "09:45"}]},
+        "exits": [{"when": {"conditions": [{"field": "pnl_pct", "op": "<=", "value": -5}]}, "reason": "止损"}],
+        "jev": {"notices": False, "news": False}
+    }
+    strat, conn, ledger = make(spec)
+    quotes = {"600001": quote("600001", pct=6.0, amount=2e8, turnover=5.0, ts=DAY)}
+    strat.on_minute(quotes, at(10, 0))
+
+    row = conn.execute("SELECT trace FROM decisions WHERE code='600001' AND verdict='pass'").fetchone()
+    assert row is not None
+    hits = json.loads(row[0])["candidate"]["hits"]
+    assert any(h["value"] == "10:00" for h in hits)
+    assert ledger.positions("c1_main")
