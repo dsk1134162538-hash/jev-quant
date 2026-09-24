@@ -156,12 +156,34 @@ def sell_push_content(conn, f: Fill, stock_name: str) -> str:
     return "｜".join(parts)
 
 
-def close_summary_content(ledger: Ledger, today: date, prices: dict) -> str:
-    """收盘小结正文：四个账户各一行净值/收益率/今日成交笔数。"""
+def close_summary_content(ledger: Ledger, today: date, prices: dict, conn=None) -> str:
+    """收盘小结正文：所有账户各一行净值/收益率/今日成交笔数（固定四账户+自定义主账户）。"""
     counts = Counter(f.account for f in ledger.fills_on(today))
     lines = []
+
+    # 固定四账户
     for a in ACCOUNTS:
         value = ledger.equity(a, prices)
         pct = (value / INITIAL_CASH - 1) * 100
         lines.append(f"{ACCOUNT_NAMES[a]} 净值 {value:,.2f}（{pct:+.2f}%）今日成交 {counts.get(a, 0)} 笔")
+
+    # 自定义策略主账户
+    if conn is not None:
+        try:
+            from jevq import accounts as accounts_mod
+            from jevq.data import custom_store
+            all_accounts = accounts_mod.all_accounts(conn, today)
+            custom_mains = [a for a in all_accounts if a.endswith("_main") and a not in ACCOUNTS]
+            for a in sorted(custom_mains):
+                value = ledger.equity(a, prices)
+                # 读取该策略的 capital 作为初始资金
+                sid = a.replace("_main", "")
+                initial = custom_store.capital_of(conn, sid) or 30000
+                pct = (value / initial - 1) * 100
+                # 账户标签：从 account_names 读，没有就用 sid
+                label = ACCOUNT_NAMES.get(a, sid)
+                lines.append(f"{label} 净值 {value:,.2f}（{pct:+.2f}%）今日成交 {counts.get(a, 0)} 笔")
+        except Exception:
+            pass  # 任何问题都不影响输出
+
     return "\n".join(lines)

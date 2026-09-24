@@ -174,7 +174,7 @@ def rank_codes(codes, get, rank: dict | None) -> list[str]:
 
 
 def _interval(c: dict):
-    op, v = c.get("op"), c.get("value")
+    op, v = c.get("op"), c.get("val")
     if op in (">", ">="):
         return (v, float("inf"), op == ">", False)
     if op in ("<", "<="):
@@ -257,7 +257,7 @@ def _is_stop(e: dict) -> bool:
     conds = (e.get("when") or {}).get("conditions") or []
     if not conds or any(c.get("field") not in ("pct", "pnl_pct") for c in conds):
         return False
-    return any(c.get("op") in ("<", "<=") and isinstance(c.get("value"), (int, float)) and c["value"] <= 0
+    return any(c.get("op") in ("<", "<=") and isinstance(c.get("val"), (int, float)) and c["val"] <= 0
                for c in conds)
 
 

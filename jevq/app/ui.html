@@ -85,6 +85,7 @@
       <button data-tab="fills" class="active">今日成交</button>
       <button data-tab="decisions">Jev 判断</button>
       <button data-tab="board">封板统计</button>
+      <button data-tab="rules">规则</button>
       <button data-tab="reports">复盘报告</button>
       <button data-tab="logs">运行日志</button>
     </div>
@@ -273,6 +274,28 @@ async function renderTab() {
     const rows = await api.board_stats();
     body.innerHTML = table(["时段", "样本数", "次日平均高开", "次日平均收盘", "次日连板率"],
       rows.map((r) => [esc(r.bucket), r.count, fmt(r.avg_next_open) + "%", fmt(r.avg_next_close) + "%", fmt(r.board_rate, 1) + "%"]));
+  } else if (tab === "rules") {
+    const result = await api.rules_list();
+    if (!result.ok) {
+      body.innerHTML = `<div class="empty" style="color:var(--up)">加载失败：${esc(result.error || "未知错误")}</div>`;
+      return;
+    }
+    const rules = result.rules || [];
+    if (!rules.length) {
+      body.innerHTML = '<div class="empty">暂无自定义规则。前往规则编辑器创建第一条规则。</div>';
+      return;
+    }
+    const ruleRows = rules.map((r) => [
+      esc(r.id),
+      esc(r.name),
+      r.can_buy ? '<span style="color:var(--down)">●</span> 启用' : '<span style="color:var(--muted)">○</span> 停用',
+      `v${r.version}`,
+      esc((r.spec && r.spec.capital) || "–")
+    ]);
+    body.innerHTML = `<div style="margin-bottom:12px"><button id="btnCreateRule" class="primary">+ 新建规则</button></div>` +
+      table(["ID", "名称", "状态", "版本", "资金"], ruleRows);
+    const createBtn = body.querySelector("#btnCreateRule");
+    if (createBtn) createBtn.onclick = () => alert("规则编辑器功能待实现");
   } else if (tab === "reports") {
     const names = await api.reports();
     if (!names.length) { body.innerHTML = '<div class="empty">还没有复盘报告，第一个交易日 15:05 后生成</div>'; return; }
