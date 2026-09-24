@@ -1,0 +1,480 @@
+"""自定义策略运行时：按用户配置的规则选股、买入、卖出。"""
+import json
+import sqlite3
+from datetime import date, datetime, time
+
+from jevq.ledger import Ledger
+from jevq.models import Fill, Position, Quote
+from jevq.rules.custom import eval_cond, eval_group, first_exit, rank_codes
+from jevq.rules.metrics import avg_pct, body_pct, committee, outer_ratio, seal_amount, seal_ratio
+
+
+class CustomStrategy:
+    """自定义策略运行时：主账户走 Jev，影子账户不走。"""
+
+    def __init__(self, conn: sqlite3.Connection, ledger: Ledger, sid: str, version: int, spec: dict,
+                 notice_judge, news_judge, universe: dict[str, str], features: dict[str, dict],
+                 concept_map: dict[str, list[str]], env_provider, prev_day: date, can_buy: bool = True):
+        self.conn, self.ledger = conn, ledger
+        self.sid, self.version, self.spec = sid, version, spec
+        self.notice_judge, self.news_judge = notice_judge, news_judge
+        self.universe, self.features, self.concept_map = universe, features, concept_map
+        self.env_provider = env_provider
+        self.prev_day = prev_day
+        self.can_buy = can_buy
+        self.accounts = (f"{sid}_main", f"{sid}_shadow")
+
+        # 初始化账户
+        from jevq.data.custom_store import capital_of
+        capital = capital_of(conn, sid) or spec.get("capital", 30000)
+        for account in self.accounts:
+            ledger.ensure_account(account, capital)
+
+        # 当日否决集和错误计数
+        self.rejected: set[str] = set()
+        self._rejected_day: date | None = None
+        self.check_count = 0
+        self.error_count = 0
+
+        # 预计算缓存（每分钟更新一次）
+        self.amount_ranks: dict[str, int] = {}
+        self.concept_heats: dict[str, int] = {}
+        self._cache_minute: str | None = None
+
+    def on_minute(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
+        """每分钟决策：先卖出，再买入（can_buy 且有空位时）。"""
+        if self._rejected_day != now.date():
+            self._restore_rejected(now.date())
+
+        if not quotes:
+            return []
+
+        # 更新预计算缓存
+        minute_key = now.strftime("%Y-%m-%d %H:%M")
+        if self._cache_minute != minute_key:
+            self._update_cache(quotes)
+            self._cache_minute = minute_key
+
+        fills = self._sells(quotes, now)
+
+        if self.can_buy:
+            fills += self._buys(quotes, now)
+
+        return fills
+
+    def _restore_rejected(self, day: date):
+        """重启后恢复当日已否决/出错的票。"""
+        rows = self.conn.execute(
+            "SELECT DISTINCT code FROM decisions WHERE strategy=? AND verdict IN ('reject', 'error') "
+            "AND code != '' AND substr(ts, 1, 10) = ?", (self.sid, day.isoformat())).fetchall()
+        self.rejected = {r[0] for r in rows}
+        self._rejected_day = day
+        self.check_count = 0
+        self.error_count = 0
+
+    def _update_cache(self, quotes: dict[str, Quote]):
+        """每分钟预计算 amount_rank 和 concept_heat。"""
+        # amount_rank：按成交额排序，名次从 1 开始
+        uni_quotes = [(c, q) for c, q in quotes.items() if c in self.universe]
+        uni_quotes.sort(key=lambda cq: cq[1].amount, reverse=True)
+        self.amount_ranks = {c: i + 1 for i, (c, _q) in enumerate(uni_quotes)}
+
+        # concept_heat：该股所属题材中当日涨超 5% 成员数最大值
+        concept_counts: dict[str, int] = {}
+        for code, q in quotes.items():
+            if code not in self.universe:
+                continue
+            if q.pct > 5.0:
+                for concept in self.concept_map.get(code, []):
+                    concept_counts[concept] = concept_counts.get(concept, 0) + 1
+
+        self.concept_heats = {}
+        for code in self.universe:
+            concepts = self.concept_map.get(code, [])
+            if concepts:
+                self.concept_heats[code] = max(concept_counts.get(c, 0) for c in concepts)
+            else:
+                self.concept_heats[code] = 0
+
+    def _sells(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
+        """卖出：对两个账户持仓，用绑定该股的取值函数 first_exit。"""
+        fills = []
+        trade_days = self._trade_days()
+
+        for account in self.accounts:
+            for pos in self.ledger.positions(account):
+                try:
+                    q = quotes.get(pos.code)
+                    if q is None or q.ts.date() < now.date():
+                        continue
+
+                    # T+1：买入当天不卖
+                    if pos.buy_date >= now.date():
+                        continue
+
+                    get = self._make_getter(pos.code, q, pos, now.time(), trade_days)
+                    reason = first_exit(self.spec.get("exits") or [], get)
+
+                    if reason and (f := self.ledger.sell(account, pos, q, now, reason)):
+                        fills.append(f)
+
+                except Exception as e:
+                    self.conn.rollback()
+                    print(f"[{self.sid}] {now:%H:%M} 卖出 {account}/{pos.code} 出错: {e!r}")
+
+        return fills
+
+    def _buys(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
+        """买入：候选 = 股票池内当日行情中 eval_group(select) 为真者 → rank_codes → 逐只检查 entry。"""
+        main, shadow = self.accounts
+        main_slots = self.ledger.free_slots(main)
+        shadow_slots = self.ledger.free_slots(shadow)
+
+        if main_slots <= 0 and shadow_slots <= 0:
+            return []
+
+        # 选股
+        candidates = []
+        trade_days = self._trade_days()
+        for code, q in quotes.items():
+            if code not in self.universe or q.ts.date() < now.date():
+                continue
+            try:
+                get = self._make_getter(code, q, None, now.time(), trade_days)
+                if eval_group(self.spec.get("select"), get, empty=False):
+                    candidates.append(code)
+            except Exception as e:
+                print(f"[{self.sid}] {now:%H:%M} 选股 {code} 出错: {e!r}")
+
+        if not candidates:
+            return []
+
+        # 排序
+        def rank_get(code, key, n):
+            q = quotes.get(code)
+            if q is None:
+                return None
+            return self._make_getter(code, q, None, now.time(), trade_days)(key, n)
+
+        ranked = rank_codes(candidates, rank_get, self.spec.get("rank"))
+
+        fills = []
+
+        # 影子账户：同候选同 entry、不走 Jev、买排名第一个满足 entry 的
+        if shadow_slots > 0:
+            for code in ranked:
+                if self.ledger.holds(shadow, code):
+                    continue
+                try:
+                    q = quotes.get(code)
+                    if q is None:
+                        continue
+                    get = self._make_getter(code, q, None, now.time(), trade_days)
+                    if eval_group(self.spec.get("entry"), get, empty=True):
+                        if f := self.ledger.buy(shadow, q, now, f"影子｜{self.spec['name']}"):
+                            fills.append(f)
+                            break  # 影子只买一只
+                except Exception as e:
+                    self.conn.rollback()
+                    print(f"[{self.sid}] {now:%H:%M} 影子买入 {code} 出错: {e!r}")
+
+        # 主账户：逐只检查 entry → Jev → 买入
+        if main_slots > 0:
+            for code in ranked:
+                if main_slots <= 0:
+                    break
+
+                if self.ledger.holds(main, code):
+                    continue
+
+                # 每分钟最多检查 10 只
+                if self.check_count >= 10:
+                    break
+
+                # 错误 3 次熔断
+                if self.error_count >= 3:
+                    break
+
+                try:
+                    q = quotes.get(code)
+                    if q is None:
+                        continue
+
+                    get = self._make_getter(code, q, None, now.time(), trade_days)
+
+                    # 检查 entry
+                    if not eval_group(self.spec.get("entry"), get, empty=True):
+                        continue
+
+                    # 收集命中的条件
+                    hits = self._collect_hits(code, q, None, now.time(), trade_days)
+
+                    # Jev 判断
+                    verdict, outcome, notice_trace, news_trace = self._judge_jev(code, q, now, hits)
+
+                    if verdict == "pass":
+                        if f := self.ledger.buy(main, q, now, self.spec["name"]):
+                            fills.append(f)
+                            outcome["bought"] = True
+                            outcome["shares"] = f.shares
+                            outcome["price"] = f.price
+                            main_slots -= 1
+                            self._log(now, code, "pass", self.spec["name"], hits, outcome,
+                                    notice_trace, news_trace)
+
+                except Exception as e:
+                    self.conn.rollback()
+                    self.error_count += 1
+                    print(f"[{self.sid}] {now:%H:%M} 主账户买入 {code} 出错: {e!r}")
+                    # 记录 error verdict
+                    self._log(now, code, "error", f"异常：{e!r}", [], {"bought": False})
+                    self.rejected.add(code)
+
+        return fills
+
+    def _judge_jev(self, code: str, q: Quote, now: datetime, hits: list) -> tuple[str, dict, any, any]:
+        """Jev 判断：按 spec.jev 开关，复用 NoticeJudge/NewsJudge 与当日否决集。
+        返回 (verdict, outcome, notice_trace, news_trace)。"""
+        if code in self.rejected:
+            return "reject", {"bought": False}, None, None
+
+        self.check_count += 1
+
+        jev_spec = self.spec.get("jev") or {}
+        notice_trace, news_trace = None, None
+
+        # 公告判断
+        if jev_spec.get("notices", True):
+            try:
+                verdict, why = self.notice_judge.check(code, now.date())
+                notice_trace = getattr(self.notice_judge, "last_trace", None)
+                if verdict != "pass":
+                    self.rejected.add(code)
+                    self._log(now, code, verdict, why, hits, {"bought": False}, notice_trace, news_trace)
+                    return verdict, {"bought": False}, notice_trace, news_trace
+            except Exception as e:
+                self.error_count += 1
+                self.rejected.add(code)
+                self._log(now, code, "error", f"公告判断异常：{e!r}", hits, {"bought": False})
+                return "error", {"bought": False}, None, None
+
+        # 消息面判断
+        if jev_spec.get("news", True):
+            try:
+                verdict, why = self.news_judge.check(code, q.name, now)
+                news_trace = getattr(self.news_judge, "last_trace", None)
+                if verdict != "pass":
+                    self.rejected.add(code)
+                    self._log(now, code, verdict, why, hits, {"bought": False}, notice_trace, news_trace)
+                    return verdict, {"bought": False}, notice_trace, news_trace
+            except Exception as e:
+                self.error_count += 1
+                self.rejected.add(code)
+                self._log(now, code, "error", f"消息面判断异常：{e!r}", hits, {"bought": False}, notice_trace)
+                return "error", {"bought": False}, notice_trace, None
+
+        return "pass", {"bought": False}, notice_trace, news_trace
+
+    def _collect_hits(self, code: str, q: Quote, pos: Position | None, t: time,
+                      trade_days: list[date]) -> list[dict]:
+        """收集命中的选股与买点条件的中文描述+当时取值。"""
+        hits = []
+        get = self._make_getter(code, q, pos, t, trade_days)
+
+        # 选股条件
+        select_group = self.spec.get("select") or {}
+        for cond in select_group.get("conditions") or []:
+            if eval_cond(cond, get):
+                hits.append(self._describe_cond(cond, get))
+
+        # 买点条件
+        entry_group = self.spec.get("entry") or {}
+        for cond in entry_group.get("conditions") or []:
+            if eval_cond(cond, get):
+                hits.append(self._describe_cond(cond, get))
+
+        return hits
+
+    def _describe_cond(self, cond: dict, get) -> dict:
+        """条件的中文描述。"""
+        from jevq.rules.custom import FIELDS, OP_LABELS
+
+        field_key = cond.get("field")
+        field = FIELDS.get(field_key)
+        if field is None:
+            return {"field": field_key, "value": None, "desc": "未知字段"}
+
+        n = (cond.get("param") or {}).get("n")
+        value = get(field_key, n)
+        op = cond.get("op")
+        cond_value = cond.get("value")
+
+        desc_parts = [field.label]
+        if n is not None:
+            desc_parts.append(f"(N={n})")
+        desc_parts.append(OP_LABELS.get(op, op))
+
+        if op == "between":
+            desc_parts.append(f"{cond_value[0]}~{cond_value[1]}")
+        elif op == "in":
+            desc_parts.append("/".join(str(v) for v in cond_value))
+        elif op == "is":
+            desc_parts.append("是" if cond_value else "否")
+        else:
+            desc_parts.append(str(cond_value))
+
+        if field.unit:
+            desc_parts.append(field.unit)
+
+        return {"field": field.label, "value": value, "desc": "".join(desc_parts)}
+
+    def _make_getter(self, code: str, q: Quote, pos: Position | None, t: time,
+                     trade_days: list[date]):
+        """取值函数：覆盖全部字段。"""
+        feat = self.features.get(code) or {}
+        env = self.env_provider()
+
+        def get(key: str, n: int | None = None):
+            # 价格相关
+            if key == "pct":
+                return q.pct
+            if key == "open_pct":
+                return q.open_pct
+            if key == "high_pct":
+                return q._pct(q.high)
+            if key == "low_pct":
+                return q.low_pct
+            if key == "drawdown":
+                return round(q._pct(q.high) - q.pct, 2)
+            if key == "sealed":
+                return q.price >= q.limit_up
+            if key == "broke":
+                return q.high >= q.limit_up and q.price < q.limit_up
+            if key == "amplitude":
+                return q.amplitude
+            if key == "avg_pct":
+                return avg_pct(q)
+            if key == "body_pct":
+                return body_pct(q)
+            if key == "ytd_pct":
+                return q.ytd_pct
+
+            # 量能相关
+            if key == "amount":
+                return round(q.amount / 1e8, 4)
+            if key == "amount_rank":
+                return self.amount_ranks.get(code)
+            if key == "turnover":
+                return q.turnover
+            if key == "volume_ratio":
+                return q.volume_ratio
+            if key == "committee":
+                return committee(q)
+            if key == "outer_ratio":
+                return outer_ratio(q)
+            if key == "seal_amount":
+                return seal_amount(q)
+            if key == "seal_ratio":
+                return seal_ratio(q)
+
+            # 估值相关
+            if key == "float_mcap":
+                return q.float_mcap
+            if key == "total_mcap":
+                return q.total_mcap
+            if key == "pe_dyn":
+                return q.pe_dyn if q.pe_dyn != 0 else None
+            if key == "pe_static":
+                return q.pe_static if q.pe_static != 0 else None
+            if key == "pe_ttm":
+                return q.pe_ttm if q.pe_ttm != 0 else None
+            if key == "pb":
+                return q.pb if q.pb != 0 else None
+            if key == "float_shares":
+                return round(q.float_shares / 1e8, 4) if q.float_shares > 0 else None
+            if key == "total_shares":
+                return round(q.total_shares / 1e8, 4) if q.total_shares > 0 else None
+
+            # 历史相关
+            if key == "ret_n":
+                return feat.get("ret", {}).get(n)
+            if key == "limit_up_in_n":
+                return feat.get("limit_up", {}).get(n)
+            if key == "boards":
+                return feat.get("boards")
+            if key == "ma_pos_n":
+                ma = feat.get("ma", {}).get(n)
+                if ma is None or ma <= 0:
+                    return None
+                return round((q.price / ma - 1) * 100, 2)
+            if key == "up_streak":
+                return feat.get("up_streak")
+
+            # 题材相关
+            if key == "concept_heat":
+                return self.concept_heats.get(code)
+            if key == "leader_rank":
+                # leader_rank 暂不实现，需要完整的 quotes
+                return None
+
+            # 持仓相关
+            if key == "hold_days":
+                if pos is None:
+                    return None
+                return self._hold_days(pos.buy_date, trade_days)
+            if key == "pnl_pct":
+                if pos is None:
+                    return None
+                return round((q.price / pos.buy_price - 1) * 100, 2)
+
+            # 环境相关
+            if key == "time":
+                return t
+            if key == "sentiment":
+                return env.get("sentiment")
+            if key == "overseas":
+                return env.get("overseas")
+
+            return None
+
+        return get
+
+    def _hold_days(self, buy_date: date, trade_days: list[date]) -> int:
+        """持有天数（按交易日计算）。"""
+        if not trade_days:
+            return 0
+        # trade_days 应该是升序的交易日列表，从 prev_day 之后开始
+        count = 0
+        for d in trade_days:
+            if d > buy_date:
+                count += 1
+        return count
+
+    def _trade_days(self) -> list[date]:
+        """从 closes 表读取交易日列表。"""
+        rows = self.conn.execute(
+            "SELECT DISTINCT date FROM closes WHERE date > ? ORDER BY date",
+            (self.prev_day.isoformat(),)).fetchall()
+        return [date.fromisoformat(r[0]) for r in rows]
+
+    def _log(self, now: datetime, code: str, verdict: str, detail: str, hits: list,
+             outcome: dict, notice_trace=None, news_trace=None):
+        """记录决策。"""
+        trace = {
+            "strategy": self.sid,
+            "version": self.version,
+            "candidate": {
+                "name": self.universe.get(code, ""),
+                "hits": hits
+            },
+            "notices": notice_trace,
+            "news": news_trace,
+            "outcome": outcome
+        }
+
+        self.conn.execute(
+            "INSERT INTO decisions(ts, code, verdict, detail, trace, strategy, version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (now.isoformat(timespec="seconds"), code, verdict, detail,
+             json.dumps(trace, ensure_ascii=False), self.sid, self.version))
+        self.conn.commit()
