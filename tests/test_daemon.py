@@ -263,3 +263,38 @@ def test_main_sync_exception_does_not_crash_and_next_day_still_runs(monkeypatch,
     assert rc == 0
     assert calls == [1]
     assert any("同步/上线异常" in m for m in logged)
+
+
+def test_main_after_deploy_waits_for_old_daemon_to_release_lock(monkeypatch, tmp_path):
+    """自动上线后新进程起来时旧进程可能还没退出、还拿着 daemon.lock。lock_wait>0 时要等它释放，
+    不能像正常开机启动那样「已有后台在运行」直接退出——否则上线后后台就没了，第二天不交易。"""
+    monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "jevq.sqlite"))
+    monkeypatch.setattr(daemon, "file_log", lambda msg: None)
+    old = hold_run_lock(tmp_path / "daemon.lock")
+    old.__enter__()
+    sleeps = []
+
+    def fake_sleep(s):
+        sleeps.append(s)
+        if len(sleeps) == 3:
+            old.__exit__(None, None, None)
+
+    calls = []
+
+    def runner(stop, log):
+        calls.append(1)
+        stop.set()
+
+    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=FakeStop(),
+                     git_rev_parse=_no_git_rev_parse, sync_and_deploy=_no_sync,
+                     restart=_boom_restart, lock_wait=30, sleep=fake_sleep)
+    assert rc == 0
+    assert calls == [1]
+    assert len(sleeps) == 3
+
+
+def test_real_restart_marks_new_process_as_after_deploy(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(daemon.subprocess, "Popen", lambda args, **kw: seen.setdefault("args", args))
+    daemon._real_restart(tmp_path, tmp_path / "python.exe")
+    assert seen["args"][-1] == "--after-deploy"

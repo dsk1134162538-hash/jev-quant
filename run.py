@@ -279,7 +279,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
 
     customs = [] if late else _load_customs(
         conn, ledger, today, universe, ret5, sell_only, notice_judge, news_judge, concept_map,
-        lambda: {"sentiment": engine.sentiment_label, "overseas": overseas}, prev_day, log)
+        lambda: {"sentiment": engine.sentiment_label, "overseas": overseas}, prev_day, log, trade_days=days)
 
     if once:
         t = now()
@@ -443,7 +443,7 @@ def _fresh_quotes(engine: Engine, t: datetime) -> dict:
 
 def _load_customs(conn, ledger: Ledger, today: date, universe: dict, ret5: dict, sell_only: bool,
                   notice_judge, news_judge, concept_map: dict, env_provider, prev_day: date,
-                  log: Callable[[str], None]) -> list[tuple[str, CustomStrategy]]:
+                  log: Callable[[str], None], trade_days=None) -> list[tuple[str, CustomStrategy]]:
     """盘前构造今天要驱动的自定义策略：今天生效且启用的（active_for）+ 已停用但还有持仓的（holders，
     恒只卖）。任何一步失败只影响自定义策略本身——低吸、扫首板和它们的卖出照常。
     只卖日（缺 key / 日历或股票池失败）或 5 日涨幅覆盖不足（收盘价库不够，历史类字段不可信）时一律只卖。"""
@@ -467,7 +467,7 @@ def _load_customs(conn, ledger: Ledger, today: date, universe: dict, ret5: dict,
         try:
             strat = CustomStrategy(conn, ledger, s["id"], s["version"], s["spec"], notice_judge, news_judge,
                                    dict(universe), features, concept_map, env_provider, prev_day,
-                                   can_buy=can_buy and s["can_buy"])
+                                   can_buy=can_buy and s["can_buy"], trade_days=trade_days)
         except Exception as e:
             conn.rollback()
             log(f"自定义策略 {s['id']} 加载失败：{e!r}")

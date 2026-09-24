@@ -952,8 +952,9 @@ class FakeCustom:
     boom: set = set()
 
     def __init__(self, conn, ledger, sid, version, spec, notice_judge, news_judge, universe, features,
-                 concept_map, env_provider, prev_day, can_buy=True):
+                 concept_map, env_provider, prev_day, can_buy=True, trade_days=None):
         self.conn, self.sid, self.version, self.can_buy = conn, sid, version, can_buy
+        self.trade_days = trade_days
         self.calls = []
         for account in (f"{sid}_main", f"{sid}_shadow"):          # 与真实 CustomStrategy 一样开户
             ledger.ensure_account(account, spec["capital"])
@@ -985,6 +986,7 @@ def test_custom_strategy_exception_does_not_affect_others_or_builtin(env, fake_c
     assert len(FakeEngine.instances[0].ticks) == 240                  # 低吸照常每分钟
     by_sid = {s.sid: s for s in fake_custom.instances}
     assert set(by_sid) == {"c1", "c2"}
+    assert by_sid["c2"].trade_days == DAYS                            # 交易日历传给自定义策略（持有天数用）
     assert len(by_sid["c2"].calls) == 240                             # 另一个自定义策略照常每分钟
     assert all(has_quotes for _, has_quotes in by_sid["c2"].calls)
     assert len(by_sid["c1"].calls) == 240                             # 出错的下一分钟继续跑

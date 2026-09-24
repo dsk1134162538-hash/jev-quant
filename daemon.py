@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import threading
+import time as time_mod
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
@@ -10,11 +11,13 @@ ROOT = Path(__file__).resolve().parent
 import run  # noqa: E402
 from jevq.config import DB_PATH, SYNC_ENABLED, DEPLOY_ENABLED  # noqa: E402
 from jevq.notify import notifier_from_env  # noqa: E402
-from jevq.runlock import DAEMON_LOCK_NAME, HELD_MSG, hold_run_lock  # noqa: E402
+from jevq.runlock import DAEMON_LOCK_NAME, HELD_MSG, hold_run_lock, is_held  # noqa: E402
 from jevq.sync import export as sync_export  # noqa: E402
 from jevq.sync.deploy import sync_and_deploy as real_sync_and_deploy  # noqa: E402
 
 START = time(8, 50)
+AFTER_DEPLOY_ARG = "--after-deploy"
+AFTER_DEPLOY_LOCK_WAIT = 60      # 秒：自动上线重启后，等旧进程释放 daemon.lock 的上限
 LOG_DIR = Path("data")
 
 
@@ -69,14 +72,14 @@ def _real_git_rev_parse(repo: Path) -> str | None:
 
 def _real_restart(repo: Path, python_exe: Path) -> None:
     """自我重启：起一个独立的新后台进程跑新代码，当前进程随后正常退出、释放 daemon.lock。
-    新进程在拿到锁之前会自己重试几秒（main() 里 hold_run_lock 抛 RuntimeError 才会立刻放弃，
-    这里给它留出重试空间由 daemon 自身的运行方式保证：新进程照常调用一次 main()）。"""
+    新进程带 AFTER_DEPLOY_ARG 启动：main() 会最多等 AFTER_DEPLOY_LOCK_WAIT 秒让旧进程释放锁，
+    而不是像开机启动那样见锁就退——否则新进程抢跑一步，上线之后后台就没了。"""
     pythonw = python_exe.parent / "pythonw.exe"
     exe = pythonw if pythonw.exists() else python_exe
     kwargs: dict = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen([str(exe), str(repo / "daemon.py")], cwd=repo, close_fds=True, **kwargs)
+    subprocess.Popen([str(exe), str(repo / "daemon.py"), AFTER_DEPLOY_ARG], cwd=repo, close_fds=True, **kwargs)
 
 
 def _default_after_close(conn, today) -> None:
@@ -126,7 +129,8 @@ def _after_run(report_path, today: date, repo: Path, python_exe: Path, notifier,
 
 def main(runner=_default_runner, clock=datetime.now, stop=None, *,
         repo: Path = ROOT, python_exe: Path | None = None, notifier=None,
-        git_rev_parse=None, sync_and_deploy=None, restart=None) -> int:
+        git_rev_parse=None, sync_and_deploy=None, restart=None,
+        lock_wait: float = 0, sleep=time_mod.sleep) -> int:
     stop = stop or threading.Event()
     python_exe = python_exe or Path(sys.executable)
     notifier = notifier if notifier is not None else notifier_from_env()
@@ -135,6 +139,10 @@ def main(runner=_default_runner, clock=datetime.now, stop=None, *,
     restart = restart or _real_restart
     running_commit = git_rev_parse(repo)
     lock_path = Path(DB_PATH).parent / DAEMON_LOCK_NAME
+    waited = 0.0
+    while lock_wait > 0 and waited < lock_wait and is_held(lock_path):
+        sleep(1)
+        waited += 1
     try:
         with hold_run_lock(lock_path):
             last_run = None
@@ -188,4 +196,4 @@ def _run_with_retry(runner, stop: threading.Event, clock):
 
 if __name__ == "__main__":
     bootstrap()
-    sys.exit(main())
+    sys.exit(main(lock_wait=AFTER_DEPLOY_LOCK_WAIT if AFTER_DEPLOY_ARG in sys.argv else 0))

@@ -511,3 +511,108 @@ def test_leader_rank_used_by_custom_strategy_on_minute():
 def test_preview_values_use_two_decimals_for_floats():
     assert _fmt_value(-2.6, "%") == "-2.60%" and _fmt_value(-2.21, "%") == "-2.21%"
     assert _fmt_value(3, "名") == "3名" and _fmt_value(True, "") == "是" and _fmt_value(None, "%") == "—"
+
+
+# ---- 最终审查修复 ----
+
+HOLD_SPEC = {
+    "name": "持有天数",
+    "capital": 30000,
+    "select": {"conditions": [{"field": "pct", "op": ">=", "value": 0}]},
+    "entry": {},
+    "exits": [
+        {"when": {"conditions": [{"field": "pnl_pct", "op": "<=", "value": -50}]}, "reason": "止损"},
+        {"when": {"conditions": [{"field": "hold_days", "op": ">=", "value": 2}]}, "reason": "持有超期"},
+    ],
+    "jev": {"notices": False, "news": False},
+}
+
+
+def _strat_on(conn, ledger, day: date, spec, trade_days=None, notice=None):
+    return CustomStrategy(conn, ledger, "c1", 1, spec, notice or Judge(), Judge(), UNIVERSE, {}, CONCEPT_MAP,
+                          lambda: {"sentiment": "正常", "overseas": "中性"}, day, can_buy=False,
+                          trade_days=trade_days)
+
+
+def test_hold_days_counts_trade_days_since_buy_with_calendar():
+    """盘中今天的收盘价还没入库：持有天数必须按交易日历算（买入日之后、到今天为止），
+    不能只看 closes 表里 prev_day 之后的日子（盘中恒为空 → 持有天数恒为 0，「持有 N 天卖」永不触发）。"""
+    strat, conn, ledger = make(HOLD_SPEC)
+    strat.on_minute({"600001": quote("600001", pct=1.0, amount=2e8, ts=DAY)}, at(10, 0))
+    assert ledger.holds("c1_main", "600001")
+
+    calendar = [date(2026, 9, 24), date(2026, 9, 25), date(2026, 9, 28), date(2026, 9, 29)]
+    d25 = datetime(2026, 9, 25, 10, 0)
+    s25 = _strat_on(conn, ledger, date(2026, 9, 24), HOLD_SPEC, calendar)
+    assert s25.on_minute({"600001": quote("600001", pct=0.5, ts=d25)}, d25) == []   # 持有 1 天
+
+    d28 = datetime(2026, 9, 28, 10, 0)
+    s28 = _strat_on(conn, ledger, date(2026, 9, 25), HOLD_SPEC, calendar)
+    fills = s28.on_minute({"600001": quote("600001", pct=0.5, ts=d28)}, d28)          # 持有 2 天
+    assert {f.reason for f in fills} == {"持有超期"}
+    assert len(fills) == 2
+
+
+def test_hold_days_without_calendar_falls_back_to_closes_plus_today():
+    """交易日历不可用时退回 closes 表，今天（收盘价未入库）也算一个交易日。"""
+    strat, conn, ledger = make(HOLD_SPEC)
+    strat.on_minute({"600001": quote("600001", pct=1.0, amount=2e8, ts=DAY)}, at(10, 0))
+    save_closes(conn, date(2026, 9, 25), {"600001": 10.1})
+
+    d28 = datetime(2026, 9, 28, 10, 0)
+    s28 = _strat_on(conn, ledger, date(2026, 9, 25), HOLD_SPEC, None)
+    fills = s28.on_minute({"600001": quote("600001", pct=0.5, ts=d28)}, d28)
+    assert {f.reason for f in fills} == {"持有超期"}
+
+
+def _many(n):
+    return {f"6000{i:02d}": f"股票{i}" for i in range(10, 10 + n)}
+
+
+def test_jev_check_limit_is_per_minute_not_per_day():
+    """每分钟最多查 10 只：下一分钟额度要恢复，不能一天累计 10 次后主账户整天不再买。"""
+    universe = _many(11)
+    rejects = {c: ("reject", "雷") for c in list(universe)[:10]}
+    notice = Judge(rejects)
+    spec = {**HOLD_SPEC, "jev": {"notices": True, "news": False},
+            "rank": {"field": "pct", "order": "desc"}}
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    strat = CustomStrategy(conn, ledger, "c1", 1, spec, notice, Judge(), universe, {}, {},
+                           lambda: {}, PREV_DAY)
+    # 前 10 只涨幅更高、排在前面，全部被否；第 11 只排在最后
+    quotes = {c: quote(c, pct=5.0 - i * 0.1, amount=2e8, ts=DAY) for i, c in enumerate(universe)}
+    fills = strat.on_minute(quotes, at(10, 0))
+    assert not any(f.account == "c1_main" for f in fills)
+    assert len(notice.calls) == 10
+
+    fills = strat.on_minute({c: quote(c, pct=q.pct, amount=2e8, ts=at(10, 1)) for c, q in quotes.items()},
+                            at(10, 1))
+    assert [f.code for f in fills if f.account == "c1_main"] == ["600020"]
+
+
+def test_jev_errors_circuit_breaker_resets_next_minute():
+    """错误 3 次熔断只管这一分钟（与低吸 MAX_ERRORS_PER_TICK 同口径）。"""
+    universe = _many(4)
+    notice = Judge({c: ("error", "超时") for c in list(universe)[:3]})
+    spec = {**HOLD_SPEC, "jev": {"notices": True, "news": False},
+            "rank": {"field": "pct", "order": "desc"}}
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    strat = CustomStrategy(conn, ledger, "c1", 1, spec, notice, Judge(), universe, {}, {},
+                           lambda: {}, PREV_DAY)
+    quotes = {c: quote(c, pct=5.0 - i * 0.1, amount=2e8, ts=DAY) for i, c in enumerate(universe)}
+    strat.on_minute(quotes, at(10, 0))
+    fills = strat.on_minute({c: quote(c, pct=q.pct, amount=2e8, ts=at(10, 1)) for c, q in quotes.items()},
+                            at(10, 1))
+    assert [f.code for f in fills if f.account == "c1_main"] == ["600013"]
+
+
+def test_unbuyable_candidate_does_not_consume_jev_call():
+    """可买性预检：涨停封死 / 停牌 / 钱不够买一手的票不调用 Jev。"""
+    notice = Judge()
+    spec = {**HOLD_SPEC, "jev": {"notices": True, "news": False}}
+    strat, conn, ledger = make(spec, notice=notice)
+    sealed = quote("600001", pct=10.0, amount=2e8, ts=DAY)
+    strat.on_minute({"600001": sealed}, at(10, 0))
+    assert notice.calls == []

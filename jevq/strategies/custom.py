@@ -3,7 +3,8 @@ import json
 import sqlite3
 from datetime import date, datetime, time
 
-from jevq.ledger import Ledger
+from jevq.config import MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE
+from jevq.ledger import Ledger, affordable_shares
 from jevq.models import Fill, Position, Quote
 from jevq.rules import board as board_rules
 from jevq.rules.custom import FIELDS, eval_cond, eval_group, first_exit, rank_codes
@@ -64,7 +65,7 @@ def leader_ranks(quotes: dict[str, Quote], concept_map: dict[str, list[str]],
 
 
 def hold_days(buy_date: date, trade_days: list[date]) -> int:
-    """持有天数（按交易日计）：trade_days 中晚于买入日的天数。"""
+    """持有天数（按交易日计）：trade_days 中晚于买入日的天数。trade_days 应截止到今天（含）。"""
     return sum(1 for d in trade_days or () if d > buy_date)
 
 
@@ -240,7 +241,8 @@ class CustomStrategy:
 
     def __init__(self, conn: sqlite3.Connection, ledger: Ledger, sid: str, version: int, spec: dict,
                  notice_judge, news_judge, universe: dict[str, str], features: dict[str, dict],
-                 concept_map: dict[str, list[str]], env_provider, prev_day: date, can_buy: bool = True):
+                 concept_map: dict[str, list[str]], env_provider, prev_day: date, can_buy: bool = True,
+                 trade_days: list[date] | None = None):
         self.conn, self.ledger = conn, ledger
         self.sid, self.version, self.spec = sid, version, spec
         self.notice_judge, self.news_judge = notice_judge, news_judge
@@ -248,6 +250,7 @@ class CustomStrategy:
         self.env_provider = env_provider
         self.prev_day = prev_day
         self.can_buy = can_buy
+        self.calendar = sorted(trade_days) if trade_days else None     # 交易日历；None = 日历不可用
         self.accounts = (f"{sid}_main", f"{sid}_shadow")
 
         # 初始化账户
@@ -259,6 +262,7 @@ class CustomStrategy:
         # 当日否决集和错误计数
         self.rejected: set[str] = set()
         self._rejected_day: date | None = None
+        # 每分钟的 Jev 检查数 / 错误数（与低吸 MAX_CHECKS_PER_TICK / MAX_ERRORS_PER_TICK 同口径，每轮清零）
         self.check_count = 0
         self.error_count = 0
 
@@ -284,6 +288,9 @@ class CustomStrategy:
 
         fills = self._sells(quotes, now)
 
+        self.check_count = 0
+        self.error_count = 0
+
         if self.can_buy:
             fills += self._buys(quotes, now)
 
@@ -296,8 +303,6 @@ class CustomStrategy:
             "AND code != '' AND substr(ts, 1, 10) = ?", (self.sid, day.isoformat())).fetchall()
         self.rejected = {r[0] for r in rows}
         self._rejected_day = day
-        self.check_count = 0
-        self.error_count = 0
 
     def _update_cache(self, quotes: dict[str, Quote]):
         """每分钟预计算 amount_rank 和 concept_heat。"""
@@ -307,7 +312,7 @@ class CustomStrategy:
     def _sells(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         """卖出：对两个账户持仓，用绑定该股的取值函数 first_exit。"""
         fills = []
-        trade_days = self._trade_days()
+        trade_days = self._trade_days(now.date())
 
         for account in self.accounts:
             for pos in self.ledger.positions(account):
@@ -343,7 +348,7 @@ class CustomStrategy:
 
         # 选股
         candidates = []
-        trade_days = self._trade_days()
+        trade_days = self._trade_days(now.date())
         for code, q in quotes.items():
             if code not in self.universe or q.ts.date() < now.date():
                 continue
@@ -395,12 +400,8 @@ class CustomStrategy:
                 if self.ledger.holds(main, code):
                     continue
 
-                # 每分钟最多检查 10 只
-                if self.check_count >= 10:
-                    break
-
-                # 错误 3 次熔断
-                if self.error_count >= 3:
+                # 每分钟最多检查 MAX_CHECKS_PER_TICK 只；错误 MAX_ERRORS_PER_TICK 次熔断（都只管这一分钟）
+                if self.check_count >= MAX_CHECKS_PER_TICK or self.error_count >= MAX_ERRORS_PER_TICK:
                     break
 
                 try:
@@ -412,6 +413,11 @@ class CustomStrategy:
 
                     # 检查 entry
                     if not eval_group(self.spec.get("entry"), get, empty=True):
+                        continue
+
+                    # 可买性预检：停牌 / 涨停封死 / 钱不够一手 → 反正买不进，别浪费 Jev 调用和检查额度
+                    if (q.suspended or q.price >= q.limit_up
+                            or affordable_shares(min(self.ledger.cash(main), MAX_PER_TRADE), q.price) == 0):
                         continue
 
                     # 收集命中的条件
@@ -457,6 +463,8 @@ class CustomStrategy:
                 verdict, why = self.notice_judge.check(code, now.date())
                 notice_trace = getattr(self.notice_judge, "last_trace", None)
                 if verdict != "pass":
+                    if verdict == "error":      # Jev 超时/报错（JevClient 内部已重试）也计入本分钟熔断
+                        self.error_count += 1
                     self.rejected.add(code)
                     self._log(now, code, verdict, why, hits, {"bought": False}, notice_trace, news_trace)
                     return verdict, {"bought": False}, notice_trace, news_trace
@@ -472,6 +480,8 @@ class CustomStrategy:
                 verdict, why = self.news_judge.check(code, q.name, now)
                 news_trace = getattr(self.news_judge, "last_trace", None)
                 if verdict != "pass":
+                    if verdict == "error":      # Jev 超时/报错（JevClient 内部已重试）也计入本分钟熔断
+                        self.error_count += 1
                     self.rejected.add(code)
                     self._log(now, code, verdict, why, hits, {"bought": False}, notice_trace, news_trace)
                     return verdict, {"bought": False}, notice_trace, news_trace
@@ -545,12 +555,13 @@ class CustomStrategy:
                            concept_heats=self.concept_heats, env=self.env_provider(), t=t,
                            pos=pos, trade_days=trade_days, leader_ranks=self.leader_ranks)
 
-    def _trade_days(self) -> list[date]:
-        """从 closes 表读取交易日列表。"""
-        rows = self.conn.execute(
-            "SELECT DISTINCT date FROM closes WHERE date > ? ORDER BY date",
-            (self.prev_day.isoformat(),)).fetchall()
-        return [date.fromisoformat(r[0]) for r in rows]
+    def _trade_days(self, today: date) -> list[date]:
+        """截止到今天（含）的交易日，供「持有天数」用。优先用交易日历；日历不可用时退回 closes 表
+        里有收盘价的日子 + 今天（盘中今天的收盘价还没入库）。"""
+        if self.calendar is not None:
+            return [d for d in self.calendar if d <= today]
+        rows = self.conn.execute("SELECT DISTINCT date FROM closes WHERE date < ?", (today.isoformat(),)).fetchall()
+        return sorted({date.fromisoformat(r[0]) for r in rows} | {today})
 
     def _log(self, now: datetime, code: str, verdict: str, detail: str, hits: list,
              outcome: dict, notice_trace=None, news_trace=None):

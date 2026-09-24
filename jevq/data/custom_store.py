@@ -131,7 +131,10 @@ def save(conn: sqlite3.Connection, spec: dict, today: date, trade_days, sid: str
         spec = {**spec, "capital": DEFAULT_CAPITAL}
     if sid is not None:
         frozen = capital_of(conn, sid)
-        if frozen is not None and spec.get("capital") != frozen:
+        if frozen is None:
+            # 更新只针对已存在的策略：凭空传进来的 id（比如非 c{n}）建出的账户 holders() 认不出来，停用后持仓没人卖
+            return None, [f"未知策略 {sid}"]
+        if spec.get("capital") != frozen:
             return None, [CAPITAL_FROZEN_ERROR]
     try:
         conn.execute("BEGIN IMMEDIATE")
