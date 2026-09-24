@@ -1,9 +1,11 @@
 """测试 Api 的规则相关方法"""
+from datetime import date, timedelta
+
 import pytest
-from datetime import date
-from jevq.app.api import Api
+
+from factories import quote
 from jevq import db
-from jevq.data import custom_store
+from jevq.app.api import Api
 
 
 @pytest.fixture
@@ -41,7 +43,7 @@ def test_rule_validate_success(tmp_db):
         "select": {
             "mode": "all",
             "conditions": [
-                {"field": "pct", "op": "between", "val": [-3, 0]}
+                {"field": "pct", "op": "between", "value": [-3, 0]}
             ]
         },
         "entry": {"mode": "all", "conditions": []},
@@ -51,7 +53,7 @@ def test_rule_validate_success(tmp_db):
                 "when": {
                     "mode": "all",
                     "conditions": [
-                        {"field": "pct", "op": "<=", "val": -7}
+                        {"field": "pct", "op": "<=", "value": -7}
                     ]
                 }
             }
@@ -71,10 +73,10 @@ def test_rule_validate_missing_name(tmp_db):
         "capital": 30000,
         "select": {
             "mode": "all",
-            "conditions": [{"field": "pct", "op": "between", "val": [-3, 0]}]
+            "conditions": [{"field": "pct", "op": "between", "value": [-3, 0]}]
         },
         "exits": [
-            {"name": "止损", "when": {"mode": "all", "conditions": [{"field": "pct", "op": "<=", "val": -7}]}}
+            {"name": "止损", "when": {"mode": "all", "conditions": [{"field": "pct", "op": "<=", "value": -7}]}}
         ]
     }
     result = api.rule_validate(spec)
@@ -90,10 +92,10 @@ def test_rule_validate_no_stop_loss(tmp_db):
         "capital": 30000,
         "select": {
             "mode": "all",
-            "conditions": [{"field": "pct", "op": "between", "val": [-3, 0]}]
+            "conditions": [{"field": "pct", "op": "between", "value": [-3, 0]}]
         },
         "exits": [
-            {"name": "时间", "when": {"mode": "all", "conditions": [{"field": "time", "op": ">=", "val": "14:50"}]}}
+            {"name": "时间", "when": {"mode": "all", "conditions": [{"field": "time", "op": ">=", "value": "14:50"}]}}
         ]
     }
     result = api.rule_validate(spec)
@@ -101,55 +103,122 @@ def test_rule_validate_no_stop_loss(tmp_db):
     assert any("止损" in e for e in result["errors"])
 
 
-def test_rule_preview_basic(tmp_db, monkeypatch):
-    """rule_preview 返回候选股票（模拟行情）"""
-    from jevq.models import Quote
+TODAY = date.today()
+TRADE_DAYS = [TODAY - timedelta(days=1), TODAY, TODAY + timedelta(days=1)]
+UNIVERSE = {"600001": "甲", "600002": "乙", "600003": "丙"}
+QUOTES = {
+    "600001": quote("600001", pct=-1, amount=5e8, name="甲股份"),
+    "600002": quote("600002", pct=-2, amount=9e8),
+    "600003": quote("600003", pct=10, amount=1e7),                 # 封死涨停
+    "600009": quote("600009", pct=-1, amount=20e8),                # 不在股票池
+}
+VALID = {
+    "name": "试跑", "capital": 30000,
+    "select": {"mode": "all", "conditions": [{"field": "pct", "op": "between", "value": [-3, 0]}]},
+    "rank": {"field": "amount", "order": "desc"},
+    "entry": {"mode": "all", "conditions": [{"field": "amount_rank", "op": "<=", "value": 2}]},
+    "exits": [{"when": {"mode": "all", "conditions": [{"field": "pct", "op": "<=", "value": -7}]},
+               "reason": "止损"}],
+    "jev": {"notices": True, "news": True},
+}
 
-    # 模拟行情
-    mock_quotes = {
-        "000001": Quote(code="000001", name="平安银行", price=10.5, pre_close=10.0,
-                       pct=5.0, open_pct=2.0, high_pct=6.0, low_pct=1.0,
-                       amount=500_000_000, turnover=2.5, volume_ratio=1.2,
-                       float_mcap=100, total_mcap=150, high=10.6, low=10.1, open=10.2),
-        "000002": Quote(code="000002", name="万科A", price=9.0, pre_close=10.0,
-                       pct=-10.0, open_pct=-5.0, high_pct=-3.0, low_pct=-10.0,
-                       amount=300_000_000, turnover=3.0, volume_ratio=2.0,
-                       float_mcap=200, total_mcap=300, high=9.7, low=9.0, open=9.5),
-    }
 
-    def mock_fetch(universe):
-        return mock_quotes
+def make_api(tmp_db, calls=None, fetch_error=None):
+    calls = calls if calls is not None else {}
 
-    # 模拟 history_features
-    def mock_history_features(conn, codes, today):
-        return {
-            "000001": {"ret": {3: 10.0, 5: 15.0}, "limit_up": {3: False}, "boards": 0, "ma": {5: 10.2}},
-            "000002": {"ret": {3: -5.0, 5: -8.0}, "limit_up": {3: False}, "boards": 0, "ma": {5: 9.5}},
-        }
+    def fetch(codes):
+        calls["fetch"] = calls.get("fetch", 0) + 1
+        if fetch_error:
+            raise fetch_error
+        return dict(QUOTES)                     # 真实接口也可能多给；股票池过滤必须在 preview 里做
 
-    from jevq.data import features
-    monkeypatch.setattr(features, "history_features", mock_history_features)
+    def load_universe(today, days):
+        calls["universe"] = calls.get("universe", 0) + 1
+        assert days == TRADE_DAYS
+        return dict(UNIVERSE)
 
-    api = Api(db_path=tmp_db, fetch_quotes=mock_fetch, runner=lambda: None)
+    return Api(db_path=tmp_db, runner=lambda: None, fetch_quotes=fetch,
+               load_universe=load_universe, trade_days=lambda: TRADE_DAYS)
 
-    spec = {
-        "name": "涨幅筛选",
-        "capital": 30000,
-        "select": {
-            "mode": "all",
-            "conditions": [
-                {"field": "pct", "op": "between", "val": [-3, 10]}
-            ]
-        },
-        "rank": {"field": "amount", "order": "desc"},
-        "exits": [
-            {"name": "止损", "when": {"mode": "all", "conditions": [{"field": "pct", "op": "<=", "val": -7}]}}
-        ]
-    }
 
-    result = api.rule_preview(spec)
-    assert result["ok"], result.get("error")
-    assert result["total"] == 1  # 只有000001满足涨幅条件
-    assert len(result["rows"]) == 1
-    assert result["rows"][0]["code"] == "000001"
-    assert result["rows"][0]["name"] == "平安银行"
+def test_rule_preview_select_rank_entry_with_runtime_getter(tmp_db):
+    result = make_api(tmp_db).rule_preview(VALID)
+    assert result["ok"], result
+    assert result["total"] == 2                                        # 600009 不在股票池、600003 不满足选股
+    assert [(r["code"], r["name"], r["rank"]) for r in result["rows"]] == [("600002", "乙", 1), ("600001", "甲", 2)]
+    assert result["rows"][0]["values"] == {"当前涨幅": "-2%", "成交额名次": "1名", "成交额": "9亿"}
+
+
+def test_rule_preview_sealed_uses_quote_limit_up(tmp_db):
+    spec = dict(VALID, select={"mode": "all", "conditions": [{"field": "sealed", "op": "is", "value": True}]},
+                entry={"mode": "all", "conditions": []})
+    result = make_api(tmp_db).rule_preview(spec)
+    assert [r["code"] for r in result["rows"]] == ["600003"]
+
+
+def test_rule_preview_uses_history_features_from_closes(tmp_db):
+    conn = db.connect(tmp_db)
+    conn.executemany("INSERT INTO closes(date, code, close) VALUES (?, ?, ?)",
+                     [((TODAY - timedelta(days=k)).isoformat(), "600001", p)
+                      for k, p in zip((4, 3, 2, 1), (10.0, 10.0, 10.0, 11.0))])
+    conn.commit()
+    conn.close()
+    spec = dict(VALID, select={"mode": "all", "conditions": [
+        {"field": "ret_n", "param": {"n": 3}, "op": ">", "value": 5}]}, entry={"mode": "all", "conditions": []})
+    result = make_api(tmp_db).rule_preview(spec)
+    assert result["total"] == 1
+    assert result["rows"][0]["values"]["近N日涨幅(N=3)"] == "10%"
+
+
+def test_rule_preview_caches_market_data_for_60_seconds(tmp_db):
+    calls = {}
+    api = make_api(tmp_db, calls)
+    api.rule_preview(VALID)
+    api.rule_preview(VALID)
+    assert calls == {"fetch": 1, "universe": 1}
+
+
+@pytest.mark.parametrize("spec", ["garbage", None, ["x"]])
+def test_rule_preview_non_dict_returns_errors(tmp_db, spec):
+    result = make_api(tmp_db).rule_preview(spec)
+    assert result["ok"] is False and result["errors"]
+
+
+def test_rule_preview_malformed_condition_matches_nothing(tmp_db):
+    spec = {"select": {"conditions": [{"field": "pct", "op": "between", "value": 5}]}}
+    assert make_api(tmp_db).rule_preview(spec) == {"ok": True, "total": 0, "rows": []}
+
+
+def test_rule_preview_fetch_failure_returns_errors(tmp_db):
+    result = make_api(tmp_db, fetch_error=RuntimeError("net down")).rule_preview(VALID)
+    assert result["ok"] is False and "net down" in result["errors"][0]
+
+
+def test_rule_create_uses_injected_calendar_and_is_listed_before_active(tmp_db):
+    api = make_api(tmp_db)
+    created = api.rule_create(VALID)
+    assert created == {"ok": True, "id": "c1", "version": 1}
+    listed = api.rules_list()
+    assert listed["ok"]
+    [rule] = listed["rules"]
+    assert (rule["id"], rule["name"], rule["version"], rule["enabled"], rule["running"]) == ("c1", "试跑", 1, True, False)
+    assert rule["active_from"] == (TODAY + timedelta(days=1)).isoformat()
+
+
+def test_rule_create_bad_spec_returns_errors(tmp_db):
+    result = make_api(tmp_db).rule_create({"name": ""})
+    assert result["ok"] is False and result["errors"]
+
+
+def test_rule_create_without_capital_freezes_default_capital(tmp_db):
+    api = make_api(tmp_db)
+    spec = {k: v for k, v in VALID.items() if k != "capital"}
+    assert api.rule_create(spec)["ok"]
+    conn = db.connect(tmp_db)
+    try:
+        from jevq.data import custom_store
+        assert custom_store.capital_of(conn, "c1") == 30000
+    finally:
+        conn.close()
+    changed = api.rule_update("c1", dict(spec, capital=100000))
+    assert changed["ok"] is False and "资金" in changed["errors"][0]

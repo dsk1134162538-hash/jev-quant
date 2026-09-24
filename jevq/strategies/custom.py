@@ -5,8 +5,194 @@ from datetime import date, datetime, time
 
 from jevq.ledger import Ledger
 from jevq.models import Fill, Position, Quote
-from jevq.rules.custom import eval_cond, eval_group, first_exit, rank_codes
+from jevq.rules.custom import FIELDS, eval_cond, eval_group, first_exit, rank_codes
 from jevq.rules.metrics import avg_pct, body_pct, committee, outer_ratio, seal_amount, seal_ratio
+
+
+def minute_context(quotes: dict[str, Quote], universe, concept_map: dict[str, list[str]]):
+    """每分钟一次的全市场预计算：(amount_ranks, concept_heats)。
+    amount_rank：股票池内按成交额排名（1 起）；concept_heat：该股所属题材中当日涨超 5% 成员数最大值。"""
+    uni_quotes = sorted(((c, q) for c, q in quotes.items() if c in universe),
+                        key=lambda cq: cq[1].amount, reverse=True)
+    amount_ranks = {c: i + 1 for i, (c, _q) in enumerate(uni_quotes)}
+    concept_counts: dict[str, int] = {}
+    for code, q in uni_quotes:
+        if q.pct > 5.0:
+            for concept in concept_map.get(code, []):
+                concept_counts[concept] = concept_counts.get(concept, 0) + 1
+    concept_heats = {code: max((concept_counts.get(c, 0) for c in concept_map.get(code, [])), default=0)
+                     for code in universe}
+    return amount_ranks, concept_heats
+
+
+def hold_days(buy_date: date, trade_days: list[date]) -> int:
+    """持有天数（按交易日计）：trade_days 中晚于买入日的天数。"""
+    return sum(1 for d in trade_days or () if d > buy_date)
+
+
+def make_getter(code: str, q: Quote, *, features: dict, amount_ranks: dict[str, int],
+                concept_heats: dict[str, int], env: dict, t: time,
+                pos: Position | None = None, trade_days: list[date] = ()):
+    """取值函数 get(key, n)：覆盖全部字段，缺数据返回 None。运行时（CustomStrategy）与试跑预览共用，
+    保证「预览命中」和「盘中命中」是同一套口径。"""
+    feat = features
+
+    def get(key: str, n: int | None = None):
+        # 价格相关
+        if key == "pct":
+            return q.pct
+        if key == "open_pct":
+            return q.open_pct
+        if key == "high_pct":
+            return q._pct(q.high)
+        if key == "low_pct":
+            return q.low_pct
+        if key == "drawdown":
+            return round(q._pct(q.high) - q.pct, 2)
+        if key == "sealed":
+            return q.price >= q.limit_up
+        if key == "broke":
+            return q.high >= q.limit_up and q.price < q.limit_up
+        if key == "amplitude":
+            return q.amplitude
+        if key == "avg_pct":
+            return avg_pct(q)
+        if key == "body_pct":
+            return body_pct(q)
+        if key == "ytd_pct":
+            return q.ytd_pct
+
+        # 量能相关
+        if key == "amount":
+            return round(q.amount / 1e8, 4)
+        if key == "amount_rank":
+            return amount_ranks.get(code)
+        if key == "turnover":
+            return q.turnover
+        if key == "volume_ratio":
+            return q.volume_ratio
+        if key == "committee":
+            return committee(q)
+        if key == "outer_ratio":
+            return outer_ratio(q)
+        if key == "seal_amount":
+            return seal_amount(q)
+        if key == "seal_ratio":
+            return seal_ratio(q)
+
+        # 估值相关
+        if key == "float_mcap":
+            return q.float_mcap
+        if key == "total_mcap":
+            return q.total_mcap
+        if key == "pe_dyn":
+            return q.pe_dyn if q.pe_dyn != 0 else None
+        if key == "pe_static":
+            return q.pe_static if q.pe_static != 0 else None
+        if key == "pe_ttm":
+            return q.pe_ttm if q.pe_ttm != 0 else None
+        if key == "pb":
+            return q.pb if q.pb != 0 else None
+        if key == "float_shares":
+            return round(q.float_shares / 1e8, 4) if q.float_shares > 0 else None
+        if key == "total_shares":
+            return round(q.total_shares / 1e8, 4) if q.total_shares > 0 else None
+
+        # 历史相关
+        if key == "ret_n":
+            return feat.get("ret", {}).get(n)
+        if key == "limit_up_in_n":
+            return feat.get("limit_up", {}).get(n)
+        if key == "boards":
+            return feat.get("boards")
+        if key == "ma_pos_n":
+            ma = feat.get("ma", {}).get(n)
+            if ma is None or ma <= 0:
+                return None
+            return round((q.price / ma - 1) * 100, 2)
+        if key == "up_streak":
+            return feat.get("up_streak")
+
+        # 题材相关
+        if key == "concept_heat":
+            return concept_heats.get(code)
+        if key == "leader_rank":
+            # leader_rank 暂不实现，需要完整的 quotes
+            return None
+
+        # 持仓相关
+        if key == "hold_days":
+            if pos is None:
+                return None
+            return hold_days(pos.buy_date, trade_days)
+        if key == "pnl_pct":
+            if pos is None:
+                return None
+            return round((q.price / pos.buy_price - 1) * 100, 2)
+
+        # 环境相关
+        if key == "time":
+            return t
+        if key == "sentiment":
+            return env.get("sentiment")
+        if key == "overseas":
+            return env.get("overseas")
+
+        return None
+
+    return get
+
+def preview(spec: dict, quotes: dict[str, Quote], universe, features: dict[str, dict],
+            concept_map: dict[str, list[str]], env: dict, now: datetime, limit: int = 20) -> dict:
+    """试跑：选股 → 排序 → 买点，与 CustomStrategy 同一套取值函数与规则引擎；不调用 Jev、不下单。
+    与盘中不同，不过滤非当日行情（收盘后/盘前预览用最近一个交易日的行情，spec §4.2）。"""
+    amount_ranks, concept_heats = minute_context(quotes, universe, concept_map)
+    getters = {}
+
+    def getter(code):
+        if code not in getters:
+            getters[code] = make_getter(code, quotes[code], features=features.get(code) or {},
+                                        amount_ranks=amount_ranks, concept_heats=concept_heats,
+                                        env=env, t=now.time())
+        return getters[code]
+
+    selected = [c for c in sorted(quotes) if c in universe
+                and eval_group(spec.get("select"), getter(c), empty=False)]
+    ranked = rank_codes(selected, lambda c, key, n: getter(c)(key, n), spec.get("rank"))
+    hits = [c for c in ranked if eval_group(spec.get("entry"), getter(c), empty=True)]
+
+    shown = []       # 要展示的字段：选股/买点条件 + 排序字段，去重保序
+    conds = [*((spec.get("select") or {}).get("conditions") or []),
+             *((spec.get("entry") or {}).get("conditions") or []), spec.get("rank") or {}]
+    for c in conds:
+        f = FIELDS.get(c.get("field"))
+        n = (c.get("param") or {}).get("n")
+        if f is not None and (f.key, n) not in shown:
+            shown.append((f.key, n))
+
+    rows = []
+    for rank, code in enumerate(hits[:limit], 1):
+        get = getter(code)
+        values = {}
+        for key, n in shown:
+            f = FIELDS[key]
+            label = f"{f.label}(N={n})" if n is not None else f.label
+            values[label] = _fmt_value(get(key, n), f.unit)
+        rows.append({"code": code, "name": universe.get(code) or quotes[code].name, "rank": rank,
+                     "values": values})
+    return {"total": len(hits), "rows": rows}
+
+
+def _fmt_value(v, unit: str) -> str:
+    if v is None:
+        return "—"
+    if isinstance(v, bool):
+        return "是" if v else "否"
+    if isinstance(v, (int, float)):
+        return f"{round(v, 2):g}{unit}"
+    if isinstance(v, time):
+        return v.strftime("%H:%M")
+    return str(v)
 
 
 class CustomStrategy:
@@ -74,27 +260,7 @@ class CustomStrategy:
 
     def _update_cache(self, quotes: dict[str, Quote]):
         """每分钟预计算 amount_rank 和 concept_heat。"""
-        # amount_rank：按成交额排序，名次从 1 开始
-        uni_quotes = [(c, q) for c, q in quotes.items() if c in self.universe]
-        uni_quotes.sort(key=lambda cq: cq[1].amount, reverse=True)
-        self.amount_ranks = {c: i + 1 for i, (c, _q) in enumerate(uni_quotes)}
-
-        # concept_heat：该股所属题材中当日涨超 5% 成员数最大值
-        concept_counts: dict[str, int] = {}
-        for code, q in quotes.items():
-            if code not in self.universe:
-                continue
-            if q.pct > 5.0:
-                for concept in self.concept_map.get(code, []):
-                    concept_counts[concept] = concept_counts.get(concept, 0) + 1
-
-        self.concept_heats = {}
-        for code in self.universe:
-            concepts = self.concept_map.get(code, [])
-            if concepts:
-                self.concept_heats[code] = max(concept_counts.get(c, 0) for c in concepts)
-            else:
-                self.concept_heats[code] = 0
+        self.amount_ranks, self.concept_heats = minute_context(quotes, self.universe, self.concept_map)
 
     def _sells(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         """卖出：对两个账户持仓，用绑定该股的取值函数 first_exit。"""
@@ -330,125 +496,10 @@ class CustomStrategy:
 
     def _make_getter(self, code: str, q: Quote, pos: Position | None, t: time,
                      trade_days: list[date]):
-        """取值函数：覆盖全部字段。"""
-        feat = self.features.get(code) or {}
-        env = self.env_provider()
-
-        def get(key: str, n: int | None = None):
-            # 价格相关
-            if key == "pct":
-                return q.pct
-            if key == "open_pct":
-                return q.open_pct
-            if key == "high_pct":
-                return q._pct(q.high)
-            if key == "low_pct":
-                return q.low_pct
-            if key == "drawdown":
-                return round(q._pct(q.high) - q.pct, 2)
-            if key == "sealed":
-                return q.price >= q.limit_up
-            if key == "broke":
-                return q.high >= q.limit_up and q.price < q.limit_up
-            if key == "amplitude":
-                return q.amplitude
-            if key == "avg_pct":
-                return avg_pct(q)
-            if key == "body_pct":
-                return body_pct(q)
-            if key == "ytd_pct":
-                return q.ytd_pct
-
-            # 量能相关
-            if key == "amount":
-                return round(q.amount / 1e8, 4)
-            if key == "amount_rank":
-                return self.amount_ranks.get(code)
-            if key == "turnover":
-                return q.turnover
-            if key == "volume_ratio":
-                return q.volume_ratio
-            if key == "committee":
-                return committee(q)
-            if key == "outer_ratio":
-                return outer_ratio(q)
-            if key == "seal_amount":
-                return seal_amount(q)
-            if key == "seal_ratio":
-                return seal_ratio(q)
-
-            # 估值相关
-            if key == "float_mcap":
-                return q.float_mcap
-            if key == "total_mcap":
-                return q.total_mcap
-            if key == "pe_dyn":
-                return q.pe_dyn if q.pe_dyn != 0 else None
-            if key == "pe_static":
-                return q.pe_static if q.pe_static != 0 else None
-            if key == "pe_ttm":
-                return q.pe_ttm if q.pe_ttm != 0 else None
-            if key == "pb":
-                return q.pb if q.pb != 0 else None
-            if key == "float_shares":
-                return round(q.float_shares / 1e8, 4) if q.float_shares > 0 else None
-            if key == "total_shares":
-                return round(q.total_shares / 1e8, 4) if q.total_shares > 0 else None
-
-            # 历史相关
-            if key == "ret_n":
-                return feat.get("ret", {}).get(n)
-            if key == "limit_up_in_n":
-                return feat.get("limit_up", {}).get(n)
-            if key == "boards":
-                return feat.get("boards")
-            if key == "ma_pos_n":
-                ma = feat.get("ma", {}).get(n)
-                if ma is None or ma <= 0:
-                    return None
-                return round((q.price / ma - 1) * 100, 2)
-            if key == "up_streak":
-                return feat.get("up_streak")
-
-            # 题材相关
-            if key == "concept_heat":
-                return self.concept_heats.get(code)
-            if key == "leader_rank":
-                # leader_rank 暂不实现，需要完整的 quotes
-                return None
-
-            # 持仓相关
-            if key == "hold_days":
-                if pos is None:
-                    return None
-                return self._hold_days(pos.buy_date, trade_days)
-            if key == "pnl_pct":
-                if pos is None:
-                    return None
-                return round((q.price / pos.buy_price - 1) * 100, 2)
-
-            # 环境相关
-            if key == "time":
-                return t
-            if key == "sentiment":
-                return env.get("sentiment")
-            if key == "overseas":
-                return env.get("overseas")
-
-            return None
-
-        return get
-
-    def _hold_days(self, buy_date: date, trade_days: list[date]) -> int:
-        """持有天数（按交易日计算）。"""
-        if not trade_days:
-            return 0
-        # trade_days 应该是升序的交易日列表，从 prev_day 之后开始
-        count = 0
-        for d in trade_days:
-            if d > buy_date:
-                count += 1
-        return count
+        """取值函数：逻辑在模块级 make_getter，试跑预览（Api.rule_preview）复用同一份。"""
+        return make_getter(code, q, features=self.features.get(code) or {}, amount_ranks=self.amount_ranks,
+                           concept_heats=self.concept_heats, env=self.env_provider(), t=t,
+                           pos=pos, trade_days=trade_days)
 
     def _trade_days(self) -> list[date]:
         """从 closes 表读取交易日列表。"""

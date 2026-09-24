@@ -16,6 +16,8 @@ from datetime import date
 from jevq.config import MAX_CUSTOM_ENABLED
 from jevq.rules.custom import validate
 
+DEFAULT_CAPITAL = 30000      # 与 rules.custom.validate 对缺省资金的放行口径一致
+
 
 def next_id(conn: sqlite3.Connection) -> str:
     rows = conn.execute("SELECT DISTINCT id FROM custom_strategies").fetchall()
@@ -124,6 +126,9 @@ def save(conn: sqlite3.Connection, spec: dict, today: date, trade_days, sid: str
     errors, _warnings = validate(spec)
     if errors:
         return None, errors
+    if "capital" not in spec:
+        # validate 对缺省资金按 3 万放行；这里显式写进 spec，否则 capital_of 读到 None，资金冻结形同虚设
+        spec = {**spec, "capital": DEFAULT_CAPITAL}
     if sid is not None:
         frozen = capital_of(conn, sid)
         if frozen is not None and spec.get("capital") != frozen:

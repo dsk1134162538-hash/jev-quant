@@ -8,6 +8,7 @@ import json
 from collections import Counter
 from datetime import date, datetime
 
+from jevq import accounts as accounts_mod
 from jevq.config import ACCOUNT_NAMES, ACCOUNT_STRATEGY, ACCOUNTS, INITIAL_CASH, NOTICE_LOOKBACK_DAYS
 from jevq.ledger import Ledger
 from jevq.models import Fill
@@ -35,11 +36,19 @@ def sell_pnl(conn, f: Fill) -> tuple[float, float, int] | None:
     return pct, amount, held_days
 
 
+def _strategy_of(account: str) -> str | None:
+    """账户所属策略：内置查表；自定义账户 c{n}_main / c{n}_shadow 的策略就是 c{n}。"""
+    if account in ACCOUNT_STRATEGY:
+        return ACCOUNT_STRATEGY[account]
+    sid, _, kind = account.rpartition("_")
+    return sid if kind in ("main", "shadow") and accounts_mod._is_custom_strategy(sid) else None
+
+
 def load_buy_trace(conn, f: Fill) -> dict | None:
     """找到这笔主账户买入对应的决策留痕：同代码、同策略、当天，按 id 倒序第一条
     trace.outcome.bought 为真的记录（板块策略会在同一 trace 对象上追加「后来封死了」之类的信息，
     所以要拿最新一条，不是最早那条买入时的快照）。"""
-    strategy = ACCOUNT_STRATEGY.get(f.account)
+    strategy = _strategy_of(f.account)
     rows = conn.execute(
         "SELECT trace FROM decisions WHERE code=? AND strategy=? AND substr(ts, 1, 10)=? "
         "AND trace IS NOT NULL ORDER BY id DESC",
@@ -119,6 +128,8 @@ def buy_push_content(conn, f: Fill, stock_name: str) -> str:
             ret5_str = f"{ret5:+.2f}" if isinstance(ret5, (int, float)) else "未知"
             lines.append(f"跌幅 {cand.get('pct')}%｜近 5 日 {ret5_str}%｜"
                          f"候选排名 {cand.get('rank')}/{cand.get('of')}")
+        elif accounts_mod._is_custom_strategy(strategy or ""):
+            lines += [f"· {h.get('desc')}（当时 {h.get('value')}）" for h in cand.get("hits") or []]
         else:
             lines.pop()
     except Exception:
@@ -130,7 +141,10 @@ def buy_push_content(conn, f: Fill, stock_name: str) -> str:
     except Exception:
         pass
     try:
-        lines += buy_push_news_lines(trace.get("news"))
+        if trace.get("news") is None and accounts_mod._is_custom_strategy(strategy or ""):
+            lines.append("▍Jev 消息面：未开启")       # 自定义策略可以关掉消息面判断，别谎称「无新闻」
+        else:
+            lines += buy_push_news_lines(trace.get("news"))
     except Exception:
         pass
     if strategy == "lowbuy":
@@ -157,33 +171,22 @@ def sell_push_content(conn, f: Fill, stock_name: str) -> str:
 
 
 def close_summary_content(ledger: Ledger, today: date, prices: dict, conn=None) -> str:
-    """收盘小结正文：所有账户各一行净值/收益率/今日成交笔数（固定四账户+自定义主账户）。"""
+    """收盘小结正文：每个账户一行净值/收益率/今日成交笔数。给了 conn 就用动态账户（内置 + 今天在跑
+    的自定义策略，名称用「{策略名}·主(Jev)/·影子」，收益率按各自冻结的本金算）；动态账户读不出来
+    就退回内置四个，推送不能因为这一步整条丢掉。"""
     counts = Counter(f.account for f in ledger.fills_on(today))
-    lines = []
-
-    # 固定四账户
-    for a in ACCOUNTS:
-        value = ledger.equity(a, prices)
-        pct = (value / INITIAL_CASH - 1) * 100
-        lines.append(f"{ACCOUNT_NAMES[a]} 净值 {value:,.2f}（{pct:+.2f}%）今日成交 {counts.get(a, 0)} 笔")
-
-    # 自定义策略主账户
+    accounts, names, strategy = ACCOUNTS, ACCOUNT_NAMES, ACCOUNT_STRATEGY
     if conn is not None:
         try:
-            from jevq import accounts as accounts_mod
-            from jevq.data import custom_store
-            all_accounts = accounts_mod.all_accounts(conn, today)
-            custom_mains = [a for a in all_accounts if a.endswith("_main") and a not in ACCOUNTS]
-            for a in sorted(custom_mains):
-                value = ledger.equity(a, prices)
-                # 读取该策略的 capital 作为初始资金
-                sid = a.replace("_main", "")
-                initial = custom_store.capital_of(conn, sid) or 30000
-                pct = (value / initial - 1) * 100
-                # 账户标签：从 account_names 读，没有就用 sid
-                label = ACCOUNT_NAMES.get(a, sid)
-                lines.append(f"{label} 净值 {value:,.2f}（{pct:+.2f}%）今日成交 {counts.get(a, 0)} 笔")
+            accounts = accounts_mod.all_accounts(conn, today)
+            names = accounts_mod.account_names(conn, today)
+            strategy = accounts_mod.account_strategy(conn, today)
         except Exception:
-            pass  # 任何问题都不影响输出
-
+            accounts, names, strategy = ACCOUNTS, ACCOUNT_NAMES, ACCOUNT_STRATEGY
+    lines = []
+    for a in accounts:
+        value = ledger.equity(a, prices)
+        base = accounts_mod.capital_baseline(ledger.conn, strategy.get(a, "")) if conn is not None else INITIAL_CASH
+        pct = (value / base - 1) * 100
+        lines.append(f"{names.get(a, a)} 净值 {value:,.2f}（{pct:+.2f}%）今日成交 {counts.get(a, 0)} 笔")
     return "\n".join(lines)

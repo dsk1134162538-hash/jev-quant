@@ -60,9 +60,10 @@ class FakeEngine:
     behavior = None
 
     def __init__(self, conn, ledger, notice_judge, news_judge, market, fetch_quotes, fetch_pools,
-                 universe, ret5, prev_day, overseas, overseas_trace=None):
+                 universe, ret5, prev_day, overseas, overseas_trace=None, accounts_provider=None):
         self.conn, self.ledger = conn, ledger
         self.universe, self.ret5, self.prev_day, self.overseas = universe, ret5, prev_day, overseas
+        self.fetch_quotes, self.accounts_provider = fetch_quotes, accounts_provider
         self.ticks, self.last_quotes, self.sentiment_label = [], {}, "正常"
         FakeEngine.instances.append(self)
 
@@ -913,3 +914,140 @@ def test_once_mode_concept_refresh_deadline_is_ten_minutes_from_now(env, monkeyp
     env.clock.t = datetime(2026, 9, 23, 13, 40)
     env.run(once=True)
     assert calls[0]["deadline"] == datetime(2026, 9, 23, 13, 50)
+
+
+# ---- 自定义策略接入（rule builder Task 6） ----
+
+CUSTOM_SPEC = {
+    "name": "测试规则", "capital": 50000,
+    "select": {"mode": "all", "conditions": [{"field": "pct", "op": ">=", "value": 9}]},
+    "entry": {"mode": "all", "conditions": []},
+    "exits": [{"when": {"mode": "all", "conditions": [{"field": "pct", "op": "<=", "value": -5}]},
+               "reason": "止损"}],
+    "jev": {"notices": False, "news": False},
+}
+
+
+def seed_custom(env, name="测试规则", saved=date(2026, 9, 21)) -> str:
+    from jevq.data import custom_store
+    conn = db.connect(env.db)
+    try:
+        sid, _version = custom_store.save(conn, dict(CUSTOM_SPEC, name=name), saved, DAYS)
+    finally:
+        conn.close()
+    assert sid is not None
+    return sid
+
+
+def feeding_tick(eng, now):
+    """模拟真实 Engine._fetch：按 accounts_provider 把全部账户持仓的票一起拉行情。"""
+    accounts = eng.accounts_provider() if eng.accounts_provider else ()
+    held = {p.code for a in accounts for p in eng.ledger.positions(a)}
+    eng.last_quotes = eng.fetch_quotes(sorted(set(eng.universe) | held))
+    eng.last_fetch_minute = now.strftime("%Y-%m-%d %H:%M")
+
+
+class FakeCustom:
+    instances: list = []
+    boom: set = set()
+
+    def __init__(self, conn, ledger, sid, version, spec, notice_judge, news_judge, universe, features,
+                 concept_map, env_provider, prev_day, can_buy=True):
+        self.conn, self.sid, self.version, self.can_buy = conn, sid, version, can_buy
+        self.calls = []
+        for account in (f"{sid}_main", f"{sid}_shadow"):          # 与真实 CustomStrategy 一样开户
+            ledger.ensure_account(account, spec["capital"])
+        FakeCustom.instances.append(self)
+
+    def on_minute(self, quotes, now):
+        self.calls.append((now, bool(quotes)))
+        if self.sid in FakeCustom.boom:
+            self.conn.execute("INSERT INTO turnover VALUES ('custom-half', 1)")
+            raise RuntimeError("custom boom")
+        return []
+
+
+@pytest.fixture
+def fake_custom(monkeypatch):
+    FakeCustom.instances, FakeCustom.boom = [], set()
+    monkeypatch.setattr(run, "CustomStrategy", FakeCustom)
+    return FakeCustom
+
+
+def test_custom_strategy_exception_does_not_affect_others_or_builtin(env, fake_custom):
+    seed_custom(env, "一号")
+    seed_custom(env, "二号")
+    fake_custom.boom = {"c1"}
+    FakeEngine.behavior = feeding_tick
+    env.feed["quotes"] = {"600001": quote("600001", pct=-1, ts=datetime(2026, 9, 23, 10, 0))}
+    path = env.run()
+    assert path is not None and Path(path).exists(), env.log_text()
+    assert len(FakeEngine.instances[0].ticks) == 240                  # 低吸照常每分钟
+    by_sid = {s.sid: s for s in fake_custom.instances}
+    assert set(by_sid) == {"c1", "c2"}
+    assert len(by_sid["c2"].calls) == 240                             # 另一个自定义策略照常每分钟
+    assert all(has_quotes for _, has_quotes in by_sid["c2"].calls)
+    assert len(by_sid["c1"].calls) == 240                             # 出错的下一分钟继续跑
+    assert "自定义策略 c1 本轮出错：RuntimeError('custom boom')" in env.log_text()
+    conn = db.connect(env.db)
+    assert conn.execute("SELECT COUNT(*) FROM turnover WHERE ts='custom-half'").fetchone()[0] == 0
+    conn.close()
+
+
+def test_disabled_custom_with_holdings_loaded_sell_only(env, fake_custom):
+    from jevq.data import custom_store
+    seed_custom(env, "停用的")
+    seed_custom(env, "在跑的")
+    conn = db.connect(env.db)
+    custom_store.disable(conn, "c1", date(2026, 9, 22), DAYS)       # 09-23 起停用
+    ledger = Ledger(conn)
+    ledger.ensure_account("c1_main", 50000)
+    ledger.buy("c1_main", quote("600002"), datetime(2026, 9, 22, 10, 0), "x")
+    conn.close()
+    env.run(once=True)
+    loaded = {(s.sid, s.version, s.can_buy) for s in fake_custom.instances}
+    assert loaded == {("c1", 1, False), ("c2", 1, True)}
+
+
+def test_custom_strategy_not_double_driven_and_can_buy_false_in_sell_only(env, fake_custom, monkeypatch):
+    seed_custom(env)
+    monkeypatch.delenv("TYPESAFE_API_KEY")
+    conn = db.connect(env.db)
+    Ledger(conn).buy("main", quote("600001"), datetime(2026, 9, 22, 10, 0), "x")   # 有持仓才允许无 key 运行
+    conn.close()
+    env.run(once=True)
+    assert [(s.sid, s.can_buy) for s in fake_custom.instances] == [("c1", False)]
+    assert len(fake_custom.instances[0].calls) == 1
+
+
+def test_custom_holding_outside_universe_is_sold_and_pushed(env):
+    seed_custom(env)
+    conn = db.connect(env.db)
+    ledger = Ledger(conn)
+    ledger.ensure_account("c1_main", 50000)
+    ledger.buy("c1_main", quote("600002"), datetime(2026, 9, 22, 10, 0), "x")     # 600002 不在股票池
+    conn.close()
+    FakeEngine.behavior = feeding_tick
+    env.feed["quotes"] = {"600001": quote("600001", pct=-1, ts=datetime(2026, 9, 23, 9, 29)),
+                          "600002": quote("600002", pct=-6, ts=datetime(2026, 9, 23, 9, 29))}
+
+    class FakeNotifier:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, title, content):
+            self.sent.append((title, content))
+
+        def once(self, *a):
+            pass
+
+    notifier = FakeNotifier()
+    env.run(once=True, notifier=notifier)
+    conn = db.connect(env.db)
+    try:
+        assert Ledger(conn).positions("c1_main") == []
+        reasons = [r for (r,) in conn.execute("SELECT reason FROM fills WHERE account='c1_main' AND side='sell'")]
+    finally:
+        conn.close()
+    assert reasons == ["止损"]
+    assert any(t.startswith("【测试规则·主(Jev) 卖出】") for t, _ in notifier.sent)

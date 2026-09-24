@@ -7,9 +7,10 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from jevq import accounts as accounts_mod
-from jevq import db, notify_content
+from jevq import config, db, notify_content
 from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
-from jevq.data import akdata, board_events, closes, concepts, tencent
+from jevq.data import akdata, board_events, closes, concepts, custom_store, tencent
+from jevq.data.features import history_features
 from jevq.data.notice_store import sync_notices
 from jevq.engine import Engine
 from jevq.judge.jev import JevClient
@@ -22,6 +23,7 @@ from jevq.report import write_report
 from jevq.rules.board import in_scan_window
 from jevq.runlock import hold_run_lock
 from jevq.strategies.board import BoardStrategy
+from jevq.strategies.custom import CustomStrategy
 
 SESSIONS = [(time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))]
 REPORT_AT = time(15, 5)
@@ -247,9 +249,16 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         _sync_notices(conn, today, log)
 
     notice_judge, news_judge = NoticeJudge(conn, jev), NewsJudge(conn, jev)
+    # 账户集合当天固定（自定义策略新版本次日才生效）：盘前算一次，低吸取行情时连自定义账户的持仓一起拉，
+    # 否则不在股票池里的自定义持仓（或只卖日股票池为空时的全部自定义持仓）永远拿不到行情、卖不掉。
+    try:
+        day_accounts = accounts_mod.all_accounts(conn, today)
+    except Exception as e:
+        log(f"自定义账户读取失败，只拉内置账户持仓行情：{e!r}")
+        day_accounts = config.builtin_accounts()
     engine = Engine(conn, ledger, notice_judge, news_judge, market,
                     tencent.fetch_quotes, akdata.fetch_pool_stats, universe, ret5, prev_day, overseas,
-                    overseas_trace=market.overseas_trace)
+                    overseas_trace=market.overseas_trace, accounts_provider=lambda: day_accounts)
     board = None
     if not late:
         board = BoardStrategy(conn, ledger, notice_judge, news_judge, tencent.fetch_quotes, universe, ret5,
@@ -268,64 +277,15 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             board.stale_before = None
         log("交易日历不可用：停用「隔夜超期」规则")
 
-    # 加载自定义策略
-    custom_strategies = []
-    if not late:
-        try:
-            from jevq.data.custom_store import active_for
-            from jevq.data.features import history_features
-            from jevq.strategies.custom import CustomStrategy
-
-            active_specs = active_for(conn, today)
-            if active_specs:
-                # 准备共享数据
-                custom_universe = set(universe)
-                for sid, version, spec in active_specs:
-                    # 加上各策略持仓的票
-                    for account in [f"{sid}_main", f"{sid}_shadow"]:
-                        custom_universe.update(c for p in ledger.positions(account) for c in [p.code])
-
-                # 历史特征
-                custom_features = history_features(conn, list(custom_universe), today)
-
-                # 环境提供函数
-                def env_provider():
-                    return {"sentiment": engine.sentiment_label, "overseas": overseas or "未知"}
-
-                # 判断只卖日：数据不足时 can_buy=False
-                can_buy = bool(concept_map) and bool(ret5) and bool(prev_prev_closes)
-
-                # 构造各策略实例
-                for sid, version, spec in active_specs:
-                    try:
-                        strat = CustomStrategy(
-                            conn, ledger, sid, version, spec,
-                            notice_judge, news_judge,
-                            dict(universe), custom_features, concept_map,
-                            env_provider, prev_day, can_buy=can_buy
-                        )
-                        custom_strategies.append((sid, strat))
-                        log(f"自定义策略 {sid} v{version} 加载：{spec['name']}")
-                    except Exception as e:
-                        log(f"自定义策略 {sid} 加载失败：{e!r}")
-            else:
-                log("无活跃自定义策略")
-        except Exception as e:
-            log(f"自定义策略加载失败：{e!r}")
+    customs = [] if late else _load_customs(
+        conn, ledger, today, universe, ret5, sell_only, notice_judge, news_judge, concept_map,
+        lambda: {"sentiment": engine.sentiment_label, "overseas": overseas}, prev_day, log)
 
     if once:
         t = now()
         fills = _safe_tick(engine, conn, t, log)
         board_fills = _safe_board_minute(board, _fresh_quotes(engine, t), t, conn, log) if board is not None else []
-        custom_fills = []
-        if custom_strategies:
-            fresh_quotes = _fresh_quotes(engine, t)
-            for sid, strat in custom_strategies:
-                try:
-                    custom_fills.extend(strat.on_minute(fresh_quotes, t))
-                except Exception as e:
-                    conn.rollback()
-                    log(f"自定义策略 {sid} 执行失败：{e!r}")
+        custom_fills = _safe_custom_minute(customs, _fresh_quotes(engine, t), t, conn, log)
         _notify_fills(notifier, conn, fills, state["names"], log, acct_names)
         _notify_fills(notifier, conn, board_fills, state["names"], log, acct_names)
         _notify_fills(notifier, conn, custom_fills, state["names"], log, acct_names)
@@ -354,23 +314,9 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             board_fills = _safe_board_minute(board, _fresh_quotes(engine, t), t, conn, log)
             _log_fills(board_fills, log)
             _notify_fills(notifier, conn, board_fills, state["names"], log, acct_names)
-
-            # 驱动自定义策略
-            custom_fills = []
-            if custom_strategies:
-                fresh_quotes = _fresh_quotes(engine, t)
-                for sid, strat in custom_strategies:
-                    try:
-                        fills = strat.on_minute(fresh_quotes, t)
-                        custom_fills.extend(fills)
-                        if fills:
-                            _log_fills(fills, log)
-                    except Exception as e:
-                        conn.rollback()
-                        log(f"自定义策略 {sid} 执行失败：{e!r}")
-                if custom_fills:
-                    _notify_fills(notifier, conn, custom_fills, state["names"], log, acct_names)
-
+            custom_fills = _safe_custom_minute(customs, _fresh_quotes(engine, t), t, conn, log)
+            _log_fills(custom_fills, log)
+            _notify_fills(notifier, conn, custom_fills, state["names"], log, acct_names)
             if getattr(engine, "halted", False):
                 notifier.once("halted", "⚠️ 模拟盘提醒", "行情连续失败，今日暂停开新仓，卖出照常")
             state.update(sentiment=engine.sentiment_label,
@@ -434,7 +380,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
 
 def _notify_close_summary(notifier: Notifier, ledger: Ledger, today: date, prices: dict,
                           log: Callable[[str], None], conn=None) -> None:
-    """收盘小结：四个账户各一行净值/收益率/今日成交笔数。任何问题只记日志，不影响报告已写入的事实。"""
+    """收盘小结：每个账户（内置 + 今天在跑的自定义）一行净值/收益率/今日成交笔数。
+    任何问题只记日志，不影响报告已写入的事实。"""
     try:
         notifier.send(f"收盘 {today.isoformat()}", notify_content.close_summary_content(ledger, today, prices, conn))
     except Exception as e:
@@ -492,6 +439,55 @@ def _fresh_quotes(engine: Engine, t: datetime) -> dict:
     if getattr(engine, "last_fetch_minute", None) == t.strftime("%Y-%m-%d %H:%M"):
         return engine.last_quotes
     return {}
+
+
+def _load_customs(conn, ledger: Ledger, today: date, universe: dict, ret5: dict, sell_only: bool,
+                  notice_judge, news_judge, concept_map: dict, env_provider, prev_day: date,
+                  log: Callable[[str], None]) -> list[tuple[str, CustomStrategy]]:
+    """盘前构造今天要驱动的自定义策略：今天生效且启用的（active_for）+ 已停用但还有持仓的（holders，
+    恒只卖）。任何一步失败只影响自定义策略本身——低吸、扫首板和它们的卖出照常。
+    只卖日（缺 key / 日历或股票池失败）或 5 日涨幅覆盖不足（收盘价库不够，历史类字段不可信）时一律只卖。"""
+    try:
+        specs = custom_store.active_for(conn, today) + custom_store.holders(conn, today)
+    except Exception as e:
+        log(f"自定义策略读取失败，今日不驱动自定义策略：{e!r}")
+        return []
+    if not specs:
+        return []
+    can_buy = not sell_only and bool(universe) and bool(ret5)
+    try:
+        held = {p.code for s in specs for a in (f"{s['id']}_main", f"{s['id']}_shadow")
+                for p in ledger.positions(a)}
+        features = history_features(conn, sorted(set(universe) | held), today)
+    except Exception as e:
+        log(f"自定义策略历史特征计算失败，历史类条件今日不命中：{e!r}")
+        features = {}
+    out = []
+    for s in specs:
+        try:
+            strat = CustomStrategy(conn, ledger, s["id"], s["version"], s["spec"], notice_judge, news_judge,
+                                   dict(universe), features, concept_map, env_provider, prev_day,
+                                   can_buy=can_buy and s["can_buy"])
+        except Exception as e:
+            conn.rollback()
+            log(f"自定义策略 {s['id']} 加载失败：{e!r}")
+            continue
+        out.append((s["id"], strat))
+        log(f"自定义策略 {s['id']} v{s['version']}「{s['name']}」" + ("" if strat.can_buy else "（只卖）"))
+    return out
+
+
+def _safe_custom_minute(customs: list, quotes: dict, t: datetime, conn,
+                        log: Callable[[str], None]) -> list:
+    """各自定义策略的每分钟一轮（先卖后买）；逐策略隔离，一个出错回滚并记日志，不影响其他策略。"""
+    fills: list = []
+    for sid, strat in customs:
+        try:
+            fills += strat.on_minute(quotes, t)
+        except Exception as e:
+            conn.rollback()
+            log(f"自定义策略 {sid} 本轮出错：{e!r}")
+    return fills
 
 
 def _safe_board_minute(board: BoardStrategy, quotes: dict, t: datetime, conn,

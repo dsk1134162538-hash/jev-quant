@@ -1,6 +1,7 @@
 import json
 import re
 import threading
+import time as time_mod
 from collections import deque
 from datetime import date, datetime
 from pathlib import Path
@@ -8,17 +9,21 @@ from pathlib import Path
 from jevq import accounts as accounts_mod
 from jevq import config, db, runlock
 from jevq.config import DB_PATH, REPORT_DIR, STRATEGIES
-from jevq.data import board_events, custom_store, tencent
+from jevq.data import board_events, concepts, custom_store, tencent
+from jevq.data import features as features_mod
 from jevq.ledger import Ledger
+from jevq.rules import custom as rules_custom
+from jevq.strategies import custom as custom_runtime
 
 REPORT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
+PREVIEW_TTL = 60.0      # 试跑行情缓存秒数
 
 
 class Api:
     """暴露给 pywebview 前端的方法；下划线开头的成员不会暴露给 JS。"""
 
     def __init__(self, db_path: str = DB_PATH, report_dir: str = REPORT_DIR,
-                 runner=None, fetch_quotes=tencent.fetch_quotes):
+                 runner=None, fetch_quotes=tencent.fetch_quotes, load_universe=None, trade_days=None):
         if runner is None:
             from run import run_day as runner
         self._db_path, self._report_dir = db_path, Path(report_dir)
@@ -28,7 +33,11 @@ class Api:
         self._logs: deque[str] = deque(maxlen=500)
         self._state: dict = {}
         self._names: dict[str, str] = {}
-        conn = db.connect(self._db_path)           # 仅此一次写：建库、建表、建现金行；之后查询全走只读连接
+        # 股票池/交易日历：None 表示用 akdata（联网），测试注入假的
+        self._load_universe, self._trade_days = load_universe, trade_days
+        self._universe_cache: tuple[date, dict[str, str]] | None = None
+        self._preview_cache: dict | None = None
+        conn = db.connect(self._db_path)           # 建库、建表、建现金行；之后查询全走只读连接（只有规则保存/停用另开写连接）
         try:
             Ledger(conn)
         finally:
@@ -225,18 +234,67 @@ class Api:
         finally:
             conn.close()
 
-    # ---- 规则（自定义策略）CRUD ----
+    # ---- 规则（自定义策略） ----
+    # 写操作一律用 db.connect（WAL + 15 秒 busy timeout，custom_store.save/disable 内部 BEGIN IMMEDIATE），
+    # 与交易进程并发写不会互相踩；只读查询用只读连接。坏输入/异常一律返回 {"ok": False, "errors": [...]}，
+    # 不跨桥抛异常。交易日历、股票池都走构造时注入的函数，测试里不联网。
+    def _calendar(self) -> list[date]:
+        if self._trade_days is not None:
+            return self._trade_days()
+        from jevq.data import akdata
+        return akdata.trade_days()
+
+    def _universe(self, today: date) -> dict[str, str]:
+        """股票池与 run.py 同口径（akdata.load_universe：主板、非 ST、上市满 60 日），按天缓存。"""
+        if self._universe_cache and self._universe_cache[0] == today:
+            return self._universe_cache[1]
+        load = self._load_universe
+        if load is None:
+            from jevq.data import akdata
+            load = akdata.load_universe
+        universe = load(today, self._calendar())
+        self._universe_cache = (today, universe)
+        self._names.update(universe)
+        return universe
+
+    def _preview_data(self) -> dict:
+        """试跑用的全市场行情 + 历史特征 + 题材，60 秒内复用（面板每改一个条件就会试跑一次）。"""
+        now = time_mod.monotonic()
+        cache = self._preview_cache
+        if cache and now - cache["at"] < PREVIEW_TTL and cache["today"] == date.today():
+            return cache
+        today = date.today()
+        universe = self._universe(today)
+        quotes = self._fetch_quotes(sorted(universe))
+        conn = db.connect_readonly(self._db_path)
+        try:
+            features = features_mod.history_features(conn, list(universe), today)
+            concept_map = concepts.load_concepts(conn)
+        finally:
+            conn.close()
+        self._preview_cache = {"at": now, "today": today, "universe": universe, "quotes": quotes,
+                               "features": features, "concepts": concept_map}
+        return self._preview_cache
+
     def rules_list(self) -> dict:
-        """返回所有自定义策略（启用 + 停用但持仓）及它们的运行状态。"""
+        """全部自定义策略（含明天才生效的新建策略、已停用的），每个 id 一行，看最新版本。"""
         conn = db.connect_readonly(self._db_path)
         try:
             today = date.today()
-            active = custom_store.active_for(conn, today)
-            held = custom_store.holders(conn, today)
-            all_rules = active + held
-            return {"ok": True, "rules": all_rules}
+            running = {s["id"] for s in custom_store.active_for(conn, today) + custom_store.holders(conn, today)}
+            held = {a.rsplit("_", 1)[0] for (a,) in conn.execute("SELECT DISTINCT account FROM positions")}
+            ids = [sid for (sid,) in conn.execute("SELECT DISTINCT id FROM custom_strategies ORDER BY id")]
+            rules = []
+            for sid in ids:
+                latest = custom_store.history(conn, sid)[-1]
+                rules.append({"id": sid, "name": latest["name"], "version": latest["version"],
+                              "spec": latest["spec"], "active_from": latest["active_from"],
+                              "enabled": latest["enabled"], "running": sid in running,
+                              "can_buy": latest["enabled"],      # 面板（Task 8 WIP）用它显示启用/停用
+                              "held": sid in held})
+            return {"ok": True, "rules": rules}
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": str(e), "errors": [str(e)]}
         finally:
             conn.close()
 
@@ -246,246 +304,83 @@ class Api:
         try:
             history = custom_store.history(conn, sid)
             if not history:
-                return {"ok": False, "error": f"未知策略 {sid}"}
+                return {"ok": False, "error": f"未知策略 {sid}", "errors": [f"未知策略 {sid}"]}
             return {"ok": True, "id": sid, "history": history}
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": str(e), "errors": [str(e)]}
         finally:
             conn.close()
+
+    def _save(self, spec, sid: str | None) -> dict:
+        """新建/新版本，次日生效。账户资金不在这里开：CustomStrategy 生效当天按 capital_of 开户。"""
+        conn = None
+        try:
+            conn = db.connect(self._db_path)
+            new_sid, version = custom_store.save(conn, spec, date.today(), self._calendar(), sid=sid)
+            if new_sid is None:
+                return {"ok": False, "errors": version}
+            return {"ok": True, "id": new_sid, "version": version}
+        except Exception as e:
+            if conn is not None:
+                conn.rollback()
+            return {"ok": False, "errors": [str(e)]}
+        finally:
+            if conn is not None:
+                conn.close()
 
     def rule_create(self, spec: dict) -> dict:
         """创建新的自定义策略，次日生效。"""
-        from jevq.data import akdata
-        conn = db.connect(self._db_path)
-        try:
-            today = date.today()
-            days = akdata.trade_days()
-            sid, version = custom_store.save(conn, spec, today, days)
-            if sid is None:
-                return {"ok": False, "errors": version}
-            # 创建对应的主账户和影子账户
-            capital = spec.get("capital", config.INITIAL_CASH)
-            ledger = Ledger(conn, init=False)
-            ledger.ensure_account(f"{sid}_main", capital)
-            ledger.ensure_account(f"{sid}_shadow", capital)
-            conn.commit()
-            return {"ok": True, "id": sid, "version": version}
-        except Exception as e:
-            conn.rollback()
-            return {"ok": False, "errors": [str(e)]}
-        finally:
-            conn.close()
+        return self._save(spec, None)
 
     def rule_update(self, sid: str, spec: dict) -> dict:
         """更新现有策略，次日生效。"""
-        from jevq.data import akdata
-        conn = db.connect(self._db_path)
-        try:
-            today = date.today()
-            days = akdata.trade_days()
-            result_sid, version = custom_store.save(conn, spec, today, days, sid=sid)
-            if result_sid is None:
-                return {"ok": False, "errors": version}
-            return {"ok": True, "id": result_sid, "version": version}
-        except Exception as e:
-            conn.rollback()
-            return {"ok": False, "errors": [str(e)]}
-        finally:
-            conn.close()
+        if not isinstance(sid, str) or not sid:
+            return {"ok": False, "errors": ["缺少策略 id"]}
+        return self._save(spec, sid)
 
     def rule_disable(self, sid: str) -> dict:
         """停用策略，次日生效；已有持仓照旧按原规则卖出。"""
-        from jevq.data import akdata
-        conn = db.connect(self._db_path)
+        conn = None
         try:
-            today = date.today()
-            days = akdata.trade_days()
-            version, errors = custom_store.disable(conn, sid, today, days)
+            conn = db.connect(self._db_path)
+            version, errors = custom_store.disable(conn, sid, date.today(), self._calendar())
             if version is None:
                 return {"ok": False, "errors": errors}
             return {"ok": True, "version": version}
         except Exception as e:
-            conn.rollback()
+            if conn is not None:
+                conn.rollback()
             return {"ok": False, "errors": [str(e)]}
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def rule_fields(self) -> dict:
         """返回规则引擎的字段元数据。"""
         try:
-            from jevq.rules import custom
-            meta = custom.fields_meta()
-            return {"ok": True, "fields": meta}
+            return {"ok": True, "fields": rules_custom.fields_meta()}
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": str(e), "errors": [str(e)]}
 
     def rule_validate(self, spec: dict) -> dict:
         """校验规则定义，返回错误和警告。"""
         try:
-            from jevq.rules import custom
-            errors, warnings = custom.validate(spec)
+            errors, warnings = rules_custom.validate(spec)
             return {"ok": True, "errors": errors, "warnings": warnings}
         except Exception as e:
-            import traceback
-            return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
+            return {"ok": False, "error": str(e), "errors": [str(e)], "warnings": []}
 
     def rule_preview(self, spec: dict) -> dict:
-        """预览规则在最近一次行情上的命中结果（前20只）。"""
+        """试跑：最近一次全市场行情上 选股 → 排序 → 买点，返回命中总数与前 20 只。
+        与盘中 CustomStrategy 共用同一个取值函数（jevq.strategies.custom.make_getter）；不调用 Jev、不下单。"""
+        if not isinstance(spec, dict):
+            return {"ok": False, "errors": ["策略格式错误"]}
         try:
-            from jevq.rules import custom
-            from jevq.data import features, akdata
-            import time
-
-            # 使用缓存的行情数据（60秒内有效）
-            now = time.time()
-            if not hasattr(self, '_preview_cache') or now - self._preview_cache.get('time', 0) > 60:
-                conn = db.connect_readonly(self._db_path)
-                try:
-                    universe = set(config.UNIVERSE)
-                    quotes = self._fetch_quotes(universe)
-                    today = date.today()
-                    hist_features = features.history_features(conn, universe, today)
-
-                    # 简化的题材映射（不调用board实时数据）
-                    concept_map = {}
-
-                    self._preview_cache = {
-                        'time': now,
-                        'quotes': quotes,
-                        'features': hist_features,
-                        'concept_map': concept_map,
-                        'today': today
-                    }
-                finally:
-                    conn.close()
-
-            cache = self._preview_cache
-            quotes = cache['quotes']
-            hist_features = cache['features']
-            concept_map = cache['concept_map']
-            today = cache['today']
-
-            # 评估选股条件
-            select_group = spec.get("select", {})
-            candidates = []
-
-            for code, q in quotes.items():
-                if code not in config.UNIVERSE:
-                    continue
-
-                # 构造取值函数
-                def make_getter(code, q, hist_features):
-                    hist = hist_features.get(code, {})
-                    def getter(field, param=None):
-                        if field == "pct":
-                            return q.pct
-                        elif field == "open_pct":
-                            return q.open_pct
-                        elif field == "high_pct":
-                            return q.high_pct
-                        elif field == "low_pct":
-                            return q.low_pct
-                        elif field == "drawdown":
-                            return q.high_pct - q.pct
-                        elif field == "sealed":
-                            limit_up = round(q.prev_close * 1.1, 2)
-                            return q.price >= limit_up
-                        elif field == "broke":
-                            limit_up = round(q.prev_close * 1.1, 2)
-                            return q.high >= limit_up and q.price < limit_up
-                        elif field == "amount":
-                            return q.amount / 100_000_000
-                        elif field == "turnover":
-                            return q.turnover
-                        elif field == "volume_ratio":
-                            return q.volume_ratio
-                        elif field == "float_mcap":
-                            return q.float_mcap
-                        elif field == "total_mcap":
-                            return q.total_mcap
-                        elif field == "ret_n":
-                            return hist.get("ret", {}).get(param)
-                        elif field == "limit_up_in_n":
-                            return hist.get("limit_up", {}).get(param)
-                        elif field == "boards":
-                            return hist.get("boards")
-                        elif field == "ma_pos_n":
-                            ma = hist.get("ma", {}).get(param)
-                            if ma is None:
-                                return None
-                            return round((q.price / ma - 1) * 100, 2)
-                        elif field == "concept_heat":
-                            concepts = concept_map.get(code, [])
-                            if not concepts:
-                                return 0
-                            return max(len(concept_map.get(c, [])) for c in concepts)
-                        elif field == "time":
-                            return datetime.now().time()
-                        return None
-                    return getter
-
-                getter = make_getter(code, q, hist_features)
-
-                # 评估选股条件
-                if custom.eval_group(select_group, getter):
-                    candidates.append((code, q, getter))
-
-            # 排序
-            rank_spec = spec.get("rank")
-            if rank_spec:
-                field = rank_spec.get("field")
-                param_n = (rank_spec.get("param") or {}).get("n")
-                order = rank_spec.get("order", "desc")
-
-                def rank_key(item):
-                    code, q, getter = item
-                    val = getter(field, param_n)
-                    if val is None:
-                        return float('-inf') if order == "desc" else float('inf')
-                    return val
-
-                candidates.sort(key=rank_key, reverse=(order == "desc"))
-
-            # 取前20只，返回字段值
-            rows = []
-            for code, q, getter in candidates[:20]:
-                values = {}
-                # 收集所有在选股条件中用到的字段
-                for cond in select_group.get("conditions", []):
-                    field_key = cond.get("field")
-                    if not field_key:
-                        continue
-                    f = custom.FIELDS.get(field_key)
-                    if not f:
-                        continue
-                    param_n = (cond.get("param") or {}).get("n")
-                    val = getter(field_key, param_n)
-                    label = f.label
-                    if param_n:
-                        label = f"{f.label}(N={param_n})"
-
-                    if val is None:
-                        values[label] = "—"
-                    elif isinstance(val, bool):
-                        values[label] = "是" if val else "否"
-                    elif isinstance(val, (int, float)):
-                        values[label] = f"{val:.2f}{f.unit}"
-                    else:
-                        values[label] = str(val)
-
-                rows.append({
-                    "code": code,
-                    "name": q.name,
-                    "rank": len(rows) + 1,
-                    "values": values
-                })
-
-            return {
-                "ok": True,
-                "total": len(candidates),
-                "rows": rows
-            }
-
+            data = self._preview_data()
+            env = {"sentiment": self._state.get("sentiment"), "overseas": self._state.get("overseas")}
+            result = custom_runtime.preview(spec, data["quotes"], data["universe"], data["features"],
+                                            data["concepts"], env, datetime.now())
+            return {"ok": True, **result}
         except Exception as e:
-            import traceback
-            return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
+            self._log(f"试跑失败：{e!r}")
+            return {"ok": False, "errors": [f"试跑失败：{e}"]}
