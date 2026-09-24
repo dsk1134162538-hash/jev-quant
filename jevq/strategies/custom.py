@@ -5,13 +5,16 @@ from datetime import date, datetime, time
 
 from jevq.ledger import Ledger
 from jevq.models import Fill, Position, Quote
+from jevq.rules import board as board_rules
 from jevq.rules.custom import FIELDS, eval_cond, eval_group, first_exit, rank_codes
 from jevq.rules.metrics import avg_pct, body_pct, committee, outer_ratio, seal_amount, seal_ratio
 
 
-def minute_context(quotes: dict[str, Quote], universe, concept_map: dict[str, list[str]]):
-    """每分钟一次的全市场预计算：(amount_ranks, concept_heats)。
-    amount_rank：股票池内按成交额排名（1 起）；concept_heat：该股所属题材中当日涨超 5% 成员数最大值。"""
+def minute_context(quotes: dict[str, Quote], universe, concept_map: dict[str, list[str]],
+                   features: dict[str, dict] | None = None):
+    """每分钟一次的全市场预计算：(amount_ranks, concept_heats, leader_ranks)。
+    amount_rank：股票池内按成交额排名（1 起）；concept_heat：该股所属题材中当日涨超 5% 成员数最大值；
+    leader_rank：见 leader_ranks。"""
     uni_quotes = sorted(((c, q) for c, q in quotes.items() if c in universe),
                         key=lambda cq: cq[1].amount, reverse=True)
     amount_ranks = {c: i + 1 for i, (c, _q) in enumerate(uni_quotes)}
@@ -22,7 +25,42 @@ def minute_context(quotes: dict[str, Quote], universe, concept_map: dict[str, li
                 concept_counts[concept] = concept_counts.get(concept, 0) + 1
     concept_heats = {code: max((concept_counts.get(c, 0) for c in concept_map.get(code, [])), default=0)
                      for code in universe}
-    return amount_ranks, concept_heats
+    return amount_ranks, concept_heats, leader_ranks(dict(uni_quotes), concept_map, features or {})
+
+
+def leader_ranks(quotes: dict[str, Quote], concept_map: dict[str, list[str]],
+                 features: dict[str, dict]) -> dict[str, int]:
+    """题材内龙头名次，与扫首板 board.leader 同口径：题材的强势成员（非 ST、未停牌、涨幅 ≥ HOT_PCT）里，
+    按「涨幅名次 + 成交额名次 + 5 日涨幅名次」之和升序（同分看涨幅名次），第 1 名就是 board.leader 选出的龙头。
+    一只股票属于多个题材时取最热的那个（强势成员最多；同样热取名次更好的）。
+    自己不是强势成员、或缺 5 日涨幅 → 没有名次（条件不满足）。题材热度门槛交给「题材热度」字段，这里不设。
+    quotes 应只含股票池内代码。"""
+    ret5 = {}
+    for code in quotes:
+        v = ((features.get(code) or {}).get("ret") or {}).get(5)
+        if v is not None:
+            ret5[code] = v
+    strong: dict[str, list[str]] = {}
+    for code, q in quotes.items():
+        if q.is_st or q.suspended or q.pct < board_rules.HOT_PCT:
+            continue
+        for concept in concept_map.get(code, []):
+            strong.setdefault(concept, []).append(code)
+    best: dict[str, tuple[int, int]] = {}         # code → (热度, 名次)
+    for members in strong.values():
+        pool = [c for c in members if c in ret5]
+        if not pool:
+            continue
+        rp = board_rules._rank(pool, lambda c: quotes[c].pct)
+        ra = board_rules._rank(pool, lambda c: quotes[c].amount)
+        rr = board_rules._rank(pool, lambda c: ret5[c])
+        ordered = sorted(pool, key=lambda c: (rp[c] + ra[c] + rr[c], rp[c]))
+        heat = len(members)
+        for i, code in enumerate(ordered, 1):
+            prev = best.get(code)
+            if prev is None or heat > prev[0] or (heat == prev[0] and i < prev[1]):
+                best[code] = (heat, i)
+    return {code: rank for code, (_heat, rank) in best.items()}
 
 
 def hold_days(buy_date: date, trade_days: list[date]) -> int:
@@ -32,7 +70,8 @@ def hold_days(buy_date: date, trade_days: list[date]) -> int:
 
 def make_getter(code: str, q: Quote, *, features: dict, amount_ranks: dict[str, int],
                 concept_heats: dict[str, int], env: dict, t: time,
-                pos: Position | None = None, trade_days: list[date] = ()):
+                pos: Position | None = None, trade_days: list[date] = (),
+                leader_ranks: dict[str, int] | None = None):
     """取值函数 get(key, n)：覆盖全部字段，缺数据返回 None。运行时（CustomStrategy）与试跑预览共用，
     保证「预览命中」和「盘中命中」是同一套口径。"""
     feat = features
@@ -117,8 +156,7 @@ def make_getter(code: str, q: Quote, *, features: dict, amount_ranks: dict[str, 
         if key == "concept_heat":
             return concept_heats.get(code)
         if key == "leader_rank":
-            # leader_rank 暂不实现，需要完整的 quotes
-            return None
+            return (leader_ranks or {}).get(code)
 
         # 持仓相关
         if key == "hold_days":
@@ -146,14 +184,14 @@ def preview(spec: dict, quotes: dict[str, Quote], universe, features: dict[str, 
             concept_map: dict[str, list[str]], env: dict, now: datetime, limit: int = 20) -> dict:
     """试跑：选股 → 排序 → 买点，与 CustomStrategy 同一套取值函数与规则引擎；不调用 Jev、不下单。
     与盘中不同，不过滤非当日行情（收盘后/盘前预览用最近一个交易日的行情，spec §4.2）。"""
-    amount_ranks, concept_heats = minute_context(quotes, universe, concept_map)
+    amount_ranks, concept_heats, leaders = minute_context(quotes, universe, concept_map, features)
     getters = {}
 
     def getter(code):
         if code not in getters:
             getters[code] = make_getter(code, quotes[code], features=features.get(code) or {},
                                         amount_ranks=amount_ranks, concept_heats=concept_heats,
-                                        env=env, t=now.time())
+                                        env=env, t=now.time(), leader_ranks=leaders)
         return getters[code]
 
     selected = [c for c in sorted(quotes) if c in universe
@@ -188,8 +226,10 @@ def _fmt_value(v, unit: str) -> str:
         return "—"
     if isinstance(v, bool):
         return "是" if v else "否"
-    if isinstance(v, (int, float)):
-        return f"{round(v, 2):g}{unit}"
+    if isinstance(v, int):
+        return f"{v}{unit}"
+    if isinstance(v, float):          # 小数统一两位（-2.60% 与 -2.21% 对齐），不再用 :g 忽长忽短
+        return f"{v:.2f}{unit}"
     if isinstance(v, time):
         return v.strftime("%H:%M")
     return str(v)
@@ -225,6 +265,7 @@ class CustomStrategy:
         # 预计算缓存（每分钟更新一次）
         self.amount_ranks: dict[str, int] = {}
         self.concept_heats: dict[str, int] = {}
+        self.leader_ranks: dict[str, int] = {}
         self._cache_minute: str | None = None
 
     def on_minute(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
@@ -260,7 +301,8 @@ class CustomStrategy:
 
     def _update_cache(self, quotes: dict[str, Quote]):
         """每分钟预计算 amount_rank 和 concept_heat。"""
-        self.amount_ranks, self.concept_heats = minute_context(quotes, self.universe, self.concept_map)
+        self.amount_ranks, self.concept_heats, self.leader_ranks = minute_context(
+            quotes, self.universe, self.concept_map, self.features)
 
     def _sells(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         """卖出：对两个账户持仓，用绑定该股的取值函数 first_exit。"""
@@ -501,7 +543,7 @@ class CustomStrategy:
         """取值函数：逻辑在模块级 make_getter，试跑预览（Api.rule_preview）复用同一份。"""
         return make_getter(code, q, features=self.features.get(code) or {}, amount_ranks=self.amount_ranks,
                            concept_heats=self.concept_heats, env=self.env_provider(), t=t,
-                           pos=pos, trade_days=trade_days)
+                           pos=pos, trade_days=trade_days, leader_ranks=self.leader_ranks)
 
     def _trade_days(self) -> list[date]:
         """从 closes 表读取交易日列表。"""

@@ -146,7 +146,7 @@ def test_rule_preview_select_rank_entry_with_runtime_getter(tmp_db):
     assert result["ok"], result
     assert result["total"] == 2                                        # 600009 不在股票池、600003 不满足选股
     assert [(r["code"], r["name"], r["rank"]) for r in result["rows"]] == [("600002", "乙", 1), ("600001", "甲", 2)]
-    assert result["rows"][0]["values"] == {"当前涨幅": "-2%", "成交额名次": "1名", "成交额": "9亿"}
+    assert result["rows"][0]["values"] == {"当前涨幅": "-2.00%", "成交额名次": "1名", "成交额": "9.00亿"}
 
 
 def test_rule_preview_sealed_uses_quote_limit_up(tmp_db):
@@ -167,7 +167,7 @@ def test_rule_preview_uses_history_features_from_closes(tmp_db):
         {"field": "ret_n", "param": {"n": 3}, "op": ">", "value": 5}]}, entry={"mode": "all", "conditions": []})
     result = make_api(tmp_db).rule_preview(spec)
     assert result["total"] == 1
-    assert result["rows"][0]["values"]["近N日涨幅(N=3)"] == "10%"
+    assert result["rows"][0]["values"]["近N日涨幅(N=3)"] == "10.00%"
 
 
 def test_rule_preview_caches_market_data_for_60_seconds(tmp_db):

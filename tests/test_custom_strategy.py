@@ -444,3 +444,70 @@ def test_time_condition_hit_is_json_serializable():
     hits = json.loads(row[0])["candidate"]["hits"]
     assert any(h["value"] == "10:00" for h in hits)
     assert ledger.positions("c1_main")
+
+
+# ---- leader_rank：题材内龙头名次，与扫首板 board.leader 同口径 ----
+from factories import quote as _q  # noqa: E402
+
+from jevq.rules.board import leader  # noqa: E402
+from jevq.strategies.custom import leader_ranks, make_getter, minute_context, preview, _fmt_value  # noqa: E402
+
+
+def _feat(ret5):
+    return {"ret": {5: ret5}}
+
+
+def test_leader_rank_matches_board_leader():
+    quotes = {"600001": _q("600001", pct=9.0, amount=5e8), "600002": _q("600002", pct=7.0, amount=9e8),
+              "600003": _q("600003", pct=6.0, amount=1e8), "600004": _q("600004", pct=2.0, amount=9e9)}
+    cmap = {c: ["AI"] for c in quotes}
+    features = {"600001": _feat(20.0), "600002": _feat(5.0), "600003": _feat(1.0), "600004": _feat(50.0)}
+    ranks = leader_ranks(quotes, cmap, features)
+    ret5 = {c: f["ret"][5] for c, f in features.items()}
+    assert ranks[leader("AI", ["600001", "600002", "600003"], quotes, ret5).code] == 1
+    assert ranks == {"600001": 1, "600002": 2, "600003": 3}
+    assert "600004" not in ranks                         # 涨幅不到 5%，不是强势成员 → 没有名次
+
+
+def test_leader_rank_excludes_st_missing_ret5_and_uses_hottest_concept():
+    quotes = {"600001": _q("600001", pct=9.0, amount=1e8), "600002": _q("600002", pct=8.0, amount=2e8),
+              "600003": _q("600003", pct=7.0, amount=3e8), "600005": _q("600005", pct=9.5, name="*ST甲"),
+              "600006": _q("600006", pct=9.9, amount=9e9)}
+    cmap = {"600001": ["小", "大"], "600002": ["大"], "600003": ["大"], "600005": ["大"], "600006": ["小"]}
+    features = {"600001": _feat(1.0), "600002": _feat(30.0), "600003": _feat(20.0), "600005": _feat(99.0)}
+    ranks = leader_ranks(quotes, cmap, features)
+    assert "600005" not in ranks and "600006" not in ranks      # ST、缺 5 日涨幅都不参与
+    # 600001 在「小」里是唯一有名次的（第 1），但「大」有 3 只强势成员更热 → 取「大」里的名次
+    assert ranks["600001"] == 3 and ranks["600002"] == 1
+
+
+def test_leader_rank_field_reaches_getter_and_preview():
+    quotes = {"600001": _q("600001", pct=9.0, amount=5e8), "600002": _q("600002", pct=7.0, amount=1e8)}
+    universe = {"600001": "甲", "600002": "乙"}
+    cmap = {"600001": ["AI"], "600002": ["AI"]}
+    features = {"600001": _feat(20.0), "600002": _feat(5.0)}
+    amount_ranks, heats, leaders = minute_context(quotes, universe, cmap, features)
+    get = make_getter("600002", quotes["600002"], features=features["600002"], amount_ranks=amount_ranks,
+                      concept_heats=heats, env={}, t=DAY.time(), leader_ranks=leaders)
+    assert get("leader_rank") == 2
+    spec = {"select": {"conditions": [{"field": "leader_rank", "op": "<=", "value": 1}]}}
+    result = preview(spec, quotes, universe, features, cmap, {}, DAY)
+    assert result["total"] == 1 and result["rows"][0]["code"] == "600001"
+    assert result["rows"][0]["values"] == {"题材内龙头名次": "1名"}
+
+
+def test_leader_rank_used_by_custom_strategy_on_minute():
+    spec = {"name": "龙头", "capital": 30000,
+            "select": {"conditions": [{"field": "leader_rank", "op": "<=", "value": 1}]},
+            "exits": [{"when": {"conditions": [{"field": "pnl_pct", "op": "<=", "value": -3}]}, "reason": "止损"}]}
+    features = {c: _feat(v) for c, v in {"600001": 20.0, "600002": 5.0, "600003": 0.0, "600004": 0.0}.items()}
+    strat, conn, ledger = make(spec, features=features)
+    quotes = {"600001": _q("600001", pct=6.0, amount=5e8, ts=at(10, 0)),
+              "600002": _q("600002", pct=7.0, amount=1e8, ts=at(10, 0))}
+    strat.on_minute(quotes, at(10, 0))
+    assert [p.code for p in ledger.positions("c1_shadow")] == ["600001"]
+
+
+def test_preview_values_use_two_decimals_for_floats():
+    assert _fmt_value(-2.6, "%") == "-2.60%" and _fmt_value(-2.21, "%") == "-2.21%"
+    assert _fmt_value(3, "名") == "3名" and _fmt_value(True, "") == "是" and _fmt_value(None, "%") == "—"

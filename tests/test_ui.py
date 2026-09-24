@@ -41,3 +41,19 @@ def test_ui_sends_jev_switches_under_engine_key():
     js = _scripts()
     assert "jev: {notices:" in js and "d.jev.notices" in js
     assert not re.search(r"jev\s*:\s*\{\s*notice\s*:", js)
+
+
+def test_curve_draws_single_point_series_as_dot():
+    """新账户第一天只有一个净值点，polyline 画不出来；要画成一个点，否则图例有、图上没有。"""
+    js = _scripts()
+    body = js[js.index("function renderCurve"):js.index("function mdToHtml")]
+    assert "pts.length === 1" in body and "curve-dot" in body and 'stroke-linecap="round"' in body
+
+
+def test_render_tab_bails_out_when_user_switched_tabs():
+    """renderTab 的每个 await 后都要检查标签没变，慢回来的旧结果不能盖掉规则编辑器。"""
+    js = _scripts()
+    body = js[js.index("async function renderTab"):js.index("// ======================= 规则页")]
+    awaits = re.findall(r"await api\.(fills|decisions|decision|board_stats|reports|logs)\(", body)
+    assert set(awaits) == {"fills", "decisions", "decision", "board_stats", "reports", "logs"}
+    assert body.count("if (moved()) return;") == 5          # fills/decisions(两次 await 后一次)/board/reports/logs
