@@ -20,9 +20,10 @@ class FakeJev:
         self.title_labels, self.risk = title_labels or {}, risk or {}
         self.fail_titles, self.fail_risk = set(fail_titles), set(fail_risk)
         self.title_calls, self.risk_calls, self.states, self.timeouts = 0, 0, [], []
+        self.deadlines = []
         self._lock = threading.Lock()
 
-    def ask(self, state, questions, timeout=None):
+    def ask(self, state, questions, timeout=None, deadline=None):
         title = state["公告标题"]
         with self._lock:
             if "kind" in questions:
@@ -31,6 +32,7 @@ class FakeJev:
                 self.risk_calls += 1
                 self.states.append(state)
                 self.timeouts.append(timeout)
+                self.deadlines.append(deadline)
         if "kind" in questions:
             if title in self.fail_titles:
                 raise JevError("down")
@@ -313,7 +315,7 @@ def test_late_body_is_picked_up_on_next_check():
     j = NoticeJudge(conn, jev, fetch_body=fetch, body_budget=0.2)
     j.check("600001", TODAY)
     release.set()
-    for _ in range(50):                              # 等后台那次抓取落地
+    for _ in range(500):                             # 等后台那次抓取落地（慢机器上给足 10s）
         if j._late_bodies:
             break
         time.sleep(0.02)
@@ -337,3 +339,97 @@ def test_fetch_exception_falls_back_to_title():
     assert jev.states[0]["正文摘要"] == "未读到正文，仅凭标题判断"
     assert j.last_trace["suspects"][0]["body_read"] is False
     assert conn.execute("SELECT COUNT(*) FROM notice_bodies").fetchone()[0] == 0
+
+
+# ---- 细判 Jev 调用总时限：交易 tick 里一次 check 不能被慢 Jev 拖几十秒（review 3） ----
+
+class SlowJev(FakeJev):
+    """细判每次调用耗时 delay 秒后成功返回（模拟 Jev 变慢但没挂）。"""
+    def __init__(self, delay, **kw):
+        super().__init__(**kw)
+        self.delay = delay
+
+    def ask(self, state, questions, timeout=None, deadline=None):
+        if "risk" in questions:
+            time.sleep(self.delay)
+        return super().ask(state, questions, timeout=timeout, deadline=deadline)
+
+
+def test_risk_jev_budget_caps_check_time_and_is_error():
+    titles = [f"甲:减持公告{i}" for i in range(6)]
+    conn = setup(*[(t, f"2026-09-{i + 1:02d}") for i, t in enumerate(titles)])
+    jev = SlowJev(0.5, risk={t: {"低": 1.0} for t in titles})
+    j = NoticeJudge(conn, jev, workers=1, fetch_body=lambda aid: None, jev_budget=0.6)
+    t0 = time.monotonic()
+    assert j.check("600001", TODAY) == ("error", "Jev 不可用")
+    assert time.monotonic() - t0 < 2.5                          # 串行问完 6 条要 3s；实际约 1s
+    assert 1 <= jev.risk_calls < 6                              # 过了时限的没再问
+    assert all(d is not None for d in jev.deadlines)            # 时限传给了 JevClient（管住重试）
+    n = conn.execute("SELECT COUNT(*) FROM notice_risk").fetchone()[0]
+    assert n == jev.risk_calls                                  # 问到的照常缓存，下次不用重问
+
+
+def test_title_failure_skips_risk_stage():
+    """第一段已经失败，结论必是 error：不再抓正文、不再问细判，省下时间。"""
+    kw, other = "甲:关于股东减持计划的公告", "甲:董事会决议公告"
+    conn = setup(kw, other)
+    fetched = []
+    jev = FakeJev(fail_titles=[other], risk={kw: {"低": 1.0}})
+    j = NoticeJudge(conn, jev, fetch_body=lambda aid: fetched.append(aid) or "正文")
+    assert j.check("600001", TODAY) == ("error", "Jev 不可用")
+    assert jev.risk_calls == 0 and fetched == []
+
+
+def test_missing_probabilities_fall_back_to_choice():
+    """Jev 只给了 choice 没给概率：不能按 0 分放行，按所选档位打满分。"""
+    t = "甲:关于股东减持计划的公告"
+    conn = setup(t)
+
+    class NoProbJev(FakeJev):
+        def ask(self, state, questions, timeout=None, deadline=None):
+            return {"risk": {"choice": "高"}}
+
+    verdict, detail = judge(conn, NoProbJev()).check("600001", TODAY)
+    assert verdict == "reject" and detail.startswith("减持·高风险 1.00")
+
+
+def test_malformed_answer_is_error_not_exception():
+    t = "甲:关于股东减持计划的公告"
+    conn = setup(t)
+
+    class BadJev(FakeJev):
+        def ask(self, state, questions, timeout=None, deadline=None):
+            return {"其他": {}}
+
+    j = judge(conn, BadJev())
+    assert j.check("600001", TODAY) == ("error", "Jev 不可用")
+    assert conn.execute("SELECT COUNT(*) FROM notice_risk").fetchone()[0] == 0
+
+
+def test_trace_reset_even_if_check_raises(monkeypatch):
+    """check 中途抛异常时，调用方读到的 last_trace 不能是上一只票的。"""
+    t = "甲:关于股东减持计划的公告"
+    conn = setup(t)
+    j = judge(conn, FakeJev(risk={t: {"低": 1.0}}))
+    j.check("600001", TODAY)
+    assert j.last_trace["suspects"]
+    import jevq.judge.notices as mod
+    monkeypatch.setattr(mod, "notices_for", lambda *a: (_ for _ in ()).throw(RuntimeError("db")))
+    try:
+        j.check("600002", TODAY)
+    except RuntimeError:
+        pass
+    assert j.last_trace == {"suspects": [], "others": 0, "skipped": []}
+
+
+def test_cached_title_only_verdict_has_no_excerpt():
+    """缓存里是「仅标题」判的，后来才有了正文：trace 摘录不能冒充读过正文。"""
+    t = "甲:关于股东减持计划的公告"
+    conn = setup(t)
+    judge(conn, FakeJev(risk={t: {"低": 1.0}}), {}).check("600001", TODAY)
+    conn.execute("INSERT INTO notice_bodies(id, text, fetched) VALUES ('AN0', '后来的正文', 'x')")
+    conn.commit()
+    j = judge(conn, FakeJev())
+    j.check("600001", TODAY)
+    s = j.last_trace["suspects"][0]
+    assert s["body_read"] is False and s["excerpt"] == ""

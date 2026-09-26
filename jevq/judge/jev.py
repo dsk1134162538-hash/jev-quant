@@ -2,6 +2,7 @@ import json
 import sqlite3
 import threading
 from datetime import datetime
+from time import monotonic
 
 import requests
 
@@ -21,13 +22,22 @@ class JevClient:
         self.session = session or requests.Session()
         self.conn = conn
 
-    def ask(self, state, questions: dict, timeout: float | None = None) -> dict:
+    def ask(self, state, questions: dict, timeout: float | None = None, deadline: float | None = None) -> dict:
+        """deadline：time.monotonic() 时刻，含重试在内最晚到这时就放弃（单次超时压到剩余时间，过了不再重试）。"""
         body = {"state": state, "model": JEV_MODEL, "questions": questions}
         headers = {"Authorization": f"Bearer {self.api_key}"}
         error = "unknown"
         for _ in range(2):
+            wait = timeout or JEV_TIMEOUT
+            if deadline is not None:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    if error == "unknown":
+                        error = "超过时限，未发请求"
+                    break
+                wait = min(wait, remaining)
             try:
-                r = self.session.post(JEV_URL, json=body, headers=headers, timeout=timeout or JEV_TIMEOUT)
+                r = self.session.post(JEV_URL, json=body, headers=headers, timeout=wait)
             except requests.RequestException as e:
                 error = repr(e)
                 continue

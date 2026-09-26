@@ -111,3 +111,35 @@ def test_ask_timeout_defaults_and_override():
     client.ask("s", Q)
     client.ask("s", Q, timeout=15.0)
     assert s.timeouts == [5.0, 15.0]
+
+
+def test_ask_deadline_caps_timeout_and_skips_retry():
+    import time
+
+    class TimeoutSession(FakeSession):
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.timeouts = getattr(self, "timeouts", []) + [timeout]
+            return super().post(url, json=json, headers=headers, timeout=timeout)
+
+    s = TimeoutSession(OK)
+    JevClient("k", session=s).ask("s", Q, timeout=15.0, deadline=time.monotonic() + 100)
+    assert s.timeouts == [15.0]                       # 时限宽裕：用原超时
+
+    s = TimeoutSession(OK)
+    JevClient("k", session=s).ask("s", Q, timeout=15.0, deadline=time.monotonic() + 1)
+    assert 0 < s.timeouts[0] <= 1.0                   # 时限紧：单次超时被压到剩余时间
+
+    s = TimeoutSession(OK)
+    with pytest.raises(JevError):
+        JevClient("k", session=s).ask("s", Q, deadline=time.monotonic() - 1)
+    assert s.calls == []                              # 已过时限：不发请求
+
+
+def test_ask_deadline_stops_retry_after_timeout(monkeypatch):
+    import jevq.judge.jev as jev_mod
+    ticks = [0.0]
+    monkeypatch.setattr(jev_mod, "monotonic", lambda: ticks.pop(0) if ticks else 10.0)
+    s = FakeSession(requests.Timeout("slow"), OK)
+    with pytest.raises(JevError):
+        JevClient("k", session=s).ask("s", Q, timeout=15.0, deadline=5.0)
+    assert len(s.calls) == 1                          # 第一次超时后已过时限，不再重试

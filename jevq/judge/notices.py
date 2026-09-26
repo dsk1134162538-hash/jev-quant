@@ -5,12 +5,13 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
+from time import monotonic
 
-from jevq.config import RISK_BODY_BUDGET, RISK_JEV_TIMEOUT, RISK_MAX_PER_CHECK, RISK_VERSION
+from jevq.config import RISK_BODY_BUDGET, RISK_JEV_BUDGET, RISK_JEV_TIMEOUT, RISK_MAX_PER_CHECK, RISK_VERSION
 from jevq.data.notice_body import fetch_body as default_fetch_body
 from jevq.data.notice_store import notices_for
 from jevq.judge.jev import JevError
-from jevq.judge.notice_risk import (RISK_CATEGORIES, classify_score, keyword_category, risk_question,
+from jevq.judge.notice_risk import (LEVELS, RISK_CATEGORIES, classify_score, keyword_category, risk_question,
                                     risk_score, risk_state, title_criteria)
 
 TITLE_SOURCE = "jev2"      # 新分类体系的标题分类缓存；旧的 keyword/jev 行不再使用
@@ -18,15 +19,20 @@ TITLE_SOURCE = "jev2"      # 新分类体系的标题分类缓存；旧的 keywo
 
 class NoticeJudge:
     def __init__(self, conn: sqlite3.Connection, jev, workers: int = 8, fetch_body=default_fetch_body,
-                 body_budget: float = RISK_BODY_BUDGET):
+                 body_budget: float = RISK_BODY_BUDGET, jev_budget: float = RISK_JEV_BUDGET):
         self.conn, self.jev, self.workers, self.fetch_body = conn, jev, workers, fetch_body
-        self.body_budget = body_budget
-        self.last_trace: dict = {"suspects": [], "others": 0, "skipped": []}
+        self.body_budget, self.jev_budget = body_budget, jev_budget
+        self.last_trace: dict = self._empty_trace()
         # 超过时限才回来的正文：后台线程只往这里放，下次 check 在调用线程里落库（sqlite 连接不跨线程）
         self._late_bodies: dict[str, str] = {}
         self._late_lock = threading.Lock()
 
+    @staticmethod
+    def _empty_trace() -> dict:
+        return {"suspects": [], "others": 0, "skipped": []}
+
     def check(self, code: str, today: date) -> tuple[str, str]:
+        self.last_trace = self._empty_trace()      # 中途抛异常时，调用方读到的也不会是上一只票的
         notices = notices_for(self.conn, code, today)
         failed = False
 
@@ -71,14 +77,20 @@ class NoticeJudge:
             if row:
                 level, score, probs, body_read = row
                 items.append(self._item(n, cat, source, level, score, json.loads(probs or "{}"),
-                                        bool(body_read), self._cached_body(n.id), today))
+                                        bool(body_read), self._cached_body(n.id) if body_read else None,
+                                        today))
             else:
                 pending.append((n, cat, source))
-        if pending:
+        # 第一段已失败时结论必是 error：不再抓正文、不再细判，别在交易 tick 里白等
+        if pending and not failed:
             bodies, transient = self._bodies([n.id for n, _, _ in pending])
+            # 细判 Jev 总时限：慢 Jev 下一次 check 最多再等 jev_budget 秒；到点还没问的直接算失败。
+            # 用 deadline 压住每次请求的超时（而不是丢下线程先走），工作线程不会在 check 返回后
+            # 还往共享的 sqlite 连接里写 jev_calls 日志。
+            deadline = monotonic() + self.jev_budget
             with ThreadPoolExecutor(self.workers) as pool:
-                answers = list(pool.map(lambda p: self._ask_risk(p[0], p[1], bodies.get(p[0].id), today),
-                                        pending))
+                answers = list(pool.map(
+                    lambda p: self._ask_risk(p[0], p[1], bodies.get(p[0].id), today, deadline), pending))
             for (n, cat, source), ans in zip(pending, answers):
                 if ans is None:
                     failed = True
@@ -176,17 +188,26 @@ class NoticeJudge:
             ans = self.jev.ask({"公告标题": n.title, "公告类型": n.type},
                                {"kind": {"type": "choice", "instructions": "这条A股上市公司公告属于哪一类？",
                                          "criteria": title_criteria()}})["kind"]
-        except JevError:
+            label = ans["choice"]
+        except (JevError, KeyError, TypeError):
             return None
-        return ans["choice"], ans.get("confidence"), ans.get("probabilities")
+        return label, ans.get("confidence"), ans.get("probabilities")
 
-    def _ask_risk(self, n, cat, body, today):
+    def _ask_risk(self, n, cat, body, today, deadline):
+        if monotonic() >= deadline:
+            return None
         try:
             ans = self.jev.ask(risk_state(n, cat, body, today), risk_question(cat),
-                               timeout=RISK_JEV_TIMEOUT)["risk"]
-        except JevError:
+                               timeout=RISK_JEV_TIMEOUT, deadline=deadline)["risk"]
+            choice = ans["choice"]
+        except (JevError, KeyError, TypeError):
             return None
-        return ans["choice"], ans.get("probabilities") or {}
+        probs = ans.get("probabilities") or {}
+        if not any(k in LEVELS for k in probs):     # 没给概率：按所选档位算满分，不能按 0 分放行
+            if choice not in LEVELS:
+                return None
+            probs = {choice: 1.0}
+        return choice, probs
 
     def _save_title(self, nid, label, conf, probs):
         self.conn.execute("INSERT OR REPLACE INTO notice_verdicts(id, label, confidence, source, probs) "
