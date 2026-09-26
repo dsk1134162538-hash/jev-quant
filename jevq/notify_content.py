@@ -79,18 +79,28 @@ def fmt_judge_label(label, trace: dict | None) -> str:
     return f"{label}（{probs}）" if probs else f"{label}"
 
 
-def buy_push_notices_line(notices: list) -> list[str]:
-    lines = [f"▍Jev 公告排雷（近 {NOTICE_LOOKBACK_DAYS} 天 {len(notices)} 条，全部放行）"]
-    for item in notices[:5]:
-        date_str = (item.get("date") or "")[5:10]
-        title = (item.get("title") or "")[:20]
-        if item.get("source") == "keyword":
-            lines.append(f"· {date_str} {title} → 标题关键词判定，未调用 Jev")
-        else:
-            probs = fmt_probs(item.get("probabilities"), top=2)
-            line = f"· {date_str} {title} → {item.get('label')}"
-            lines.append(f"{line} {probs}" if probs else line)
-    return lines
+def buy_push_notices_line(notices: dict | list) -> list[str]:
+    if isinstance(notices, list):          # 2026-09-26 之前的旧 trace
+        lines = [f"▍Jev 公告排雷（近 {NOTICE_LOOKBACK_DAYS} 天 {len(notices)} 条，全部放行）"]
+        for item in notices[:5]:
+            date_str = (item.get("date") or "")[5:10]
+            title = (item.get("title") or "")[:20]
+            if item.get("source") == "keyword":
+                lines.append(f"· {date_str} {title} → 标题关键词判定，未调用 Jev")
+            else:
+                probs = fmt_probs(item.get("probabilities"), top=2)
+                line = f"· {date_str} {title} → {item.get('label')}"
+                lines.append(f"{line} {probs}" if probs else line)
+        return lines
+    suspects, others = notices.get("suspects") or [], notices.get("others", 0)
+    if not suspects:
+        return [f"▍Jev 公告排雷（近 {NOTICE_LOOKBACK_DAYS} 天 {others} 条公告，无疑似雷）"]
+    lines = [f"▍Jev 公告排雷（近 {NOTICE_LOOKBACK_DAYS} 天：疑似 {len(suspects)} 条，其余 {others} 条无关）"]
+    for s in suspects[:3]:                 # trace 里已按风险分降序
+        read = "已读正文" if s.get("body_read") else "仅标题"
+        lines.append(f"· {(s.get('date') or '')[5:10]} {(s.get('title') or '')[:20]} → "
+                     f"{s.get('category')}·{s.get('level')} {float(s.get('score') or 0):.2f}（{read}）放行")
+    return lines                           # 主账户买入时 trace 必然是放行的
 
 
 def buy_push_news_lines(news: dict | None) -> list[str]:

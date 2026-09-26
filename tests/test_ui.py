@@ -73,3 +73,9 @@ def test_render_tab_bails_out_when_user_switched_tabs():
     awaits = re.findall(r"await api\.(fills|decisions|decision|board_stats|reports|logs)\(", body)
     assert set(awaits) == {"fills", "decisions", "decision", "board_stats", "reports", "logs"}
     assert body.count("if (moved()) return;") == 5          # fills/decisions(两次 await 后一次)/board/reports/logs
+
+
+def test_decision_detail_renders_new_notice_risk_and_legacy_list():
+    js = _scripts()
+    assert "Array.isArray(t.notices)" in js and "t.notices.suspects" in js
+    assert "已读正文" in js and "仅标题" in js

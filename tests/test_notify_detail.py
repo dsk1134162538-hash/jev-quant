@@ -153,3 +153,34 @@ def test_close_summary_content_moved_to_notify_content():
     ledger = Ledger(conn)
     content = close_summary_content(ledger, date(2026, 9, 24), {})
     assert "净值" in content and "今日成交" in content
+
+
+def test_push_notices_new_format_top3_by_score():
+    from jevq.notify_content import buy_push_notices_line
+    trace = {"suspects": [
+        {"date": "2026-09-04", "title": "甲:股东减持计划公告很长很长很长很长", "category": "减持", "level": "低",
+         "score": 0.18, "body_read": True, "verdict": "pass"},
+        {"date": "2026-09-02", "title": "甲:回购进展", "category": "回购", "level": "低",
+         "score": 0.12, "body_read": False, "verdict": "pass"},
+        {"date": "2026-09-01", "title": "甲:质押", "category": "质押", "level": "无",
+         "score": 0.02, "body_read": True, "verdict": "pass"},
+        {"date": "2026-08-01", "title": "甲:第四条", "category": "质押", "level": "无",
+         "score": 0.01, "body_read": True, "verdict": "pass"}],
+        "others": 12, "skipped": []}
+    lines = buy_push_notices_line(trace)
+    assert "疑似 4 条" in lines[0] and "其余 12 条无关" in lines[0]
+    assert len(lines) == 4
+    assert "减持·低 0.18" in lines[1] and "放行" in lines[1] and "已读正文" in lines[1]
+    assert "仅标题" in lines[2]
+
+
+def test_push_notices_new_format_no_suspects():
+    from jevq.notify_content import buy_push_notices_line
+    lines = buy_push_notices_line({"suspects": [], "others": 5, "skipped": []})
+    assert lines == ["▍Jev 公告排雷（近 90 天 5 条公告，无疑似雷）"]
+
+
+def test_push_notices_legacy_list_unchanged():
+    from jevq.notify_content import buy_push_notices_line
+    lines = buy_push_notices_line([{"date": "2026-09-01", "title": "甲:公告", "source": "keyword"}])
+    assert lines[0].startswith("▍Jev 公告排雷") and "标题关键词判定" in lines[1]

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -21,6 +22,30 @@ def _strategy_groups(conn: sqlite3.Connection, day: date) -> tuple[list[dict], d
         labels[s["id"]] = s["name"]
         groups.append({"id": s["id"], "name": s["name"], "accounts": (f"{s['id']}_main", f"{s['id']}_shadow")})
     return groups, labels
+
+
+def notice_risk_stats(conn, day: date) -> dict:
+    """当天所有决策留痕里的疑似公告（按公告 id 去重）统计。旧格式（list）trace 跳过。"""
+    seen: dict[str, dict] = {}
+    for (raw,) in conn.execute("SELECT trace FROM decisions WHERE substr(ts, 1, 10)=? AND trace IS NOT NULL",
+                               (day.isoformat(),)):
+        try:
+            notices = (json.loads(raw) or {}).get("notices")
+        except (ValueError, AttributeError):
+            continue
+        if not isinstance(notices, dict):
+            continue
+        for s in notices.get("suspects") or []:
+            if s.get("id"):
+                seen[s["id"]] = s
+    by_cat: dict[str, int] = {}
+    for s in seen.values():
+        by_cat[s.get("category") or "?"] = by_cat.get(s.get("category") or "?", 0) + 1
+    return {"judged": len(seen),
+            "reject": sum(1 for s in seen.values() if s.get("verdict") == "reject"),
+            "unsure": sum(1 for s in seen.values() if s.get("verdict") == "unsure"),
+            "unread": sum(1 for s in seen.values() if not s.get("body_read")),
+            "by_category": by_cat}
 
 
 def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: dict[str, float],
@@ -60,6 +85,13 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
     lines += [f"| {ts[11:16]} | {strategy_labels.get(sid or 'lowbuy', sid or 'lowbuy')} | {code} "
               f"| {names.get(code, '')} | {VERDICT_LABELS.get(verdict, verdict)} | {detail} |"
               for ts, sid, code, verdict, detail in rows]
+
+    st = notice_risk_stats(conn, day)
+    lines += ["", "## 公告风险统计", "",
+              f"细判 {st['judged']} 条｜否决：高风险 {st['reject']}、拿不准 {st['unsure']}｜未读到正文 {st['unread']}", ""]
+    if st["by_category"]:
+        lines += ["| 类别 | 条数 |", "|---|---|"]
+        lines += [f"| {k} | {v} |" for k, v in sorted(st["by_category"].items(), key=lambda kv: -kv[1])]
 
     bucket_rows = conn.execute(
         "SELECT bucket, COUNT(*) FROM board_events WHERE date=? GROUP BY bucket",

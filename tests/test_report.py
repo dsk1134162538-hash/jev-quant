@@ -105,3 +105,22 @@ def test_report_shows_verdicts_in_chinese(tmp_path):
     path = write_report(conn, ledger, t.date(), {}, "中性", "正常", tmp_path)
     text = path.read_text(encoding="utf-8")
     assert "| 否决 |" in text and "| reject |" not in text
+
+
+def test_report_notice_risk_stats(tmp_path):
+    import json
+    from jevq.report import notice_risk_stats
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    t = datetime(2026, 9, 28, 14, 50).isoformat()
+    s1 = {"id": "AN1", "category": "减持", "verdict": "reject", "body_read": True}
+    s2 = {"id": "AN2", "category": "回购", "verdict": "pass", "body_read": False}
+    s3 = {"id": "AN3", "category": "减持", "verdict": "unsure", "body_read": True}
+    rows = [(t, "600001", "reject", "减持·高风险", json.dumps({"notices": {"suspects": [s1, s2], "others": 3, "skipped": []}})),
+            (t, "600002", "reject", "减持·拿不准", json.dumps({"notices": {"suspects": [s3, s1], "others": 0, "skipped": []}})),
+            (t, "600003", "pass", "旧记录", json.dumps({"notices": [{"title": "旧"}]}))]
+    conn.executemany("INSERT INTO decisions(ts, code, verdict, detail, trace) VALUES (?, ?, ?, ?, ?)", rows)
+    st = notice_risk_stats(conn, datetime(2026, 9, 28).date())
+    assert st == {"judged": 3, "reject": 1, "unsure": 1, "unread": 1, "by_category": {"减持": 2, "回购": 1}}
+    text = write_report(conn, ledger, datetime(2026, 9, 28).date(), {}, "中性", "正常", tmp_path).read_text(encoding="utf-8")
+    assert "## 公告风险统计" in text and "| 减持 | 2 |" in text
