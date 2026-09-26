@@ -1,112 +1,203 @@
+"""公告排雷（两段式）：标题粗筛疑似 → 读正文让 Jev 按轻重打风险分 → 过线才否决。
+设计：docs/specs/2026-09-26-notice-risk-design.md"""
 import json
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime
 
-from jevq.config import LOW_CONFIDENCE
+from jevq.config import RISK_BODY_BUDGET, RISK_JEV_TIMEOUT, RISK_MAX_PER_CHECK, RISK_VERSION
+from jevq.data.notice_body import fetch_body as default_fetch_body
 from jevq.data.notice_store import notices_for
 from jevq.judge.jev import JevError
+from jevq.judge.notice_risk import (RISK_CATEGORIES, classify_score, keyword_category, risk_question,
+                                    risk_score, risk_state, title_criteria)
 
-MINE_LABELS = {"新增减持", "新增质押", "回购", "诉讼仲裁"}
-
-CRITERIA = {
-    "新增减持": "股东、董监高的减持计划、减持进展、被动减持、权益变动导致持股减少",
-    "新增质押": "股东新增股份质押、补充质押、质押展期",
-    "回购": "公司股份回购方案、回购进展、回购结果",
-    "诉讼仲裁": "公司涉及诉讼、仲裁、被起诉、判决、立案调查",
-    "亏损": "业绩预亏、净利润亏损、业绩预告下修",
-    "解除质押或减持完成": "解除质押、减持计划实施完毕、减持期限届满、终止减持",
-    "其他": "与以上各类都无关的公告",
-}
-
-MINE_KEYWORDS = {"新增减持": ["减持"], "新增质押": ["质押"], "回购": ["回购"],
-                 "诉讼仲裁": ["诉讼", "仲裁", "起诉"]}
-SAFE_KEYWORDS = ["解除", "解押", "实施完毕", "期限届满", "终止", "完成"]
-NEGATION_KEYWORDS = ["不减持", "不存在减持", "承诺不", "不质押", "暂不", "无减持", "不再减持"]
-
-
-def classify_by_keyword(title: str) -> str | None:
-    if any(k in title for k in SAFE_KEYWORDS) or any(k in title for k in NEGATION_KEYWORDS):
-        return None
-    for label, words in MINE_KEYWORDS.items():
-        if any(w in title for w in words):
-            return label
-    return None
+TITLE_SOURCE = "jev2"      # 新分类体系的标题分类缓存；旧的 keyword/jev 行不再使用
 
 
 class NoticeJudge:
-    def __init__(self, conn: sqlite3.Connection, jev, workers: int = 8):
-        self.conn, self.jev, self.workers = conn, jev, workers
-        self.last_trace: list[dict] = []
+    def __init__(self, conn: sqlite3.Connection, jev, workers: int = 8, fetch_body=default_fetch_body,
+                 body_budget: float = RISK_BODY_BUDGET):
+        self.conn, self.jev, self.workers, self.fetch_body = conn, jev, workers, fetch_body
+        self.body_budget = body_budget
+        self.last_trace: dict = {"suspects": [], "others": 0, "skipped": []}
+        # 超过时限才回来的正文：后台线程只往这里放，下次 check 在调用线程里落库（sqlite 连接不跨线程）
+        self._late_bodies: dict[str, str] = {}
+        self._late_lock = threading.Lock()
 
     def check(self, code: str, today: date) -> tuple[str, str]:
         notices = notices_for(self.conn, code, today)
-        verdicts: dict[str, tuple[str, float, str, dict | None]] = {}
-        pending = []
-        for n in notices:
-            cached = self.conn.execute(
-                "SELECT label, confidence, source, probs FROM notice_verdicts WHERE id=?", (n.id,)).fetchone()
-            if cached:
-                label, conf, source, probs = cached
-                if source == "keyword":
-                    fresh = classify_by_keyword(n.title)
-                    if fresh is None:
-                        pending.append(n)
-                        continue
-                    if fresh != label:
-                        label = fresh
-                        self._save(n.id, label, 1.0, "keyword", None)
-                verdicts[n.id] = (label, conf, source, json.loads(probs) if probs else None)
-            elif (label := classify_by_keyword(n.title)) is not None:
-                verdicts[n.id] = (label, 1.0, "keyword", None)
-                self._save(n.id, label, 1.0, "keyword", None)
-            else:
-                pending.append(n)
-
         failed = False
-        if pending:
+
+        # 第一段：挑疑似
+        suspects, others, need_title = [], 0, []
+        for n in notices:
+            cat = keyword_category(n.title)
+            if cat:
+                suspects.append((n, cat, "keyword"))
+                continue
+            row = self.conn.execute("SELECT label FROM notice_verdicts WHERE id=? AND source=?",
+                                    (n.id, TITLE_SOURCE)).fetchone()
+            if row:
+                if row[0] in RISK_CATEGORIES:
+                    suspects.append((n, row[0], "jev_title"))
+                else:
+                    others += 1
+            else:
+                need_title.append(n)
+        if need_title:
             with ThreadPoolExecutor(self.workers) as pool:
-                results = list(pool.map(self._ask, pending))
-            for n, result in zip(pending, results):
-                if result is None:
+                results = list(pool.map(self._ask_title, need_title))
+            for n, res in zip(need_title, results):
+                if res is None:
                     failed = True
                     continue
-                label, conf, probs = result
-                verdicts[n.id] = (label, conf, "jev", probs)
-                self._save(n.id, label, conf, "jev", probs)
+                label, conf, probs = res
+                self._save_title(n.id, label, conf, probs)
+                if label in RISK_CATEGORIES:
+                    suspects.append((n, label, "jev_title"))
+                else:
+                    others += 1
+        suspects.sort(key=lambda s: (s[0].date, s[0].id), reverse=True)
+        judged, skipped = suspects[:RISK_MAX_PER_CHECK], suspects[RISK_MAX_PER_CHECK:]
 
-        self.last_trace = []
-        first_bad = None
-        for n in notices:
-            if n.id not in verdicts:
-                continue
-            label, conf, source, probs = verdicts[n.id]
-            mine, unsure = label in MINE_LABELS, conf < LOW_CONFIDENCE
-            self.last_trace.append({"date": n.date, "title": n.title, "label": label, "confidence": conf,
-                                    "source": source, "probabilities": probs, "mine": mine, "unsure": unsure})
-            if first_bad is None and (mine or unsure):
-                first_bad = (n, label, conf, mine)
+        # 第二段：细判（缓存 → 正文 → Jev）
+        self._flush_late_bodies()
+        items, pending = [], []
+        for n, cat, source in judged:
+            row = self.conn.execute("SELECT level, score, probs, body_read FROM notice_risk "
+                                    "WHERE id=? AND version=?", (n.id, RISK_VERSION)).fetchone()
+            if row:
+                level, score, probs, body_read = row
+                items.append(self._item(n, cat, source, level, score, json.loads(probs or "{}"),
+                                        bool(body_read), self._cached_body(n.id), today))
+            else:
+                pending.append((n, cat, source))
+        if pending:
+            bodies, transient = self._bodies([n.id for n, _, _ in pending])
+            with ThreadPoolExecutor(self.workers) as pool:
+                answers = list(pool.map(lambda p: self._ask_risk(p[0], p[1], bodies.get(p[0].id), today),
+                                        pending))
+            for (n, cat, source), ans in zip(pending, answers):
+                if ans is None:
+                    failed = True
+                    continue
+                level, probs = ans
+                score = risk_score(probs)
+                body = bodies.get(n.id)
+                if n.id not in transient:     # 正文超时/抓取异常只按标题判这一次，不落缓存，下次带正文重判
+                    self._save_risk(n.id, cat, level, score, probs, body is not None)
+                items.append(self._item(n, cat, source, level, score, probs, body is not None, body, today))
+
+        items.sort(key=lambda it: it["score"], reverse=True)
+        self.last_trace = {"suspects": items, "others": others,
+                           "skipped": [{"date": n.date, "title": n.title, "category": cat} for n, cat, _ in skipped]}
         if failed:
             return "error", "Jev 不可用"
-        if first_bad:
-            n, label, conf, mine = first_bad
-            if mine:
-                return "reject", f"{label}：{n.date} {n.title}"
-            return "reject", f"拿不准({conf:.2f})：{n.date} {n.title}"
-        return "pass", "公告无雷"
+        if not items:
+            return "pass", "公告无雷"
+        top = items[0]
+        if top["verdict"] == "reject":
+            return "reject", f"{top['category']}·高风险 {top['score']:.2f}：{top['date']} {top['title']}"
+        if top["verdict"] == "unsure":
+            return "reject", f"{top['category']}·拿不准 {top['score']:.2f}：{top['date']} {top['title']}"
+        return "pass", f"疑似 {len(items)} 条，均判低风险"
 
-    def _ask(self, n) -> tuple[str, float, dict] | None:
+    # ---- 正文：缓存在调用线程查；缺的并发抓，总共最多等 body_budget 秒 ----
+
+    def _bodies(self, ids: list[str]) -> tuple[dict[str, str | None], set[str]]:
+        """返回 (正文, 暂时没拿到的 id)。抓回 None 视为「确实没有正文」；超时或异常视为暂时没拿到。"""
+        bodies: dict[str, str | None] = {}
+        todo = []
+        for nid in ids:
+            text = self._cached_body(nid)
+            if text:
+                bodies[nid] = text
+            else:
+                todo.append(nid)
+        if not todo:
+            return bodies, set()
+        transient = set(todo)
+        pool = ThreadPoolExecutor(self.workers)
+        futures = {pool.submit(self.fetch_body, nid): nid for nid in todo}
+        try:
+            for fut in as_completed(futures, timeout=self.body_budget):
+                nid = futures[fut]
+                try:
+                    text = fut.result() or None
+                except Exception:
+                    continue
+                transient.discard(nid)
+                bodies[nid] = text
+                if text:
+                    self._save_body(nid, text)
+        except TimeoutError:
+            pass
+        finally:
+            for fut, nid in futures.items():
+                if nid in transient:          # 已完成的回调会立即执行，不会漏掉刚好卡在时限上回来的
+                    fut.add_done_callback(lambda f, nid=nid: self._stash_late(nid, f))
+            pool.shutdown(wait=False, cancel_futures=True)
+        return bodies, transient
+
+    def _stash_late(self, nid: str, fut):
+        if fut.cancelled() or fut.exception() is not None:
+            return
+        text = fut.result()
+        if text:
+            with self._late_lock:
+                self._late_bodies[nid] = text
+
+    def _flush_late_bodies(self):
+        with self._late_lock:
+            late, self._late_bodies = self._late_bodies, {}
+        for nid, text in late.items():
+            self._save_body(nid, text)
+
+    def _cached_body(self, nid: str) -> str | None:
+        row = self.conn.execute("SELECT text FROM notice_bodies WHERE id=?", (nid,)).fetchone()
+        return row[0] if row else None
+
+    def _save_body(self, nid: str, text: str):
+        self.conn.execute("INSERT OR REPLACE INTO notice_bodies(id, text, fetched) VALUES (?, ?, ?)",
+                          (nid, text, datetime.now().isoformat(timespec="seconds")))
+        self.conn.commit()
+
+    @staticmethod
+    def _item(n, cat, source, level, score, probs, body_read, body, today) -> dict:
+        return {"id": n.id, "date": n.date, "title": n.title,
+                "days_ago": (today - date.fromisoformat(n.date)).days, "category": cat, "source": source,
+                "level": level, "score": round(score, 4), "probs": probs, "body_read": body_read,
+                "excerpt": (body or "")[:200], "verdict": classify_score(score)}
+
+    def _ask_title(self, n):
         try:
             ans = self.jev.ask({"公告标题": n.title, "公告类型": n.type},
-                               {"kind": {"type": "choice",
-                                         "instructions": "这条A股上市公司公告属于哪一类？",
-                                         "criteria": CRITERIA}})["kind"]
+                               {"kind": {"type": "choice", "instructions": "这条A股上市公司公告属于哪一类？",
+                                         "criteria": title_criteria()}})["kind"]
         except JevError:
             return None
-        return ans["choice"], ans["confidence"], ans["probabilities"]
+        return ans["choice"], ans.get("confidence"), ans.get("probabilities")
 
-    def _save(self, nid: str, label: str, conf: float, source: str, probs: dict | None):
-        self.conn.execute(
-            "INSERT OR REPLACE INTO notice_verdicts(id, label, confidence, source, probs) VALUES (?, ?, ?, ?, ?)",
-            (nid, label, conf, source, None if probs is None else json.dumps(probs, ensure_ascii=False)))
+    def _ask_risk(self, n, cat, body, today):
+        try:
+            ans = self.jev.ask(risk_state(n, cat, body, today), risk_question(cat),
+                               timeout=RISK_JEV_TIMEOUT)["risk"]
+        except JevError:
+            return None
+        return ans["choice"], ans.get("probabilities") or {}
+
+    def _save_title(self, nid, label, conf, probs):
+        self.conn.execute("INSERT OR REPLACE INTO notice_verdicts(id, label, confidence, source, probs) "
+                          "VALUES (?, ?, ?, ?, ?)",
+                          (nid, label, conf, TITLE_SOURCE,
+                           None if probs is None else json.dumps(probs, ensure_ascii=False)))
+        self.conn.commit()
+
+    def _save_risk(self, nid, cat, level, score, probs, body_read):
+        self.conn.execute("INSERT OR REPLACE INTO notice_risk(id, version, category, level, score, probs, "
+                          "body_read, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                          (nid, RISK_VERSION, cat, level, score, json.dumps(probs, ensure_ascii=False),
+                           int(body_read), datetime.now().isoformat(timespec="seconds")))
         self.conn.commit()

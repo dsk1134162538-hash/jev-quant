@@ -98,3 +98,16 @@ def test_malformed_200_logged_as_error():
         JevClient("k", session=FakeSession(Resp(200, {}), Resp(200, {})), conn=conn).ask("s", Q)
     (err,) = conn.execute("SELECT error FROM jev_calls").fetchone()
     assert "响应格式错误" in err
+
+
+def test_ask_timeout_defaults_and_override():
+    class TimeoutSession(FakeSession):
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.timeouts = getattr(self, "timeouts", []) + [timeout]
+            return super().post(url, json=json, headers=headers, timeout=timeout)
+
+    s = TimeoutSession(OK, OK)
+    client = JevClient("k", session=s)
+    client.ask("s", Q)
+    client.ask("s", Q, timeout=15.0)
+    assert s.timeouts == [5.0, 15.0]

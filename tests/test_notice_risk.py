@@ -19,6 +19,11 @@ from jevq.judge import notice_risk as nr
     ("甲:关于首发限售股上市流通的提示性公告", "限售解禁"),
     ("甲:关于控股股东所持股份被司法冻结的公告", "冻结和债务"),
     ("甲:关于变更会计师事务所的公告", "审计问题"),
+    ("甲:关于收到上海证券交易所关注函的公告", "监管处罚"),
+    ("甲:关于收到深圳证券交易所监管工作函的公告", "监管处罚"),
+    ("甲:关于法院裁定受理公司重整的公告", "退市风险"),
+    ("甲:关于公司被债权人申请破产重整的提示性公告", "退市风险"),
+    ("甲:关于子公司破产清算的公告", "退市风险"),
     ("甲:2026年半年度报告", None),
     ("甲:第五届董事会第十次会议决议公告", None),
 ])
@@ -37,6 +42,12 @@ def test_title_criteria_has_other_and_loss():
     crit = nr.title_criteria()
     assert set(nr.RISK_CATEGORIES) <= set(crit)
     assert "其他" in crit and "亏损" in crit
+
+
+def test_new_keywords_mentioned_in_level_texts():
+    assert "关注函" in nr.RISK_CATEGORIES["监管处罚"]["levels"]["中"]
+    assert "工作函" in nr.RISK_CATEGORIES["监管处罚"]["levels"]["中"]
+    assert "破产重整" in nr.RISK_CATEGORIES["退市风险"]["levels"]["高"]
 
 
 def test_risk_question_uses_category_levels():

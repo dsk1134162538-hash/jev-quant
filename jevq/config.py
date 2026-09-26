@@ -48,6 +48,7 @@ PREFETCH_CAP = 300         # 早盘预抓正文每次最多条数
 PREFETCH_BUDGET = 60.0     # 盘前预抓正文最多等待秒数（到点即返回，不拖交易流程）
 PREFETCH_BUDGET_MIDDAY = 20.0  # 13:00 重同步后预抓的等待上限（午盘已开，更短）
 RISK_JEV_TIMEOUT = 15.0    # 带正文的 Jev 调用超时（秒）
+RISK_BODY_BUDGET = 6.0     # 细判时现抓正文的总等待上限（秒）；到点没回来的按标题判，不堵交易 tick
 
 # Jev
 JEV_URL = "https://api.typesafe.ai/v1/systemone"

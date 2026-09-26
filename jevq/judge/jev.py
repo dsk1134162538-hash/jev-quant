@@ -21,13 +21,13 @@ class JevClient:
         self.session = session or requests.Session()
         self.conn = conn
 
-    def ask(self, state, questions: dict) -> dict:
+    def ask(self, state, questions: dict, timeout: float | None = None) -> dict:
         body = {"state": state, "model": JEV_MODEL, "questions": questions}
         headers = {"Authorization": f"Bearer {self.api_key}"}
         error = "unknown"
         for _ in range(2):
             try:
-                r = self.session.post(JEV_URL, json=body, headers=headers, timeout=JEV_TIMEOUT)
+                r = self.session.post(JEV_URL, json=body, headers=headers, timeout=timeout or JEV_TIMEOUT)
             except requests.RequestException as e:
                 error = repr(e)
                 continue
