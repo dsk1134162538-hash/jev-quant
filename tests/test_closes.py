@@ -297,3 +297,45 @@ def test_fetch_daily_sina_converts_shares_to_lots(monkeypatch):
     rows = akdata.fetch_daily_sina("600001", today=date(2026, 9, 23))
     assert rows == [("2026-09-21", 10.0, 1234.0), ("2026-09-22", 10.5, 56.0)]
     assert seen["symbol"] == "sh600001" and seen["adjust"] == "" and seen["end_date"] == "20260923"
+
+
+# ---- 缺口：后台某天没跑 ----
+
+CAL = [date.fromisoformat(d) for d in ["2026-09-11", *DATES]] + [TODAY]
+
+
+def test_incomplete_trade_days_finds_whole_missing_day_and_thin_day():
+    from jevq.data.closes import incomplete_trade_days
+    c = conn()
+    for i in range(20):
+        seed(c, f"6000{i:02d}")                         # DATES 上 20 只都齐，2026-09-11 整天没有
+    c.execute("DELETE FROM closes WHERE date='2026-09-17' AND code >= '600010'")   # 这天只剩一半
+    c.execute("DELETE FROM closes WHERE date='2026-09-18' AND code = '600000'")    # 一只停牌：不算缺口
+    c.commit()
+    assert incomplete_trade_days(c, CAL, TODAY) == ["2026-09-11", "2026-09-17"]
+    assert incomplete_trade_days(c, CAL, TODAY, window=3) == []          # 窗口外的缺口不管
+
+
+def test_incomplete_trade_days_empty_table_is_all_days():
+    from jevq.data.closes import incomplete_trade_days
+    assert incomplete_trade_days(conn(), CAL, TODAY) == [d.isoformat() for d in CAL if d < TODAY]
+
+
+def test_backfill_with_calendar_refetches_codes_missing_gap_day():
+    c = conn()
+    for code in ("600001", "600002"):
+        seed(c, code)
+    seed(c, "600003", dates=["2026-09-11", *DATES], prices=[9.9, *[10.0] * 7])   # 这只 9/11 有
+    calls = []
+
+    def fetch(code):
+        calls.append(code)
+        return [("2026-09-11", 9.8, 1000.0)]
+
+    assert backfill_closes(c, ["600001", "600002", "600003"], TODAY, fetch, pause=0) == 0   # 不给日历照旧
+    assert calls == []
+    n = backfill_closes(c, ["600001", "600002", "600003"], TODAY, fetch, pause=0, trade_days=CAL)
+    assert calls == ["600001", "600002"] and n == 2
+    calls.clear()
+    backfill_closes(c, ["600001", "600002", "600003"], TODAY, fetch, pause=0, trade_days=CAL)
+    assert calls == []                                    # 补齐后重复跑不再拉

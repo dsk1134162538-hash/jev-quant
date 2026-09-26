@@ -117,11 +117,35 @@ def recent_limit_up_codes(conn, codes: Iterable[str], today: date, days: int = 1
     return out
 
 
+GAP_WINDOW = 21          # 检查缺口的交易日数：与 history_features 用到的最近 21 个日期一致
+GAP_RATIO = 0.9          # 某天行数不到窗口内最多那天的 90% 算不完整（停牌的票本来就没有行，占比很小）
+
+
+def incomplete_trade_days(conn, trade_days: Iterable[date], today: date,
+                          window: int = GAP_WINDOW, ratio: float = GAP_RATIO) -> list[str]:
+    """最近 window 个交易日（date < today）里，库里整天没有、或行数明显偏少的日期（升序）。
+
+    后台某天没跑（关机/断网）时那天整天没有收盘价：history_features 按库里实际存在的日期对齐，
+    会把缺口两边当成相邻交易日，近 N 日涨幅、连涨连跌、阶梯缩量都悄悄算错，所以要按交易日历找出来补。"""
+    expected = [d.isoformat() for d in sorted(trade_days) if d < today][-window:]
+    if not expected:
+        return []
+    placeholders = ",".join("?" * len(expected))
+    counts = dict(conn.execute(
+        f"SELECT date, COUNT(*) FROM closes WHERE date IN ({placeholders}) GROUP BY date", expected).fetchall())
+    full = max(counts.values(), default=0)
+    return [d for d in expected if full == 0 or counts.get(d, 0) < full * ratio]
+
+
 def backfill_closes(conn, codes: Iterable[str], today: date,
                      fetch_kline: Callable[[str], list[tuple]], pause: float = 0.1,
                      max_consecutive_failures: int = 30, deadline: datetime | None = None,
-                     log=print, fill_volume: bool = False, volume_days: int = 10) -> int:
+                     log=print, fill_volume: bool = False, volume_days: int = 10,
+                     trade_days: Iterable[date] | None = None) -> int:
     """给收盘价不足 6 条的 code 逐只串行补数。返回实际写入了新收盘价的 code 数（fetch 成功但一行都没写进去的不算）。
+
+    给了 trade_days（交易日历）时，还会按 incomplete_trade_days 找出最近 21 个交易日里整天缺失/明显不完整的日期，
+    在这些日期上没有行的 code 也重新拉一遍（补上后台没跑的那天）。
 
     fetch_kline(code) 返回 (date_str, close) 或 (date_str, close, volume_手) 的列表；
     带量的行同时写量，不带量的只更新收盘价、保留库里已有的量。
@@ -145,7 +169,17 @@ def backfill_closes(conn, codes: Iterable[str], today: date,
             need_volume = {r[0] for r in conn.execute(
                 f"SELECT DISTINCT code FROM closes WHERE volume IS NULL AND date IN ({date_placeholders}) "
                 f"AND code IN ({placeholders})", (*recent, *codes)).fetchall()}
-    todo = [c for c in codes if counts.get(c, 0) < 6 or c in need_volume]
+    need_gap: set[str] = set()
+    if trade_days is not None:
+        gaps = incomplete_trade_days(conn, trade_days, today)
+        if gaps:
+            gap_placeholders = ",".join("?" * len(gaps))
+            have = dict(conn.execute(
+                f"SELECT code, COUNT(*) FROM closes WHERE date IN ({gap_placeholders}) "
+                f"AND code IN ({placeholders}) GROUP BY code", (*gaps, *codes)).fetchall())
+            need_gap = {c for c in codes if have.get(c, 0) < len(gaps)}
+            log(f"收盘价缺口 {len(gaps)} 天（{gaps[0]}～{gaps[-1]}），需补 {len(need_gap)} 只")
+    todo = [c for c in codes if counts.get(c, 0) < 6 or c in need_volume or c in need_gap]
 
     done = 0
     consecutive_failures = 0
