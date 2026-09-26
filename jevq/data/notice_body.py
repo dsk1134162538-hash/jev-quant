@@ -2,12 +2,12 @@
 import re
 import sqlite3
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 
 import requests
 
-from jevq.config import BODY_CHARS, NOTICE_LOOKBACK_DAYS, PREFETCH_CAP
+from jevq.config import BODY_CHARS, NOTICE_LOOKBACK_DAYS, PREFETCH_BUDGET, PREFETCH_CAP
 from jevq.judge.notice_risk import keyword_category
 
 BODY_URL = "https://np-cnotice-stock.eastmoney.com/api/content/ann"
@@ -44,9 +44,11 @@ def _save(conn, notice_id: str, text: str):
 
 def prefetch_bodies(conn: sqlite3.Connection, today: date, codes: Iterable[str],
                     fetch: Callable[[str], str | None] = fetch_body,
-                    cap: int = PREFETCH_CAP, workers: int = 8) -> int:
+                    cap: int = PREFETCH_CAP, workers: int = 8, budget: float = PREFETCH_BUDGET) -> int:
     """股票池内、近 NOTICE_LOOKBACK_DAYS 天、标题命中风险关键词、还没有正文缓存的公告，预抓正文。
-    网络请求并发；写库只在调用线程里做（sqlite 连接不跨线程）。"""
+    网络请求并发；写库只在调用线程里做（sqlite 连接不跨线程）。
+    最多等 budget 秒：接口卡死时（300 条 × 8s 超时 ÷ 8 线程 ≈ 5 分钟）不能把 13:00 的交易 tick 堵住；
+    到点后已抓到的照写，没轮到的下次再抓，还在路上的结果丢弃。"""
     codes = set(codes)
     since = (today - timedelta(days=NOTICE_LOOKBACK_DAYS)).isoformat()
     rows = conn.execute(
@@ -55,11 +57,20 @@ def prefetch_bodies(conn: sqlite3.Connection, today: date, codes: Iterable[str],
     todo = [nid for nid, code, title in rows if code in codes and keyword_category(title)][:cap]
     if not todo:
         return 0
-    with ThreadPoolExecutor(workers) as pool:
-        results = list(pool.map(fetch, todo))
+    pool = ThreadPoolExecutor(workers)
+    futures = {pool.submit(fetch, nid): nid for nid in todo}
     n = 0
-    for nid, text in zip(todo, results):
-        if text:
-            _save(conn, nid, text)
-            n += 1
+    try:
+        for fut in as_completed(futures, timeout=budget):
+            try:
+                text = fut.result()
+            except Exception:
+                continue
+            if text:
+                _save(conn, futures[fut], text)
+                n += 1
+    except TimeoutError:
+        pass
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     return n

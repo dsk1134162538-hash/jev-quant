@@ -8,7 +8,7 @@ import pytest
 
 import run
 from factories import quote
-from jevq import db
+from jevq import config, db
 from jevq.data import board_events as be
 from jevq.ledger import Ledger
 from jevq.models import Fill
@@ -161,7 +161,7 @@ def env(tmp_path, monkeypatch):
     # 公告正文预抓默认顶掉：绝不真的去敲东方财富正文接口；需要验证的测试自己再注入。
     prefetch_calls = []
     monkeypatch.setattr(run, "prefetch_bodies",
-                        lambda conn, today, codes: prefetch_calls.append((today, list(codes))) or 0)
+                        lambda conn, today, codes, **kw: prefetch_calls.append((today, list(codes))) or 0)
     monkeypatch.setattr(run, "MarketJudge", FakeMarket)
     monkeypatch.setattr(run, "Engine", FakeEngine)
     FakeMarket.fail = False
@@ -1064,17 +1064,19 @@ def test_custom_holding_outside_universe_is_sold_and_pushed(env):
 def test_prefetch_bodies_runs_after_each_notice_sync(env, monkeypatch):
     events = []
     monkeypatch.setattr(run, "sync_notices", lambda conn, today: events.append("sync") or 0)
-    monkeypatch.setattr(run, "prefetch_bodies",
-                        lambda conn, today, codes: events.append(("prefetch", today, list(codes))) or 2)
+    monkeypatch.setattr(run, "prefetch_bodies", lambda conn, today, codes, budget: events.append(
+        ("prefetch", today, list(codes), budget)) or 2)
     path = env.run()
-    pre = ("prefetch", date(2026, 9, 23), ["600001"])
-    assert events == ["sync", pre, "sync", pre]          # 盘前 + 13:00 重同步后各预抓一次
+    pre = ("prefetch", date(2026, 9, 23), ["600001"], config.PREFETCH_BUDGET)
+    mid = ("prefetch", date(2026, 9, 23), ["600001"], config.PREFETCH_BUDGET_MIDDAY)
+    assert events == ["sync", pre, "sync", mid]          # 盘前 + 13:00 重同步后各预抓一次，午间等得更短
+    assert config.PREFETCH_BUDGET_MIDDAY < config.PREFETCH_BUDGET
     assert path is not None
     assert "公告正文预抓 2 条" in env.log_text()
 
 
 def test_prefetch_bodies_failure_is_logged_and_day_continues(env, monkeypatch):
-    def fail(conn, today, codes):
+    def fail(conn, today, codes, **kw):
         raise RuntimeError("body down")
 
     monkeypatch.setattr(run, "prefetch_bodies", fail)

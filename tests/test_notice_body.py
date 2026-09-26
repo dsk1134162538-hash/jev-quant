@@ -86,3 +86,46 @@ def test_prefetch_respects_cap_and_counts_failures_as_not_fetched():
     got = []
     n = nb.prefetch_bodies(conn, TODAY, ["600001"], fetch=lambda a: got.append(a) or None, cap=3)
     assert len(got) == 3 and n == 0
+
+
+# ---- review fixes ----
+
+
+def test_prefetch_stops_waiting_at_budget_and_keeps_finished_results():
+    """正文接口卡死时，预抓不能把 13:00 的交易 tick 堵住：到预算就返回，已抓到的照写。"""
+    import threading
+    import time
+    conn = db.connect(":memory:")
+    conn.executemany("INSERT INTO notices VALUES (?, ?, ?, ?, ?)",
+                     [(f"AN{i}", "600001", "甲:减持公告", "", "2026-09-20") for i in range(6)])
+    conn.commit()
+    release = threading.Event()
+
+    def fetch(aid):
+        if aid in ("AN0", "AN1"):
+            return f"正文{aid}"
+        release.wait(5)
+        return None
+
+    t0 = time.monotonic()
+    try:
+        n = nb.prefetch_bodies(conn, TODAY, ["600001"], fetch=fetch, workers=4, budget=0.3)
+    finally:
+        release.set()
+    assert time.monotonic() - t0 < 2
+    assert n == 2
+    assert {r[0] for r in conn.execute("SELECT id FROM notice_bodies")} == {"AN0", "AN1"}
+
+
+def test_prefetch_one_raising_fetch_does_not_lose_the_others():
+    conn = db.connect(":memory:")
+    conn.executemany("INSERT INTO notices VALUES (?, ?, ?, ?, ?)",
+                     [(f"AN{i}", "600001", "甲:减持公告", "", "2026-09-20") for i in range(3)])
+    conn.commit()
+
+    def fetch(aid):
+        if aid == "AN1":
+            raise RuntimeError("boom")
+        return f"正文{aid}"
+
+    assert nb.prefetch_bodies(conn, TODAY, ["600001"], fetch=fetch) == 2

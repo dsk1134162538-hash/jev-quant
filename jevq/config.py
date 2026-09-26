@@ -45,6 +45,8 @@ RISK_VERSION = 1           # 改判断口径时 +1，旧的 notice_risk 缓存�
 RISK_MAX_PER_CHECK = 20    # 每票每次最多细判的疑似公告条数
 BODY_CHARS = 1500          # 交给 Jev 的正文长度
 PREFETCH_CAP = 300         # 早盘预抓正文每次最多条数
+PREFETCH_BUDGET = 60.0     # 盘前预抓正文最多等待秒数（到点即返回，不拖交易流程）
+PREFETCH_BUDGET_MIDDAY = 20.0  # 13:00 重同步后预抓的等待上限（午盘已开，更短）
 RISK_JEV_TIMEOUT = 15.0    # 带正文的 Jev 调用超时（秒）
 
 # Jev

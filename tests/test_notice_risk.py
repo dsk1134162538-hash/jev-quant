@@ -72,3 +72,32 @@ def test_risk_score(probs, score):
 ])
 def test_classify_score_boundaries(score, verdict):
     assert nr.classify_score(score) == verdict
+
+
+# ---- review fixes ----
+
+
+@pytest.mark.parametrize("title", [
+    "甲:关于2024年限制性股票激励计划第一个解除限售期解除限售暨上市流通的提示性公告",
+    "甲:关于发行股份购买资产之部分限售股份解除限售上市流通的提示性公告",
+    "甲:关于2022年限制性股票激励计划的第三次解除限售期解锁上市流通的提示性公告",
+    "甲:关于部分首次公开发行前已发行股份及首次公开发行战略配售股份上市流通提示性公告",
+    "甲:关于首发限售股解禁的风险提示性公告",           # 「风险提示」是通用后缀，不能抢走解禁
+])
+def test_unlock_titles_seen_in_real_data_hit_unlock(title):
+    assert nr.keyword_category(title) == "限售解禁"
+
+
+def test_other_risk_warning_and_par_value_covered_by_delisting_criteria():
+    lv = nr.RISK_CATEGORIES["退市风险"]["levels"]
+    assert "其他风险警示" in lv["高"] and "其他风险警示" in lv["低"]
+    assert "1 元" in lv["高"]                       # 面值退市说清楚，别和可转债「面值总额」混淆
+
+
+@pytest.mark.parametrize("probs,verdict", [
+    ({"中": 0.75, "低": 0.25}, "reject"),           # 数学上正好 0.5，浮点算出 0.49999999999999994
+    ({"中": 0.82, "低": 0.04, "无": 0.14}, "reject"),
+    ({"中": 0.5, "低": 0.25, "无": 0.25}, "unsure"),  # 正好 0.35
+])
+def test_score_on_exact_threshold_is_not_lost_to_float_error(probs, verdict):
+    assert nr.classify_score(nr.risk_score(probs)) == verdict
