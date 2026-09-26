@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS concepts(code TEXT, concept TEXT, updated TEXT, PRIMA
 CREATE TABLE IF NOT EXISTS board_events(
   date TEXT, code TEXT, name TEXT, first_seal TEXT, bucket TEXT, concept TEXT,
   next_open_pct REAL, next_close_pct REAL, next_board INTEGER, PRIMARY KEY(date, code));
+CREATE TABLE IF NOT EXISTS sell_followups(
+  fill_id INTEGER PRIMARY KEY, account TEXT, code TEXT, sell_date TEXT, sell_price REAL,
+  after_high REAL, day_close REAL, next_date TEXT, next_high REAL, next_close REAL);
 CREATE TABLE IF NOT EXISTS custom_strategies(
   id TEXT, version INTEGER, name TEXT, spec TEXT, created TEXT, active_from TEXT, enabled INTEGER,
   PRIMARY KEY(id, version));

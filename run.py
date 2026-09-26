@@ -10,7 +10,7 @@ from time import monotonic
 from jevq import accounts as accounts_mod
 from jevq import config, db, notify_content
 from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
-from jevq.data import akdata, board_events, closes, concepts, custom_store, tencent
+from jevq.data import akdata, board_events, closes, concepts, custom_store, sell_followups, tencent
 from jevq.data.features import history_features
 from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
@@ -26,6 +26,7 @@ from jevq.rules.board import in_scan_window
 from jevq.runlock import hold_run_lock
 from jevq.strategies.board import BoardStrategy
 from jevq.strategies.custom import CustomStrategy
+from jevq.strategies.rebound import ReboundStrategy
 
 SESSIONS = [(time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))]
 REPORT_AT = time(15, 5)
@@ -284,6 +285,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                 board.stale_before = None
         except Exception as e:
             log(f"读取昨日运行记录失败，扫首板保留「隔夜超期」规则：{e!r}")
+    rebound = None if late else _load_rebound(conn, ledger, today, universe, ret5, sell_only, notice_judge,
+                                              news_judge, engine, prev_day, log, trade_days=days)
     if calendar_fallback:
         engine.stale_before = None
         if board is not None:
@@ -292,12 +295,12 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
 
     customs = [] if late else _load_customs(
         conn, ledger, today, universe, ret5, sell_only, notice_judge, news_judge, concept_map,
-        lambda: {"sentiment": engine.sentiment_label, "overseas": overseas}, prev_day, log)
+        lambda: {"sentiment": engine.sentiment_label, "overseas": overseas}, prev_day, log, trade_days=days)
 
     if once:
         t = now()
         fills = _run_minute(engine, board, customs, t, conn, log, notifier, state["names"], acct_names,
-                            log_each=False)
+                            log_each=False, rebound=rebound)
         state.update(sentiment=engine.sentiment_label, prices={c: q.price for c, q in engine.last_quotes.items()})
         if board is not None:
             state["board_watch"] = _board_watch_state(board, state["names"])
@@ -306,6 +309,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
 
     resynced = False
     last_tick_minute = None
+    after_sell = sell_followups.AfterSellTracker()     # 卖飞统计：盘中跟踪每笔卖出之后的最高价
     while now().time() < REPORT_AT:
         t = now()
         if not resynced and t.time() >= NOTICE_RESYNC_AT:
@@ -318,7 +322,12 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             # 两次；万一出于什么原因还是撞上了，这里挡一道，不重复吃这一分钟的 tick。
             last_tick_minute = minute_key
             state["phase"] = "盘中"
-            _run_minute(engine, board, customs, t, conn, log, notifier, state["names"], acct_names)
+            _run_minute(engine, board, customs, t, conn, log, notifier, state["names"], acct_names,
+                        rebound=rebound)
+            try:        # 卖飞统计：只记录，失败不影响交易
+                after_sell.update(conn, today, _fresh_quotes(engine, t))
+            except Exception as e:
+                log(f"卖飞跟踪失败：{e!r}")
             if getattr(engine, "halted", False):
                 notifier.once("halted", "⚠️ 模拟盘提醒", "行情连续失败，今日暂停开新仓，卖出照常")
             state.update(sentiment=engine.sentiment_label,
@@ -338,7 +347,12 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     prices = {c: q.price for c, q in engine.last_quotes.items()}
     names = dict(universe)
     held = held_codes(ledger, today)
-    close_codes = sorted(set(universe) | set(held))
+    try:
+        sold = sell_followups.codes_to_quote(conn, today, prev_day)
+    except Exception as e:
+        log(f"卖飞统计取代码失败：{e!r}")
+        sold = set()
+    close_codes = sorted(set(universe) | set(held) | sold)
     quotes: dict = {}
     if close_codes:
         try:
@@ -353,6 +367,13 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             log(f"收盘价刷新失败，沿用最后快照：{e!r}")
             quotes = {}
 
+    # 卖飞统计：只记录，不参与交易，失败不挡报告。晚启动（没跑盘中）拿不到卖后最高，只记收盘。
+    try:
+        filled = sell_followups.fill_next_day(conn, prev_day, quotes, today)
+        recorded = sell_followups.record_day(conn, today, quotes, after_sell.highs)
+        log(f"卖飞统计：回填 {filled} 笔，记录 {recorded} 笔")
+    except Exception as e:
+        log(f"卖飞统计失败：{e!r}")
     # 封板时段统计（spec §4.5）：只验证经验，不参与交易，任何一步失败都不能挡住报告写入。
     try:
         filled = board_events.fill_next_day(conn, prev_day, quotes, today)
@@ -428,9 +449,9 @@ def _warn(state: dict, log: Callable[[str], None], notifier: Notifier, msg: str)
 
 def _run_minute(engine: Engine, board: BoardStrategy | None, customs: list, t: datetime, conn,
                 log: Callable[[str], None], notifier: Notifier, names: dict, acct_names: dict | None,
-                log_each: bool = True) -> list:
-    """一分钟一轮：先让所有策略卖完（低吸 → 扫首板 → 各自定义，全程不碰 Jev），推送卖出，
-    再按「扫首板 → 低吸 → 各自定义」跑买入阶段。买入阶段共用一个 Jev 时间预算（TICK_JEV_BUDGET，
+                log_each: bool = True, rebound: ReboundStrategy | None = None) -> list:
+    """一分钟一轮：先让所有策略卖完（低吸 → 扫首板 → 超跌反弹 → 各自定义，全程不碰 Jev），推送卖出，
+    再按「扫首板 → 低吸 → 超跌反弹 → 各自定义」跑买入阶段。买入阶段共用一个 Jev 时间预算（TICK_JEV_BUDGET，
     卖出之后才开始计时）：过了时限各策略不再判断新候选，没判到的下一分钟再判——慢 Jev 永远拖不住卖出。
 
     逐策略隔离：某策略卖出阶段出错 → 回滚、记日志，这一分钟它不进买入阶段（同旧 tick「出错这一轮作废」）；
@@ -455,6 +476,8 @@ def _run_minute(engine: Engine, board: BoardStrategy | None, customs: list, t: d
     quotes = _fresh_quotes(engine, t)
     if board is not None:
         sells += safe("board", "扫首板本轮出错", lambda: board.sell_step(quotes, t))
+    if rebound is not None:
+        sells += safe("rebound", "超跌反弹本轮出错", lambda: rebound.sell_step(quotes, t))
     for sid, strat in customs:
         sells += safe(sid, f"自定义策略 {sid} 本轮出错", lambda s=strat: s.sell_step(quotes, t))
     emit(sells)
@@ -465,6 +488,8 @@ def _run_minute(engine: Engine, board: BoardStrategy | None, customs: list, t: d
         buys += safe("board", "扫首板本轮出错", lambda: board.buy_step(quotes, t, deadline))
     if "engine" not in fails:
         buys += safe("engine", "本轮出错", lambda: engine.buy_step(t, deadline))
+    if rebound is not None and "rebound" not in fails:
+        buys += safe("rebound", "超跌反弹本轮出错", lambda: rebound.buy_step(quotes, t, deadline))
     for sid, strat in customs:
         if sid not in fails:
             buys += safe(sid, f"自定义策略 {sid} 本轮出错", lambda s=strat: s.buy_step(quotes, t, deadline))
@@ -482,7 +507,7 @@ def _fresh_quotes(engine: Engine, t: datetime) -> dict:
 
 def _load_customs(conn, ledger: Ledger, today: date, universe: dict, ret5: dict, sell_only: bool,
                   notice_judge, news_judge, concept_map: dict, env_provider, prev_day: date,
-                  log: Callable[[str], None]) -> list[tuple[str, CustomStrategy]]:
+                  log: Callable[[str], None], trade_days=None) -> list[tuple[str, CustomStrategy]]:
     """盘前构造今天要驱动的自定义策略：今天生效且启用的（active_for）+ 已停用但还有持仓的（holders，
     恒只卖）。任何一步失败只影响自定义策略本身——低吸、扫首板和它们的卖出照常。
     只卖日（缺 key / 日历或股票池失败）或 5 日涨幅覆盖不足（收盘价库不够，历史类字段不可信）时一律只卖。"""
@@ -506,7 +531,7 @@ def _load_customs(conn, ledger: Ledger, today: date, universe: dict, ret5: dict,
         try:
             strat = CustomStrategy(conn, ledger, s["id"], s["version"], s["spec"], notice_judge, news_judge,
                                    dict(universe), features, concept_map, env_provider, prev_day,
-                                   can_buy=can_buy and s["can_buy"])
+                                   can_buy=can_buy and s["can_buy"], trade_days=trade_days)
         except Exception as e:
             conn.rollback()
             log(f"自定义策略 {s['id']} 加载失败：{e!r}")
@@ -514,6 +539,36 @@ def _load_customs(conn, ledger: Ledger, today: date, universe: dict, ret5: dict,
         out.append((s["id"], strat))
         log(f"自定义策略 {s['id']} v{s['version']}「{s['name']}」" + ("" if strat.can_buy else "（只卖）"))
     return out
+
+
+def _load_rebound(conn, ledger: Ledger, today: date, universe: dict, ret5: dict, sell_only: bool,
+                  notice_judge, news_judge, engine: Engine, prev_day: date,
+                  log: Callable[[str], None], trade_days=None) -> ReboundStrategy | None:
+    """盘前构造超跌反弹。只卖日 / 股票池或 5 日涨幅为空 / 连板排除算不出来 → 只卖不买（排除是安全过滤，宁可不买）。
+    情绪直接读低吸引擎每分钟刷新的结果，不另问 Jev。"""
+    enabled = not sell_only and bool(universe) and bool(ret5)
+    excluded: set[str] = set()
+    if enabled:
+        try:
+            excluded, n = closes.consecutive_board_codes(conn, universe, today, config.REBOUND_BOARD_LOOKBACK,
+                                                         config.REBOUND_MIN_BOARDS)
+            need = config.REBOUND_BOARD_LOOKBACK + 1
+            log(f"超跌反弹：近 {max(n - 1, 0)} 个交易日出现过 {config.REBOUND_MIN_BOARDS} 连板的 {len(excluded)} 只排除"
+                + ("" if n >= need else f"（收盘价库只有 {n} 天，不足 {need} 天，排除可能不全）"))
+        except Exception as e:
+            log(f"超跌反弹连板排除计算失败，今日只卖不买：{e!r}")
+            excluded, enabled = set(), False
+    try:
+        strat = ReboundStrategy(conn, ledger, notice_judge, news_judge, dict(universe), ret5, excluded, prev_day,
+                                lambda: engine.sentiment_label, enabled=enabled,
+                                sentiment_trace_provider=lambda: engine.sentiment_trace, trade_days=trade_days)
+    except Exception as e:
+        conn.rollback()
+        log(f"超跌反弹加载失败：{e!r}")
+        return None
+    if not enabled:
+        log("超跌反弹：今日只卖不买")
+    return strat
 
 
 def _should_fast_scan(board: BoardStrategy | None, t: time) -> bool:

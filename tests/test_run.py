@@ -66,6 +66,7 @@ class FakeEngine:
         self.fetch_quotes, self.accounts_provider = fetch_quotes, accounts_provider
         self.ticks, self.last_quotes, self.sentiment_label = [], {}, "正常"
         self.buy_calls: list = []           # (now, deadline)
+        self.sentiment_trace = None
         FakeEngine.instances.append(self)
 
     def sell_step(self, now):
@@ -999,9 +1000,10 @@ class FakeCustom:
     boom: set = set()
 
     def __init__(self, conn, ledger, sid, version, spec, notice_judge, news_judge, universe, features,
-                 concept_map, env_provider, prev_day, can_buy=True):
+                 concept_map, env_provider, prev_day, can_buy=True, trade_days=None):
         self.conn, self.sid, self.version, self.can_buy = conn, sid, version, can_buy
         self.calls, self.buy_calls = [], []
+        self.trade_days = trade_days
         for account in (f"{sid}_main", f"{sid}_shadow"):          # 与真实 CustomStrategy 一样开户
             ledger.ensure_account(account, spec["capital"])
         FakeCustom.instances.append(self)
@@ -1036,6 +1038,7 @@ def test_custom_strategy_exception_does_not_affect_others_or_builtin(env, fake_c
     assert len(FakeEngine.instances[0].ticks) == 240                  # 低吸照常每分钟
     by_sid = {s.sid: s for s in fake_custom.instances}
     assert set(by_sid) == {"c1", "c2"}
+    assert by_sid["c2"].trade_days == DAYS                            # 交易日历传给自定义策略（持有天数用）
     assert len(by_sid["c2"].calls) == 240                             # 另一个自定义策略照常每分钟
     assert all(has_quotes for _, has_quotes in by_sid["c2"].calls)
     assert len(by_sid["c1"].calls) == 240                             # 出错的下一分钟继续跑
@@ -1340,3 +1343,60 @@ def test_missing_trade_day_that_cannot_be_filled_warns(env, monkeypatch):
     state: dict = {}
     env.run(state=state)                                     # 夹具里新浪默认永远失败
     assert "收盘价有 1 天不完整" in state.get("warning", "")
+
+
+# ---- 超跌反弹接入运行循环 ----
+
+class SpyRebound(run.ReboundStrategy):
+    instances: list = []
+    boom_once = False
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.calls = []
+        SpyRebound.instances.append(self)
+
+    def sell_step(self, quotes, now):
+        self.calls.append(bool(quotes))
+        if SpyRebound.boom_once:
+            SpyRebound.boom_once = False
+            raise RuntimeError("rebound boom")
+        return super().sell_step(quotes, now)
+
+
+@pytest.fixture
+def spy_rebound(monkeypatch):
+    SpyRebound.instances, SpyRebound.boom_once = [], False
+    monkeypatch.setattr(run, "ReboundStrategy", SpyRebound)
+    return SpyRebound
+
+
+def test_rebound_driven_every_minute_and_exception_isolated(env, spy_rebound):
+    spy_rebound.boom_once = True
+    FakeEngine.behavior = feeding_tick
+    env.feed["quotes"] = {"600001": quote("600001", pct=-1, ts=datetime(2026, 9, 23, 10, 0))}
+    path = env.run()
+    assert path is not None and Path(path).exists(), env.log_text()
+    [strat] = spy_rebound.instances
+    assert strat.enabled
+    assert len(strat.calls) == 240 and all(strat.calls)
+    assert len(FakeEngine.instances[0].ticks) == 240                  # 低吸照常
+    assert "超跌反弹本轮出错：RuntimeError('rebound boom')" in env.log_text()
+    assert "超跌反弹：近 " in env.log_text()
+
+
+def test_rebound_sell_only_when_board_exclusion_fails(env, spy_rebound, monkeypatch):
+    monkeypatch.setattr(run.closes, "consecutive_board_codes",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("db boom")))
+    env.run(once=True)
+    [strat] = spy_rebound.instances
+    assert not strat.enabled
+    assert "超跌反弹连板排除计算失败，今日只卖不买" in env.log_text()
+
+
+def test_rebound_reads_sentiment_from_lowbuy_engine(env, spy_rebound):
+    env.run(once=True)
+    [strat] = spy_rebound.instances
+    FakeEngine.instances[0].sentiment_label = "冰点"
+    assert strat.sentiment_provider() == "冰点"
+

@@ -184,3 +184,19 @@ def test_push_notices_legacy_list_unchanged():
     from jevq.notify_content import buy_push_notices_line
     lines = buy_push_notices_line([{"date": "2026-09-01", "title": "甲:公告", "source": "keyword"}])
     assert lines[0].startswith("▍Jev 公告排雷") and "标题关键词判定" in lines[1]
+
+
+def test_rebound_buy_push_content_shows_candidate_and_sentiment_without_overseas():
+    conn = db.connect(":memory:")
+    ts = datetime(2026, 9, 24, 14, 50)
+    trace = {**LOWBUY_TRACE, "strategy": "rebound",
+             "candidate": {"name": "丙股份", "price": 8.0, "pct": -2.0, "ret5": -15.3, "rank": 1, "of": 4},
+             "market": {"mode": "tail", "sentiment": "偏弱", "sentiment_trace": None}}
+    insert_decision(conn, "600003", "rebound", ts.isoformat(timespec="seconds"), trace)
+    f = Fill("rebound_main", "600003", "buy", 8.0, 300, 5.0, ts, "超跌-2.0%｜5日-15.3%｜消息面中性")
+
+    content = buy_push_content(conn, f, "丙股份")
+
+    assert "当前 -2.0%｜近 5 日 -15.30%｜候选排名 1/4（5 日跌得多的优先）" in content
+    assert "只在尾盘买" in content and "情绪 偏弱" in content
+    assert "外围" not in content

@@ -19,7 +19,7 @@ def read_csv(path):
 def test_export_day_writes_headers_when_everything_empty(tmp_path):
     c = conn()
     paths = export_day(c, TODAY, out_dir=str(tmp_path / "exports"))
-    assert len(paths) == 5
+    assert len(paths) == 6
     for p in paths:
         assert p.exists()
     rows = read_csv(tmp_path / "exports" / "fills.csv")

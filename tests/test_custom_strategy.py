@@ -622,3 +622,53 @@ def test_main_skips_unbuyable_candidates_before_jev():
     assert notice.calls == ["600003"]
     assert strat.check_count == 1
     assert {(f.account, f.code) for f in fills} == {("c1_main", "600003"), ("c1_shadow", "600003")}
+# ---- 最终审查修复 ----
+
+HOLD_SPEC = {
+    "name": "持有天数",
+    "capital": 30000,
+    "select": {"conditions": [{"field": "pct", "op": ">=", "value": 0}]},
+    "entry": {},
+    "exits": [
+        {"when": {"conditions": [{"field": "pnl_pct", "op": "<=", "value": -50}]}, "reason": "止损"},
+        {"when": {"conditions": [{"field": "hold_days", "op": ">=", "value": 2}]}, "reason": "持有超期"},
+    ],
+    "jev": {"notices": False, "news": False},
+}
+
+
+def _strat_on(conn, ledger, day: date, spec, trade_days=None, notice=None):
+    return CustomStrategy(conn, ledger, "c1", 1, spec, notice or Judge(), Judge(), UNIVERSE, {}, CONCEPT_MAP,
+                          lambda: {"sentiment": "正常", "overseas": "中性"}, day, can_buy=False,
+                          trade_days=trade_days)
+
+
+def test_hold_days_counts_trade_days_since_buy_with_calendar():
+    """盘中今天的收盘价还没入库：持有天数必须按交易日历算（买入日之后、到今天为止），
+    不能只看 closes 表里 prev_day 之后的日子（盘中恒为空 → 持有天数恒为 0，「持有 N 天卖」永不触发）。"""
+    strat, conn, ledger = make(HOLD_SPEC)
+    strat.on_minute({"600001": quote("600001", pct=1.0, amount=2e8, ts=DAY)}, at(10, 0))
+    assert ledger.holds("c1_main", "600001")
+
+    calendar = [date(2026, 9, 24), date(2026, 9, 25), date(2026, 9, 28), date(2026, 9, 29)]
+    d25 = datetime(2026, 9, 25, 10, 0)
+    s25 = _strat_on(conn, ledger, date(2026, 9, 24), HOLD_SPEC, calendar)
+    assert s25.on_minute({"600001": quote("600001", pct=0.5, ts=d25)}, d25) == []   # 持有 1 天
+
+    d28 = datetime(2026, 9, 28, 10, 0)
+    s28 = _strat_on(conn, ledger, date(2026, 9, 25), HOLD_SPEC, calendar)
+    fills = s28.on_minute({"600001": quote("600001", pct=0.5, ts=d28)}, d28)          # 持有 2 天
+    assert {f.reason for f in fills} == {"持有超期"}
+    assert len(fills) == 2
+
+
+def test_hold_days_without_calendar_falls_back_to_closes_plus_today():
+    """交易日历不可用时退回 closes 表，今天（收盘价未入库）也算一个交易日。"""
+    strat, conn, ledger = make(HOLD_SPEC)
+    strat.on_minute({"600001": quote("600001", pct=1.0, amount=2e8, ts=DAY)}, at(10, 0))
+    save_closes(conn, date(2026, 9, 25), {"600001": 10.1})
+
+    d28 = datetime(2026, 9, 28, 10, 0)
+    s28 = _strat_on(conn, ledger, date(2026, 9, 25), HOLD_SPEC, None)
+    fills = s28.on_minute({"600001": quote("600001", pct=0.5, ts=d28)}, d28)
+    assert {f.reason for f in fills} == {"持有超期"}

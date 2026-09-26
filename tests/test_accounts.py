@@ -16,17 +16,17 @@ def spec(name="尾盘弱转强"):
             "jev": {"notices": True, "news": True}}
 
 
-def test_all_accounts_is_builtin_four_with_no_custom_strategies():
+def test_all_accounts_is_builtin_six_with_no_custom_strategies():
     conn = db.connect(":memory:")
-    assert accounts.all_accounts(conn, TODAY) == ("main", "shadow", "board_main", "board_shadow")
+    assert accounts.all_accounts(conn, TODAY) == ("main", "shadow", "board_main", "board_shadow", "rebound_main", "rebound_shadow")
 
 
 def test_all_accounts_includes_active_custom_strategy_next_day():
     conn = db.connect(":memory:")
     custom_store.save(conn, spec(), TODAY, DAYS)
-    assert accounts.all_accounts(conn, TODAY) == ("main", "shadow", "board_main", "board_shadow")
+    assert accounts.all_accounts(conn, TODAY) == ("main", "shadow", "board_main", "board_shadow", "rebound_main", "rebound_shadow")
     assert accounts.all_accounts(conn, NEXT_DAY) == (
-        "main", "shadow", "board_main", "board_shadow", "c1_main", "c1_shadow")
+        "main", "shadow", "board_main", "board_shadow", "rebound_main", "rebound_shadow", "c1_main", "c1_shadow")
 
 
 def test_account_names_uses_custom_strategy_name():

@@ -51,6 +51,23 @@ def builtin_summaries() -> list[dict]:
                  f"跌到 {board_sell.STOP:g}% 止损；封死涨停继续持有",
                  f"炸板卖；冲高回落 {board_sell.PULLBACK:g} 点卖",
                  f"{hm(config.EOD_SELL)} 尾盘清仓"]}]},
+        {"id": "rebound", "name": STRATEGIES["rebound"]["name"], "accounts": list(STRATEGIES["rebound"]["accounts"]),
+         "sections": [
+             {"title": "选股", "lines": [
+                 f"主板 60/00、非 ST、上市满 {config.MIN_LISTED_TRADING_DAYS} 个交易日",
+                 f"当前涨幅在 {config.BUY_ZONE_LOW:g}% ~ {config.BUY_ZONE_HIGH:g}% 之间",
+                 f"近 5 日涨幅在 {config.REBOUND_RET5_LOW:g}% ~ {config.REBOUND_RET5_HIGH:g}% 之间",
+                 f"近 {config.REBOUND_BOARD_LOOKBACK} 个交易日出现过 {config.REBOUND_MIN_BOARDS} 连板的排除",
+                 "按近 5 日涨幅从低到高排序（跌得多的优先）"]},
+             {"title": "买点", "lines": [
+                 f"只看情绪：偏弱或冰点时只在尾盘 {hm(config.TAIL_BUY_START)}~{hm(config.BUY_END)} 买，否则盘中可买（不看外围）",
+                 f"主账户经 Jev 公告排雷 + 消息面判断，每分钟最多检查 {config.MAX_CHECKS_PER_TICK} 只"]},
+             {"title": "卖出（次日起）", "lines": [
+                 f"相对买入价亏到 {config.REBOUND_STOP:g}% 止损",
+                 f"开盘 ≤ {config.REBOUND_LOW_OPEN:g}% 时，从当天最低拉起 {config.REBOUND_LOW_OPEN_BOUNCE:g} 个点必须卖",
+                 f"当天最高盈利到 +{config.REBOUND_TRAIL_START:g}% 后，从最高回落 {config.REBOUND_TRAIL_PULLBACK:g} 个点卖；"
+                 f"最近 {config.REBOUND_FLOW_MINUTES} 分钟主买大于主卖时先留着，跌回成本价必卖",
+                 f"最多拿 {config.REBOUND_MAX_HOLD_DAYS} 个交易日，最后一天 {hm(config.EOD_SELL)} 清仓"]}]},
     ]
 
 

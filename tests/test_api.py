@@ -32,7 +32,7 @@ def test_status_marks_positions_to_fetched_prices(paths):
     conn.close()
     api = make_api(paths, fetch=lambda codes: {"600001": quote("600001", pct=1.0)})
     s = api.status()
-    main, shadow, board_main, board_shadow = s["accounts"]
+    main, shadow, board_main, board_shadow, _rebound_main, _rebound_shadow = s["accounts"]
     assert main["id"] == "main" and main["positions"][0]["price"] == 10.1
     assert main["positions"][0]["pnl_pct"] == round((10.1 / 9.9 - 1) * 100, 2)
     assert main["strategy"] == "lowbuy" and main["strategy_name"] == "低吸"
@@ -93,7 +93,8 @@ def test_fills_decisions_curve(paths):
     assert {k: v for k, v in d.items() if k not in ("id", "has_trace")} == {
         "time": "10:00", "code": "600002", "name": "", "verdict": "reject", "detail": "新增减持"}
     assert api.equity_curve() == {"main": [["2026-09-23", 30100.0]], "shadow": [],
-                                  "board_main": [], "board_shadow": []}
+                                  "board_main": [], "board_shadow": [],
+                                  "rebound_main": [], "rebound_shadow": []}
 
 
 def test_decisions_filtered_by_strategy(paths):
@@ -220,13 +221,14 @@ def test_query_methods_never_open_write_connection(paths, monkeypatch):
     assert len(api.fills("2026-09-23")) == 1
     rows = api.decisions("2026-09-23")
     assert api.decision(rows[0]["id"])["code"] == "600002"
-    assert api.equity_curve() == {"main": [], "shadow": [], "board_main": [], "board_shadow": []}
+    assert api.equity_curve() == {"main": [], "shadow": [], "board_main": [], "board_shadow": [],
+                                  "rebound_main": [], "rebound_shadow": []}
 
 
 def test_api_init_creates_fresh_db(paths):
     api = make_api(paths)
     s = api.status()
-    assert [a["equity"] for a in s["accounts"]] == [30000, 30000, 30000, 30000]
+    assert [a["equity"] for a in s["accounts"]] == [30000] * 6
 
 
 def test_status_includes_active_custom_strategy_accounts(paths):
@@ -323,8 +325,13 @@ def test_rules_list_includes_builtin_readonly_summaries(paths):
     result = make_api(paths).rules_list()
     assert result["ok"] and result["rules"] == []
     builtin = {b["id"]: b for b in result["builtin"]}
-    assert set(builtin) == {"lowbuy", "board"}
+    assert set(builtin) == {"lowbuy", "board", "rebound"}
     assert builtin["lowbuy"]["accounts"] == ["main", "shadow"]
     titles = [s["title"] for s in builtin["board"]["sections"]]
     assert titles[0] == "选股" and all(s["lines"] for s in builtin["board"]["sections"])
     assert any("-3%" in line for s in builtin["lowbuy"]["sections"] for line in s["lines"])
+    rebound_lines = [line for s in builtin["rebound"]["sections"] for line in s["lines"]]
+    assert builtin["rebound"]["accounts"] == ["rebound_main", "rebound_shadow"]
+    assert any("-20%" in line and "0%" in line for line in rebound_lines)
+    assert any("40" in line and "2 连板" in line for line in rebound_lines)
+    assert any("从低到高" in line for line in rebound_lines)

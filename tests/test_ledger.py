@@ -125,7 +125,7 @@ def test_ensure_account_is_idempotent(ledger):
     assert ledger.cash("c1_main") < 20000
 
 
-def test_ledger_init_only_seeds_builtin_four_not_custom_accounts():
+def test_ledger_init_only_seeds_builtin_not_custom_accounts():
     conn = db.connect(":memory:")
     Ledger(conn)
-    assert conn.execute("SELECT COUNT(*) FROM cash").fetchone()[0] == 4
+    assert conn.execute("SELECT COUNT(*) FROM cash").fetchone()[0] == 6

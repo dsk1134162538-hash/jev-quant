@@ -165,3 +165,19 @@ def test_capital_of_returns_version_one_capital_and_none_for_unknown():
     custom_store.save(c, spec(name="改名", capital=25000), TODAY, DAYS, sid=sid)  # 版本 2，资金不变
     assert custom_store.capital_of(c, sid) == 25000
     assert custom_store.capital_of(c, "c99") is None
+
+
+def test_save_with_unknown_sid_is_rejected():
+    """更新只能针对已存在的策略；随手传一个不存在的 id 不能凭空建出非 c{n} 账户的策略
+    （holders 只认 c 开头的账户，停用后持仓会没人卖）。"""
+    from jevq import db
+    from jevq.data import custom_store
+    conn = db.connect(":memory:")
+    spec = {"name": "x", "capital": 30000,
+            "select": {"conditions": [{"field": "pct", "op": ">=", "value": 0}]},
+            "exits": [{"when": {"conditions": [{"field": "pnl_pct", "op": "<=", "value": -3}]}}]}
+    days = [date(2026, 9, 24), date(2026, 9, 25)]
+    sid, errors = custom_store.save(conn, spec, date(2026, 9, 24), days, sid="zzz")
+    assert sid is None
+    assert errors
+    assert conn.execute("SELECT COUNT(*) FROM custom_strategies").fetchone()[0] == 0

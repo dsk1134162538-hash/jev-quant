@@ -21,7 +21,7 @@ def test_report(tmp_path):
     assert "600002" in text and "新增减持" in text
     assert "外围：中性" in text and "情绪：偏弱" in text
     # 四个账户（低吸 main/shadow + 扫首板 board_main/board_shadow）各写一行净值记录
-    assert conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0] == 4
+    assert conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0] == 6
     assert "### 低吸" in text and "### 扫首板" in text
 
 
@@ -71,8 +71,8 @@ def test_report_includes_active_custom_strategy_account_and_name(tmp_path):
     text = write_report(conn, ledger, day, {}, "中性", "正常", tmp_path).read_text(encoding="utf-8")
     assert "### 尾盘弱转强" in text
     assert "尾盘弱转强·主(Jev)" in text and "尾盘弱转强·影子" in text
-    # 内置两个策略 + 新增的自定义策略各两个账户 = 6 条净值记录
-    assert conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0] == 6
+    # 内置三个策略 + 新增的自定义策略各两个账户 = 8 条净值记录
+    assert conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0] == 8
 
 
 def test_report_check_table_has_strategy_column(tmp_path):

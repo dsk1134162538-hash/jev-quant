@@ -24,6 +24,7 @@ def export_day(conn, day: date, out_dir: str = "exports") -> list[Path]:
     - positions.csv：当前持仓（重写）
     - decisions/YYYY-MM-DD.csv：当天决策，不含 trace（体积大）
     - board_events.csv：全部封板事件（重写）
+    - sell_followups.csv：卖飞统计（重写）
     """
     out = Path(out_dir)
     written = []
@@ -61,6 +62,14 @@ def export_day(conn, day: date, out_dir: str = "exports") -> list[Path]:
     p = out / "board_events.csv"
     _write_csv(p, ["date", "code", "name", "first_seal", "bucket", "concept",
                    "next_open_pct", "next_close_pct", "next_board"], rows)
+    written.append(p)
+
+    rows = conn.execute(
+        "SELECT fill_id, account, code, sell_date, sell_price, after_high, day_close, next_date, next_high, "
+        "next_close FROM sell_followups ORDER BY fill_id").fetchall()
+    p = out / "sell_followups.csv"
+    _write_csv(p, ["fill_id", "account", "code", "sell_date", "sell_price", "after_high", "day_close",
+                   "next_date", "next_high", "next_close"], rows)
     written.append(p)
 
     return written

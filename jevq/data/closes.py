@@ -204,3 +204,38 @@ def backfill_closes(conn, codes: Iterable[str], today: date,
             done += 1
         time.sleep(pause)
     return done
+
+
+def consecutive_board_codes(conn, codes: Iterable[str], today: date, days: int = 40,
+                            min_boards: int = 2) -> tuple[set[str], int]:
+    """近 days 个交易日（不含 today）里出现过 ≥ min_boards 连板的代码集合，超跌反弹用来排除炒作过的票。
+
+    取 closes 表 date < today 的最近 days + 1 个不同日期，按全局相邻日期对判断涨停
+    （close_d >= round(close_{d-1} * 1.1, 2)，主板 10%）；缺数据的日期对是断点，不跨缺口把两段涨停焊成连板。
+    返回 (代码集合, 实际用到的日期数)；历史不足时用已有日期尽力判断，调用方据日期数写日志。
+    """
+    codes = list(codes)
+    dates = [r[0] for r in conn.execute(
+        "SELECT DISTINCT date FROM closes WHERE date < ? ORDER BY date DESC LIMIT ?",
+        (today.isoformat(), days + 1)).fetchall()]
+    if len(dates) < 2 or not codes:
+        return set(), len(dates)
+    dates.sort()
+    date_placeholders = ",".join("?" * len(dates))
+    code_placeholders = ",".join("?" * len(codes))
+    rows = conn.execute(
+        f"SELECT code, date, close FROM closes WHERE date IN ({date_placeholders}) "
+        f"AND code IN ({code_placeholders})", (*dates, *codes)).fetchall()
+    by_code: dict[str, dict[str, float]] = {}
+    for code, d, close in rows:
+        by_code.setdefault(code, {})[d] = close
+    out: set[str] = set()
+    for code, vals in by_code.items():
+        streak = 0
+        for i in range(1, len(dates)):
+            prev, cur = vals.get(dates[i - 1]), vals.get(dates[i])
+            streak = streak + 1 if (prev and cur and cur >= round(prev * 1.1, 2)) else 0
+            if streak >= min_boards:
+                out.add(code)
+                break
+    return out, len(dates)
