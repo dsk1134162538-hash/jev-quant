@@ -101,8 +101,39 @@ def test_getter_none_when_quote_is_not_after_history():
     assert _get(feat, volume=10, t=time(10, 0))("vol_step_down", 3) is None
 
 
+def _streak(feat, pct, ts=TODAY_TS):
+    q = quote("600001", pct=pct, ts=ts)
+    get = make_getter("600001", q, features=feat, amount_ranks={}, concept_heats={}, env={}, t=time(10, 0))
+    return get("up_streak"), get("down_streak")
+
+
+STREAK_FEAT = {"up_streak": 2, "down_streak": 0, "vols_until": YESTERDAY}
+
+
+def test_streaks_include_today_when_today_up():
+    # 先数到昨天为止连涨了 2 天，今天也在涨就再加 1；今天涨 → 连跌断了
+    assert _streak(STREAK_FEAT, pct=1.5) == (3, 0)
+
+
+def test_streaks_include_today_when_today_down():
+    feat = {"up_streak": 0, "down_streak": 4, "vols_until": YESTERDAY}
+    assert _streak(feat, pct=-2) == (0, 5)
+    assert _streak(STREAK_FEAT, pct=-2) == (0, 1)          # 昨天还在连涨，今天跌 → 连跌第 1 天
+
+
+def test_streaks_flat_today_breaks_both():
+    assert _streak({"up_streak": 2, "down_streak": 3, "vols_until": YESTERDAY}, pct=0) == (0, 0)
+
+
+def test_streaks_history_only_when_quote_not_after_history():
+    # 周末/盘前预览：行情日期就是历史最后一天，今天的涨跌已经算在历史里了，不能再加一次
+    feat = {"up_streak": 2, "down_streak": 0, "vols_until": "2026-09-24"}
+    assert _streak(feat, pct=1.5) == (2, 0)
+    assert _streak({"up_streak": 2, "down_streak": 0}, pct=1.5) == (2, 0)   # 没有历史日期 → 只看历史
+
+
 def test_getter_down_streak_from_features():
-    assert _get({"down_streak": 4}, volume=10, t=time(10, 0))("down_streak") == 4
+    assert _streak({"up_streak": 0, "down_streak": 4, "vols_until": YESTERDAY}, pct=-1)[1] == 5
 
 
 # ---- 字段注册 / 面板元数据 / 校验 ----
@@ -149,9 +180,9 @@ def test_validate_rejects_bad_n_for_vol_steps():
 
 def test_preview_shows_vol_step_and_down_streak_values():
     ts = datetime(2026, 9, 24, 10, 0)
-    quotes = {"600001": quote("600001", volume=12, ts=ts), "600002": quote("600002", volume=12, ts=ts)}
+    quotes = {"600001": quote("600001", pct=-1, volume=12, ts=ts), "600002": quote("600002", volume=12, ts=ts)}
     universe = {"600001": "甲", "600002": "乙"}
-    features = {"600001": {"vols": [300.0, 200.0, 150.0], "vols_until": YESTERDAY, "down_streak": 3},
+    features = {"600001": {"vols": [300.0, 200.0, 150.0], "vols_until": YESTERDAY, "down_streak": 2},
                 "600002": {}}
     spec = {"select": {"mode": "any", "conditions": [
         {"field": "pct", "op": ">=", "value": -20},

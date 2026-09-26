@@ -13,7 +13,8 @@ def history_features(conn, codes: Iterable[str], today: date) -> dict[str, dict]
 
     每只代码返回 {"ret": {n: 涨幅}, "limit_up": {n: 是否涨停过}, "boards": 连板数, "ma": {n: 均线},
     "up_streak": 连涨天数（截至昨日）, "down_streak": 连跌天数（截至昨日）,
-    "vols": 最近 VOL_DAYS 个全局日期的成交量（手，升序；缺行或 NULL 为 None）, "vols_until": 最新日期}。
+    "vols": 最近 VOL_DAYS 个全局日期的成交量（手，升序；缺行或 NULL 为 None）, "vols_until": 最新历史日期}。
+    连涨/连跌天数在这里只算到昨日，取值函数（make_getter）再按今天的现价 vs 昨收加上今天。
     ret/ma 数据不足对应 n 时该键缺失；limit_up 按已有的相邻日对判断，始终存在。
     """
     codes = list(codes)
@@ -75,7 +76,7 @@ def history_features(conn, codes: Iterable[str], today: date) -> dict[str, dict]
                 break
             boards += 1
 
-        # 连涨天数：按收盘价逐日比较（不要求涨停），截至昨日；今日是否上涨由调用方另行判断。
+        # 连涨天数：按收盘价逐日比较（不要求涨停），截至昨日；今天是否上涨由取值函数再加上。
         up_flags: list[bool] = []
         for i in range(1, len(dates)):
             prev, cur = vals.get(dates[i - 1]), vals.get(dates[i])

@@ -158,10 +158,15 @@ def make_getter(code: str, q: Quote, *, features: dict, amount_ranks: dict[str, 
             if ma is None or ma <= 0:
                 return None
             return round((q.price / ma - 1) * 100, 2)
-        if key == "up_streak":
-            return feat.get("up_streak")
-        if key == "down_streak":
-            return feat.get("down_streak")
+        if key in ("up_streak", "down_streak"):
+            # 先数到昨天为止连涨/连跌了几天，今天也在涨/跌就再加 1，否则今天把连续断了（记 0）。
+            # 行情日期不晚于历史最后一天（周末/盘前预览）时，今天已在历史里，只返回历史值。
+            hist = feat.get(key)
+            until = feat.get("vols_until")
+            if hist is None or until is None or q.ts.date().isoformat() <= until                     or q.price <= 0 or q.pre_close <= 0:
+                return hist
+            today_moves = q.price > q.pre_close if key == "up_streak" else q.price < q.pre_close
+            return hist + 1 if today_moves else 0
 
         # 题材相关
         if key == "concept_heat":
