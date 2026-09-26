@@ -597,3 +597,28 @@ def test_check_limit_resets_every_minute():
     strat.on_minute(quotes, at(10, 1))
     assert len(notice.calls) == 15
     assert set(notice.calls) == set(codes)
+
+
+def test_main_skips_unbuyable_candidates_before_jev():
+    """前排是涨停/买不起一手的票：主账户不问 Jev、不占检查名额，越过它们买后面的（与影子一致）。"""
+    spec = {
+        "name": "越过买不进",
+        "capital": 30000,
+        "select": {"conditions": [{"field": "pct", "op": ">=", "value": 0}]},
+        "rank": {"field": "pct", "order": "desc"},
+        "entry": {},
+        "exits": [{"when": {"conditions": [{"field": "pnl_pct", "op": "<=", "value": -5}]}, "reason": "止损"}],
+    }
+    notice = Judge()
+    strat, conn, ledger = make(spec, notice=notice)
+    quotes = {
+        "600001": quote("600001", pct=10.0, ts=DAY),                    # 已涨停，买不进
+        "600002": quote("600002", pct=5.0, pre_close=400.0, ts=DAY),    # 420 元一手 4.2 万，3 万买不起
+        "600003": quote("600003", pct=1.0, ts=DAY),
+    }
+
+    fills = strat.on_minute(quotes, at(10, 0))
+
+    assert notice.calls == ["600003"]
+    assert strat.check_count == 1
+    assert {(f.account, f.code) for f in fills} == {("c1_main", "600003"), ("c1_shadow", "600003")}

@@ -4,7 +4,8 @@ import sqlite3
 from datetime import date, datetime, time
 from time import monotonic
 
-from jevq.ledger import Ledger
+from jevq.config import MAX_PER_TRADE
+from jevq.ledger import Ledger, affordable_shares
 from jevq.models import Fill, Position, Quote
 from jevq.rules import board as board_rules
 from jevq.rules.custom import FIELDS, eval_cond, eval_group, first_exit, rank_codes
@@ -121,12 +122,19 @@ def make_getter(code: str, q: Quote, *, features: dict, amount_ranks: dict[str, 
         if key == "seal_ratio":
             return seal_ratio(q)
         if key in ("vol_step_down", "vol_step_up"):
-            # 历史最后一天必须早于这份行情的日期：周末/盘前预览时行情还是上一交易日的，别把同一天算两次
+            # 行情晚于历史最后一天（盘中/当天收盘后）：今天的量按已过交易分钟折算全天量。
+            # 行情就是历史最后一天（周末/盘前预览，行情还是上一交易日的）：那天已收盘入库，
+            # 把它当「今天」、用库里的全天量，历史往前挪一天，不把同一天算两次。
             until = feat.get("vols_until")
-            if until is None or q.ts.date().isoformat() <= until:
+            vols = feat.get("vols") or []
+            q_day = q.ts.date().isoformat()
+            if until is None or q_day < until:
                 return None
-            return vol_step(feat.get("vols") or [], projected_volume(q.volume, t), n,
-                            down=key == "vol_step_down")
+            if q_day == until:
+                history, today_vol = vols[:-1], (vols[-1] if vols else None)
+            else:
+                history, today_vol = vols, projected_volume(q.volume, t)
+            return vol_step(history, today_vol, n, down=key == "vol_step_down")
 
         # 估值相关
         if key == "float_mcap":
@@ -435,6 +443,12 @@ class CustomStrategy:
                 try:
                     q = quotes.get(code)
                     if q is None:
+                        continue
+
+                    # 停牌/已涨停/买不起一手的不问 Jev：问了也买不进，还会每分钟占着检查名额，
+                    # 让主账户卡在前排买不进的票上（影子账户会越过它们去买后面的，主影对照失真）
+                    if q.suspended or q.price >= q.limit_up or affordable_shares(
+                            min(self.ledger.cash(main), MAX_PER_TRADE), q.price) == 0:
                         continue
 
                     get = self._make_getter(code, q, None, now.time(), trade_days)

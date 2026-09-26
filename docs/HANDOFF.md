@@ -22,7 +22,15 @@ A 股主板 T+1 模拟盘：规则选股 + Jev（TypeSafe System One 模型）�
    `SELECT date, COUNT(*), SUM(volume IS NOT NULL) FROM closes GROUP BY date ORDER BY date DESC LIMIT 12;`
    近 10 个交易日 volume 覆盖率应接近 100%；不够就重跑（重复跑会跳过已补齐的）：
    见 `.superpowers/sdd/2026-09-24-rule-builder/review-volume-steps.md` 末尾的 backfill 命令（持 `runner.lock`，非交易时段跑）。
+   合并 `claude/volume-supplement-ladder-test-l1bmyb` 之后也可以直接 `python run.py --backfill`（已改用新浪，并补最近 10 天的成交量）。
    补齐后在面板「规则」页试跑「阶梯缩量」，把命中数告诉用户。
+   注意：旧版周末/盘前试跑阶梯缩量/放量恒为 0；该分支已修，周末/盘前用上一交易日库里的全天量判断。
+   口径：N=3 = 三天前 > 两天前 > 昨天 > 今天，今天在内连续 3 天缩量（用户已确认）。
+
+## 云会话 2026-09-26 修复（分支 `claude/volume-supplement-ladder-test-l1bmyb`，未合并 master，未上线）
+- 周末/盘前试跑阶梯缩量/放量恒为 0 → 用库里最后一天的全天量当「今天」（`VOL_DAYS` 5→6）。
+- 自定义策略主账户会卡在前排买不进的票（涨停/买不起一手）上，每分钟重复问 Jev、占检查名额，影子却越过去买 → 问 Jev 前先跳过，与低吸一致。
+- 盘前自动补数和 `run.py --backfill` 还在用被封的腾讯 K 线 → 改用新浪 `akdata.fetch_daily_sina`。
 
 ## 已知待办
 - 规则搭建器 Task 9（最终全分支审查 + 本地收盘价补到 ≥21 个交易日，用新浪 `akdata.fetch_daily_sina`）。

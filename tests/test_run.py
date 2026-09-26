@@ -157,7 +157,9 @@ def env(tmp_path, monkeypatch):
     # 默认涨停池为空：保证测试不会真的发请求，也不给封板统计留任何行。
     feed_zt = {"rows": pd.DataFrame(columns=["代码", "名称", "首次封板时间", "连板数"])}
     monkeypatch.setattr(run.akdata, "fetch_zt_pool", lambda d: feed_zt["rows"])
-    # 默认永远失败：模拟 K 线接口被 WAF 封锁，同时保证测试不会真的发请求。
+    # 默认永远失败：模拟 K 线接口不可用，同时保证测试不会真的发请求。
+    monkeypatch.setattr(run.akdata, "fetch_daily_sina",
+                        lambda code, **kw: (_ for _ in ()).throw(RuntimeError("sina down")))
     monkeypatch.setattr(run.tencent, "fetch_kline",
                         lambda code, session=None: (_ for _ in ()).throw(RuntimeError("WAF 501")))
     monkeypatch.setattr(run.tencent, "fetch_overseas", lambda: {"道琼斯": 0.5})
@@ -509,11 +511,26 @@ def test_stale_quote_is_not_saved_to_closes(env):
 def test_backfill_flag_runs_without_jev_key(env, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY")
     calls = []
-    monkeypatch.setattr(run.tencent, "fetch_kline",
-                        lambda code, session=None: calls.append(code) or [])
+    monkeypatch.setattr(run.akdata, "fetch_daily_sina",
+                        lambda code, **kw: calls.append(code) or [])
     run.run_backfill(log=env.logs.append)
     assert "股票池 1 只" in env.log_text()
     assert "补数" in env.log_text()
+
+
+def test_backfill_uses_sina_with_volume(env, monkeypatch):
+    """补数走新浪日 K（腾讯 K 线被 WAF 封了），带量的行把成交量一起写进库。"""
+    import sqlite3
+    monkeypatch.delenv("TYPESAFE_API_KEY")
+    rows = [("2026-09-%02d" % d, 10.0 + d / 10, 1000.0 + d) for d in range(10, 23)]
+    monkeypatch.setattr(run.akdata, "fetch_daily_sina", lambda code, **kw: rows)
+    monkeypatch.setattr(run.tencent, "fetch_kline",
+                        lambda code, session=None: pytest.fail("不应再调用腾讯 K 线"))
+    run.run_backfill(log=env.logs.append)
+    conn = sqlite3.connect(env.db)
+    vol = conn.execute("SELECT volume FROM closes WHERE code='600001' AND date='2026-09-22'").fetchone()
+    conn.close()
+    assert vol == (1022.0,)
 
 
 def test_backfill_flag_holds_runner_lock(env):

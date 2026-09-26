@@ -5,7 +5,7 @@ from datetime import date
 RET_NS = (3, 5, 10, 20)
 LIMIT_UP_NS = (3, 5, 10, 20)
 MA_NS = (5, 10, 20)
-VOL_DAYS = 5          # 阶梯缩量/放量的 N 最大 5，保留最近 5 个日期的成交量
+VOL_DAYS = 6          # 阶梯缩量/放量的 N 最大 5；多留 1 天，周末/盘前预览把最后一天当「今天」时历史仍够 5 天
 
 
 def history_features(conn, codes: Iterable[str], today: date) -> dict[str, dict]:

@@ -172,7 +172,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                 missing = [c for c in universe if c not in ret5]
                 deadline = (now() + timedelta(minutes=10)) if once \
                     else datetime.combine(today, time(9, 25))
-                filled = closes.backfill_closes(conn, missing, today, tencent.fetch_kline,
+                filled = closes.backfill_closes(conn, missing, today, akdata.fetch_daily_sina,
                                                 deadline=deadline, log=log)
                 log(f"5 日涨幅补数 {filled} 只")
                 ret5 = closes.ret5_from_db(conn, universe, today)
@@ -571,7 +571,9 @@ def _prefetch_bodies(conn, today: date, universe, log: Callable[[str], None], bu
 
 
 def run_backfill(log: Callable[[str], None] = print) -> None:
-    """只补收盘价历史，不交易、不需要 Jev 凭证。仍拿 runner 锁，避免和交易进程同时写库。"""
+    """只补收盘价历史，并给最近 10 个交易日量为空的行补上成交量（新浪日 K；腾讯 K 线接口被 WAF 封了）。
+    重复跑会跳过已补齐的代码；不交易、不需要 Jev 凭证。
+    仍拿 runner 锁，避免和交易进程同时写库。"""
     with hold_run_lock(Path(DB_PATH).parent / "runner.lock"):
         conn = db.connect(DB_PATH)
         try:
@@ -579,7 +581,8 @@ def run_backfill(log: Callable[[str], None] = print) -> None:
             days = akdata.trade_days()
             universe = akdata.load_universe(today, days)
             log(f"股票池 {len(universe)} 只")
-            filled = closes.backfill_closes(conn, sorted(universe), today, tencent.fetch_kline, log=log)
+            filled = closes.backfill_closes(conn, sorted(universe), today, akdata.fetch_daily_sina, log=log,
+                                            fill_volume=True)
             ret5 = closes.ret5_from_db(conn, universe, today)
             log(f"补数 {filled} 只；5 日涨幅覆盖 {len(ret5)}/{len(universe)}")
         finally:
