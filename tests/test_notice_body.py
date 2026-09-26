@@ -78,6 +78,22 @@ def test_prefetch_only_suspects_in_universe_within_lookback_and_uncached():
     assert nb.get_body(conn, "AN1", fetch=lambda a: None) == "正文AN1"
 
 
+def test_prefetch_skips_what_the_judge_never_reads():
+    conn = db.connect(":memory:")
+    conn.executemany("INSERT INTO notices VALUES (?, ?, ?, ?, ?)", [
+        ("R1", "600001", "甲:股票交易异常波动公告", "", "2026-09-25"),              # 例行异动：细判不读
+        ("R2", "600001", "甲:非经营性资金占用及其他关联资金往来情况汇总表", "", "2026-09-25"),
+        ("R3", "600001", "甲:股票交易严重异常波动公告", "", "2026-09-25"),          # 严重异动：要抓
+        ("R4", "600001", "甲:关于股价涨幅较大的风险提示公告", "", "2026-09-01"),    # 风险提示超过 10 天
+        ("R5", "600001", "甲:关于股价涨幅较大的风险提示公告", "", "2026-09-20"),
+        ("R6", "600001", "甲:关于股东减持计划的公告", "", "2026-08-01"),            # 其他类别仍看 90 天
+    ])
+    conn.commit()
+    got = []
+    nb.prefetch_bodies(conn, TODAY, ["600001"], fetch=lambda a: got.append(a) or "正文")
+    assert sorted(got) == ["R3", "R5", "R6"]
+
+
 def test_prefetch_respects_cap_and_counts_failures_as_not_fetched():
     conn = db.connect(":memory:")
     conn.executemany("INSERT INTO notices VALUES (?, ?, ?, ?, ?)",
