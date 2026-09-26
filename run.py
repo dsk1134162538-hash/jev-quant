@@ -168,14 +168,24 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             log(f"股票池 {len(universe)} 只")
             ret5 = closes.ret5_from_db(conn, universe, today)
             log(f"5 日涨幅 {len(ret5)} 只")
-            if universe and len(ret5) / len(universe) < 0.8:
-                missing = [c for c in universe if c not in ret5]
+            # 后台某天没跑 → 那天整天没有收盘价，历史类指标会把缺口两边当成相邻交易日悄悄算错，要按日历补
+            gaps = closes.incomplete_trade_days(conn, days, today)
+            low_coverage = bool(universe) and len(ret5) / len(universe) < 0.8
+            if universe and (low_coverage or gaps):
+                if gaps:
+                    log(f"收盘价缺口 {len(gaps)} 天：{'、'.join(gaps)}")
+                codes = sorted(universe) if gaps else [c for c in universe if c not in ret5]
+                # 只为补缺口（覆盖率够）时 09:05 收手，给题材刷新、公告同步留出时间；缺口没补完的明天接着补
                 deadline = (now() + timedelta(minutes=10)) if once \
-                    else datetime.combine(today, time(9, 25))
-                filled = closes.backfill_closes(conn, missing, today, akdata.fetch_daily_sina,
-                                                deadline=deadline, log=log)
-                log(f"5 日涨幅补数 {filled} 只")
+                    else datetime.combine(today, time(9, 25) if low_coverage else time(9, 5))
+                filled = closes.backfill_closes(conn, codes, today, akdata.fetch_daily_sina,
+                                                deadline=deadline, log=log, trade_days=days)
+                log(f"收盘价补数 {filled} 只")
                 ret5 = closes.ret5_from_db(conn, universe, today)
+                left = closes.incomplete_trade_days(conn, days, today) if gaps else []
+                if left:
+                    _warn(state, log, notifier, f"收盘价有 {len(left)} 天不完整，历史类条件可能不准；"
+                                                "收盘后可运行 python run.py --backfill 补齐")
             if universe and len(ret5) / len(universe) < 0.8:
                 n_ok = len(ret5)
                 ret5 = {}
@@ -571,7 +581,8 @@ def _prefetch_bodies(conn, today: date, universe, log: Callable[[str], None], bu
 
 
 def run_backfill(log: Callable[[str], None] = print) -> None:
-    """只补收盘价历史，并给最近 10 个交易日量为空的行补上成交量（新浪日 K；腾讯 K 线接口被 WAF 封了）。
+    """只补收盘价历史：不足 6 天的、最近 21 个交易日里整天缺失/不完整的日期（后台没跑的那天），
+    并给最近 10 个交易日量为空的行补上成交量（新浪日 K；腾讯 K 线接口被 WAF 封了）。
     重复跑会跳过已补齐的代码；不交易、不需要 Jev 凭证。
     仍拿 runner 锁，避免和交易进程同时写库。"""
     with hold_run_lock(Path(DB_PATH).parent / "runner.lock"):
@@ -582,7 +593,7 @@ def run_backfill(log: Callable[[str], None] = print) -> None:
             universe = akdata.load_universe(today, days)
             log(f"股票池 {len(universe)} 只")
             filled = closes.backfill_closes(conn, sorted(universe), today, akdata.fetch_daily_sina, log=log,
-                                            fill_volume=True)
+                                            fill_volume=True, trade_days=days)
             ret5 = closes.ret5_from_db(conn, universe, today)
             log(f"补数 {filled} 只；5 日涨幅覆盖 {len(ret5)}/{len(universe)}")
         finally:

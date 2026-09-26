@@ -1294,3 +1294,49 @@ def test_tick_jev_budget_exhausted_candidates_checked_next_minute(env, monkeypat
     # 09:30：0→30、30→60，第三只时已过 40 秒预算；09:31 新预算里判第三只
     assert [(c, v) for c, v, _ in rows] == [(c, "reject") for c in judge.calls]
     assert [m for _, _, m in rows] == ["09:30", "09:30", "09:31"]
+
+
+def test_missing_trade_day_in_closes_is_backfilled_before_open(env, monkeypatch):
+    """后台 9/14 没跑：库里整天没有 9/14 的收盘价。盘前按交易日历找出缺口，对全股票池补那一天。"""
+    days = [date(2026, 9, 14), date(2026, 9, 15), date(2026, 9, 16), date(2026, 9, 17), date(2026, 9, 18),
+            date(2026, 9, 21), date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24)]
+    monkeypatch.setattr(run.akdata, "trade_days", lambda: days)
+    seed_concepts(env.db)
+    calls = []
+    monkeypatch.setattr(run.akdata, "fetch_daily_sina",
+                        lambda code, **kw: calls.append(code) or [("2026-09-14", 9.9, 1200.0)])
+    env.clock.t = datetime(2026, 9, 23, 8, 50)             # 后台 08:50 启动；缺口补数 09:05 收手
+
+    def wait_until(t, stop):
+        env.clock.t = max(env.clock.t, datetime.combine(env.clock.t.date(), t))
+        return True
+
+    monkeypatch.setattr(run, "wait_until", wait_until)
+
+    class Clock(datetime):                                    # backfill_closes 用 datetime.now() 判 deadline
+        @classmethod
+        def now(cls, tz=None):
+            return env.clock.t
+
+    monkeypatch.setattr(run.closes, "datetime", Clock)
+    state: dict = {}
+    env.run(state=state)
+    assert calls == ["600001"]
+    assert "收盘价缺口 1 天：2026-09-14" in env.log_text()
+    assert "不完整" not in (state.get("warning") or "")
+    conn = db.connect(env.db)
+    try:
+        assert conn.execute("SELECT close, volume FROM closes WHERE code='600001' AND date='2026-09-14'"
+                            ).fetchone() == (9.9, 1200.0)
+    finally:
+        conn.close()
+
+
+def test_missing_trade_day_that_cannot_be_filled_warns(env, monkeypatch):
+    days = [date(2026, 9, 14), *DAYS]
+    days = sorted({*days, *(date.fromisoformat(d) for d in CLOSE_DATES)})
+    monkeypatch.setattr(run.akdata, "trade_days", lambda: days)
+    seed_concepts(env.db)
+    state: dict = {}
+    env.run(state=state)                                     # 夹具里新浪默认永远失败
+    assert "收盘价有 1 天不完整" in state.get("warning", "")
