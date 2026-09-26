@@ -4,6 +4,7 @@
 一层 try/except 只记日志，不影响交易本身）。
 """
 import csv
+import json
 from datetime import date
 from pathlib import Path
 
@@ -25,6 +26,9 @@ def export_day(conn, day: date, out_dir: str = "exports") -> list[Path]:
     - decisions/YYYY-MM-DD.csv：当天决策，不含 trace（体积大）
     - board_events.csv：全部封板事件（重写）
     - sell_followups.csv：卖飞统计（重写）
+    - cash.csv：各账户现金（重写）
+    - custom_strategies.csv：自定义策略的名字/资金/生效日/启用状态（重写）。**不含选股、买卖条件**——
+      仓库是公开的，本人 2026-09-26 定：规则条件和决策留痕不公开，家里面板只需要知道有哪些策略、本金多少
     """
     out = Path(out_dir)
     written = []
@@ -70,6 +74,19 @@ def export_day(conn, day: date, out_dir: str = "exports") -> list[Path]:
     p = out / "sell_followups.csv"
     _write_csv(p, ["fill_id", "account", "code", "sell_date", "sell_price", "after_high", "day_close",
                    "next_date", "next_high", "next_close"], rows)
+    written.append(p)
+
+    rows = conn.execute("SELECT account, amount FROM cash ORDER BY account").fetchall()
+    p = out / "cash.csv"
+    _write_csv(p, ["account", "amount"], rows)
+    written.append(p)
+
+    rows = [(sid, version, name, created, active_from, enabled, json.loads(spec or "{}").get("capital"))
+            for sid, version, name, spec, created, active_from, enabled in conn.execute(
+                "SELECT id, version, name, spec, created, active_from, enabled FROM custom_strategies "
+                "ORDER BY id, version")]
+    p = out / "custom_strategies.csv"
+    _write_csv(p, ["id", "version", "name", "created", "active_from", "enabled", "capital"], rows)
     written.append(p)
 
     return written

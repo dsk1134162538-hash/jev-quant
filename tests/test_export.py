@@ -19,7 +19,7 @@ def read_csv(path):
 def test_export_day_writes_headers_when_everything_empty(tmp_path):
     c = conn()
     paths = export_day(c, TODAY, out_dir=str(tmp_path / "exports"))
-    assert len(paths) == 6
+    assert len(paths) == 8
     for p in paths:
         assert p.exists()
     rows = read_csv(tmp_path / "exports" / "fills.csv")
@@ -92,3 +92,21 @@ def test_export_day_is_idempotent_and_rewrites_whole_file(tmp_path):
     export_day(c, TODAY, out_dir=str(out))       # 重复运行
     second = read_csv(out / "fills.csv")
     assert first == second
+
+
+def test_export_cash_and_custom_strategies_without_conditions(tmp_path):
+    """规则条件不公开：custom_strategies.csv 只有名字/资金/生效日/启用，没有 select/entry/exits。"""
+    import json
+    c = conn()
+    c.execute("INSERT INTO cash VALUES ('main', 29000.5)")
+    c.execute("INSERT INTO custom_strategies VALUES ('c1', 1, '尾盘弱转强', ?, '2026-09-22', '2026-09-23', 1)",
+              (json.dumps({"name": "尾盘弱转强", "capital": 50000,
+                           "select": {"conditions": [{"field": "pct", "op": ">=", "value": 3}]}}),))
+    c.commit()
+    out = tmp_path / "exports"
+    export_day(c, TODAY, out_dir=str(out))
+    assert read_csv(out / "cash.csv")[1] == ["main", "29000.5"]
+    rows = read_csv(out / "custom_strategies.csv")
+    assert rows == [["id", "version", "name", "created", "active_from", "enabled", "capital"],
+                    ["c1", "1", "尾盘弱转强", "2026-09-22", "2026-09-23", "1", "50000"]]
+    assert "pct" not in (out / "custom_strategies.csv").read_text(encoding="utf-8")
