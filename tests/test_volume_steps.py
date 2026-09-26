@@ -95,10 +95,23 @@ def test_getter_none_before_0945_and_without_history():
     assert _get({"vols": [200.0, 150.0], "vols_until": YESTERDAY}, 10, time(10, 0))("vol_step_down", 3) is None
 
 
-def test_getter_none_when_quote_is_not_after_history():
-    # 周末/盘前预览：行情还是最近一个交易日的，和历史最后一天是同一天，不能把同一天算两次
-    feat = {"vols": [300.0, 200.0, 150.0], "vols_until": "2026-09-24"}
+def test_getter_uses_stored_volume_when_quote_is_last_history_day():
+    # 周末/盘前预览：行情就是历史最后一天（2026-09-24），那天的量用库里的全天量当「今天」，
+    # 不再按现在的钟点折算行情里的量（周六 10:00 折算会把全天量放大 8 倍），也不把同一天算两次
+    feat = {"vols": [400.0, 300.0, 200.0, 150.0], "vols_until": "2026-09-24"}
+    get = _get(feat, volume=10, t=time(10, 0))
+    assert get("vol_step_down", 3) is True            # 400 > 300 > 200 > 150
+    assert get("vol_step_up", 3) is False
+    assert get("vol_step_down", 4) is None            # 最后一天当今天后历史只剩 3 天，不够 N=4
+    feat = {"vols": [400.0, 300.0, 200.0, 250.0], "vols_until": "2026-09-24"}
+    assert _get(feat, volume=10, t=time(10, 0))("vol_step_down", 3) is False
+    feat = {"vols": [400.0, 300.0, 200.0, None], "vols_until": "2026-09-24"}
     assert _get(feat, volume=10, t=time(10, 0))("vol_step_down", 3) is None
+
+
+def test_getter_none_when_quote_is_older_than_history():
+    feat = {"vols": [300.0, 200.0, 150.0], "vols_until": "2026-09-25"}
+    assert _get(feat, volume=10, t=time(10, 0))("vol_step_down", 2) is None
 
 
 def _streak(feat, pct, ts=TODAY_TS):

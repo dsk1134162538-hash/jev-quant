@@ -214,19 +214,19 @@ def seed_vol(c, code, dates, vols):
     c.commit()
 
 
-def test_vols_are_last_five_global_dates_oldest_first():
+def test_vols_are_last_six_global_dates_oldest_first():
     c = conn()
     dates = dates_before(TODAY, 8)
     seed_vol(c, "600014", dates, [1, 2, 3, 4, 5, 6, 7, 8])
     feats = history_features(c, ["600014"], TODAY)["600014"]
-    assert feats["vols"] == [4.0, 5.0, 6.0, 7.0, 8.0]
+    assert feats["vols"] == [3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
     assert feats["vols_until"] == dates[-1]
 
 
 def test_vols_keep_null_and_gap_as_none():
     c = conn()
-    dates = dates_before(TODAY, 5)
-    seed_vol(c, "FILLER", dates, [1] * 5)
-    seed_vol(c, "600015", dates[:2] + dates[3:], [1, 2, None, 5])   # 缺中间一天，最后一天量为 NULL
+    dates = dates_before(TODAY, 6)
+    seed_vol(c, "FILLER", dates, [1] * 6)
+    seed_vol(c, "600015", dates[:3] + dates[4:], [0.5, 1, 2, None, 5])   # 缺中间一天，倒数第二天量为 NULL
     feats = history_features(c, ["600015"], TODAY)["600015"]
-    assert feats["vols"] == [1.0, 2.0, None, None, 5.0]     # 缺行（第 3 天）和 NULL（第 4 天）都是 None
+    assert feats["vols"] == [0.5, 1.0, 2.0, None, None, 5.0]     # 缺行（第 3 天）和 NULL（第 4 天）都是 None
