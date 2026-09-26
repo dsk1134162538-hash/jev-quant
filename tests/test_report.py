@@ -89,3 +89,19 @@ def test_report_check_table_has_strategy_column(tmp_path):
     assert "| 09:50 | 低吸 | 600002 |" in text
     assert "| 09:50 | 扫首板 | 600003 |" in text
     assert "| 09:50 | 低吸 | 600004 |" in text                 # 老记录没有 strategy，算低吸
+
+
+def test_report_shows_verdicts_in_chinese(tmp_path):
+    """检查记录的结果列显示「否决/通过」，不露出 reject/pass。"""
+    from datetime import datetime
+    from jevq import db
+    from jevq.ledger import Ledger
+    from jevq.report import write_report
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    t = datetime(2026, 9, 24, 14, 50)
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail) VALUES (?, ?, ?, ?)",
+                 (t.isoformat(), "600002", "reject", "新增减持"))
+    path = write_report(conn, ledger, t.date(), {}, "中性", "正常", tmp_path)
+    text = path.read_text(encoding="utf-8")
+    assert "| 否决 |" in text and "| reject |" not in text

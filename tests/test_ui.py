@@ -47,7 +47,23 @@ def test_curve_draws_single_point_series_as_dot():
     """新账户第一天只有一个净值点，polyline 画不出来；要画成一个点，否则图例有、图上没有。"""
     js = _scripts()
     body = js[js.index("function renderCurve"):js.index("function mdToHtml")]
-    assert "pts.length === 1" in body and "curve-dot" in body and 'stroke-linecap="round"' in body
+    # 每个点都画圆点（单点序列画得更大），polyline 只在 ≥2 个点时画
+    assert "s.pts.length > 1 ? `<polyline" in body and "const dots = s.pts.map" in body
+    assert 'stroke-linecap="round"' in body
+
+
+def test_curve_has_hover_tooltip_with_account_names():
+    """鼠标悬停显示当天各账户名称、收益率、净值。"""
+    js = _scripts()
+    body = js[js.index("function renderCurve"):js.index("function mdToHtml")]
+    assert "plot.onmousemove" in body and "accountName(s.id)" in body and "plot.onmouseleave" in body
+
+
+def test_report_markdown_hides_heading_and_inline_symbols():
+    """复盘报告里的 ### 标题、**粗体**、`代码` 不能把符号原样显示出来。"""
+    js = _scripts()
+    body = js[js.index("const inlineMd"):js.index("const VERDICT")]
+    assert "#{1,6}" in body and "<code>" in body and "<b>" in body
 
 
 def test_render_tab_bails_out_when_user_switched_tabs():

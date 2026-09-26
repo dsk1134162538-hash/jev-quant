@@ -42,7 +42,31 @@
   .tabs button { border:none; border-radius:0; border-bottom:2px solid transparent; background:none; padding:8px 14px; }
   .tabs button.active { border-bottom-color:var(--accent); color:var(--accent); }
   .empty { color:var(--muted); padding:16px 8px; }
-  #curve svg { width:100%; height:180px; display:block; }
+  #curve svg { width:100%; height:100%; display:block; overflow:visible; }
+  .chart { position:relative; height:220px; padding:6px 0 22px 52px; }
+  .chart .plot { position:relative; height:100%; cursor:crosshair; }
+  .chart .ylab { position:absolute; left:0; width:44px; text-align:right; transform:translateY(-50%);
+                 font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .chart .xlab { position:absolute; bottom:-20px; transform:translateX(-50%); font-size:11px; color:var(--muted); white-space:nowrap; }
+  .chart .grid { stroke:var(--line); stroke-width:1; }
+  .chart .zero { stroke:var(--muted); stroke-dasharray:4 4; opacity:.6; }
+  .chart .series { transition:opacity .15s; }
+  .chart.focus .series { opacity:.15; }
+  .chart.focus .series.on { opacity:1; }
+  .chart .cross { stroke:var(--muted); stroke-width:1; stroke-dasharray:3 3; }
+  .chart .tip { position:absolute; top:4px; z-index:5; pointer-events:none; min-width:240px;
+                background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+                box-shadow:0 6px 18px rgba(0,0,0,.12); font-size:12px; line-height:1.7; }
+  .chart .tip .d { color:var(--muted); margin-bottom:2px; }
+  .chart .tip .row { display:flex; align-items:center; gap:8px; }
+  .chart .tip .row .n { flex:1; white-space:nowrap; }
+  .chart + .tag { margin-top:6px; }
+  .chart .tip .row .v { font-variant-numeric:tabular-nums; font-weight:600; }
+  .chart .tip .row .e { font-variant-numeric:tabular-nums; color:var(--muted); min-width:64px; text-align:right; }
+  .legend span[data-id] { cursor:default; }
+  .md code { font:12px Consolas, monospace; background:var(--tile); padding:1px 4px; border-radius:4px; }
+  .md h3 { font-size:14px; margin:14px 0 6px; }
+  .md h4 { font-size:13px; margin:12px 0 4px; color:var(--muted); }
   .legend span { margin-right:14px; color:var(--muted); white-space:nowrap; }
   .sw { display:inline-block; width:12px; height:3px; vertical-align:middle; margin-right:5px; background:var(--c); }
   .sw.dash { background:repeating-linear-gradient(90deg, var(--c) 0 4px, transparent 4px 7px); }
@@ -245,47 +269,119 @@ function renderAccounts(accounts) {
 }
 
 // 净值曲线：各账户本金可能不同（自定义策略资金可设），统一画「相对本金的收益率 %」
+let curveKey = "";
+function niceStep(span) {
+  const raw = span / 4, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const f = raw / mag;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag;
+}
 function renderCurve(curve) {
   const ids = sortAccounts(Object.keys(curve || {})).filter((id) => (curve[id] || []).length);
   const base = (id) => (accountMeta[id] && accountMeta[id].baseline) || 30000;
-  const series = ids.map((id) => ({id, pts: curve[id].map(([d, v]) => [d, (v / base(id) - 1) * 100])}));
-  $("curveLegend").innerHTML = series.map((s) => `<span>${swatch(s.id)}${esc(accountName(s.id))}</span>`).join("");
+  const series = ids.map((id) => ({id, pts: curve[id].map(([d, v]) => ({d, v, r: (v / base(id) - 1) * 100}))}));
+  // 5 秒刷新：数据没变就不重画，免得鼠标悬停时提示框闪没
+  const key = JSON.stringify(series);
+  if (key === curveKey && $("curveBody").firstChild) return;
+  curveKey = key;
+  $("curveLegend").innerHTML = series.map((s) =>
+    `<span data-id="${esc(s.id)}">${swatch(s.id)}${esc(accountName(s.id))}</span>`).join("");
   const all = series.flatMap((s) => s.pts);
   if (all.length < 2) { $("curveBody").innerHTML = '<div class="empty">收盘后生成第一条记录，满两天开始画线</div>'; return; }
-  const dates = [...new Set(all.map((p) => p[0]))].sort();
-  const vals = all.map((p) => p[1]).concat([0]);
+  const dates = [...new Set(all.map((p) => p.d))].sort();
+  const vals = all.map((p) => p.r).concat([0]);
   let lo = Math.min(...vals), hi = Math.max(...vals);
   if (hi - lo < 1) { const mid = (hi + lo) / 2; lo = mid - 0.5; hi = mid + 0.5; }
-  const W = 1000, H = 180, pad = 10;
-  const x = (d) => dates.length === 1 ? W / 2 : pad + (dates.indexOf(d) / (dates.length - 1)) * (W - 2 * pad);
-  const y = (v) => H - pad - ((v - lo) / (hi - lo)) * (H - 2 * pad);
-  // 只有一个点的序列（新账户第一天）画不出线：用极短的圆头线段画成一个点。
-  // 不用 <circle>：preserveAspectRatio="none" 会把圆拉成椭圆，而 non-scaling-stroke 的圆头始终是正圆。
-  const lines = series.map((s) => s.pts.length === 1
-    ? `<path class="curve-dot" d="M${x(s.pts[0][0])} ${y(s.pts[0][1])}h0.01" stroke="${accountColor(s.id)}" stroke-width="8"
-        stroke-linecap="round" vector-effect="non-scaling-stroke"/>`
-    : `<polyline fill="none" stroke="${accountColor(s.id)}" stroke-width="2"
-      vector-effect="non-scaling-stroke"${isDashed(s.id) ? ' stroke-dasharray="6 4"' : ""}
-      points="${s.pts.map((p) => `${x(p[0])},${y(p[1])}`).join(" ")}"/>`).join("");
-  $("curveBody").innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-    <line x1="0" x2="${W}" y1="${y(0)}" y2="${y(0)}" stroke="var(--line)" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>${lines}</svg>
-    <div class="tag">${esc(dates[0])} → ${esc(dates[dates.length - 1])}　纵轴为相对各自本金的收益率（${fmt(lo)}% ~ ${fmt(hi)}%），虚线为 0%</div>`;
+  const step = niceStep(hi - lo);
+  lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
+  const W = 1000, H = 200, padX = 14;
+  const xi = (i) => dates.length === 1 ? W / 2 : padX + (i / (dates.length - 1)) * (W - 2 * padX);
+  const x = (d) => xi(dates.indexOf(d));
+  const y = (v) => ((hi - v) / (hi - lo)) * H;
+  const ticks = [];
+  for (let t = lo; t <= hi + step / 2; t += step) ticks.push(+t.toFixed(6));
+  // 圆点用极短的圆头线段：preserveAspectRatio="none" 会把 <circle> 拉成椭圆，non-scaling-stroke 的圆头始终是正圆
+  const dot = (cx, cy, color, w) => `<path d="M${cx} ${cy}h0.01" stroke="${color}" stroke-width="${w}"
+      stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
+  const lines = series.map((s) => {
+    const c = accountColor(s.id);
+    const path = s.pts.length > 1 ? `<polyline fill="none" stroke="${c}" stroke-width="2.5" stroke-linejoin="round"
+        stroke-linecap="round" vector-effect="non-scaling-stroke"${isDashed(s.id) ? ' stroke-dasharray="7 5"' : ""}
+        points="${s.pts.map((p) => `${x(p.d)},${y(p.r)}`).join(" ")}"/>` : "";
+    // 每个数据点一个小圆点；只有一个点的新账户（第一天）画大一点，也能看见
+    const dots = s.pts.map((p) => dot(x(p.d), y(p.r), c, s.pts.length > 1 ? 6 : 9)).join("");
+    return `<g class="series" data-id="${esc(s.id)}">${path}${dots}</g>`;
+  }).join("");
+  const grid = ticks.map((t) => `<line class="${t === 0 ? "zero" : "grid"}" x1="0" x2="${W}" y1="${y(t)}" y2="${y(t)}"
+      vector-effect="non-scaling-stroke"/>`).join("");
+  const ylabs = ticks.map((t) => `<div class="ylab" style="top:calc(6px + (100% - 28px) * ${y(t) / H})">${t > 0 ? "+" : ""}${fmt(t, step < 1 ? 1 : 0)}%</div>`).join("");
+  const every = Math.max(1, Math.ceil(dates.length / 7));
+  const xlabs = dates.map((d, i) => (i % every === 0 || i === dates.length - 1)
+    ? `<div class="xlab" style="left:${(xi(i) / W) * 100}%">${esc(d.slice(5))}</div>` : "").join("");
+  $("curveBody").innerHTML = `<div class="chart" id="curveChart">${ylabs}
+    <div class="plot" id="curvePlot">
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${grid}${lines}
+        <line class="cross" id="curveCross" x1="0" x2="0" y1="0" y2="${H}" vector-effect="non-scaling-stroke" visibility="hidden"/>
+        <g id="curveHover"></g></svg>
+      ${xlabs}
+      <div class="tip" id="curveTip" hidden></div>
+    </div></div>
+    <div class="tag">纵轴为相对各自本金的收益率，鼠标移到图上看各账户明细；移到图例上单独看一条线</div>`;
+
+  const chart = $("curveChart"), plot = $("curvePlot"), tip = $("curveTip"), cross = $("curveCross"), hover = $("curveHover");
+  const focus = (id) => {
+    chart.classList.toggle("focus", !!id);
+    chart.querySelectorAll(".series").forEach((g) => g.classList.toggle("on", g.dataset.id === id));
+  };
+  $("curveLegend").querySelectorAll("span[data-id]").forEach((el) => {
+    el.onmouseenter = () => focus(el.dataset.id);
+    el.onmouseleave = () => focus(null);
+  });
+  plot.onmousemove = (ev) => {
+    const rect = plot.getBoundingClientRect();
+    const fx = ((ev.clientX - rect.left) / rect.width) * W;
+    let idx = 0, best = Infinity;
+    dates.forEach((d, i) => { const dist = Math.abs(xi(i) - fx); if (dist < best) { best = dist; idx = i; } });
+    const d = dates[idx], cx = xi(idx);
+    const rows = series.map((s) => ({s, p: s.pts.find((p) => p.d === d)})).filter((o) => o.p)
+      .sort((a, b) => b.p.r - a.p.r);
+    cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
+    hover.innerHTML = rows.map(({s, p}) => dot(cx, y(p.r), accountColor(s.id), 12)).join("");
+    // 鼠标离哪条线最近就高亮哪条，其余变淡
+    const fy = ((ev.clientY - rect.top) / rect.height) * H;
+    let near = null, nd = 18;
+    rows.forEach(({s, p}) => { const dd = Math.abs(y(p.r) - fy); if (dd < nd) { nd = dd; near = s.id; } });
+    focus(near);
+    tip.innerHTML = `<div class="d">${esc(d)}</div>` + rows.map(({s, p}) =>
+      `<div class="row">${swatch(s.id)}<span class="n">${esc(accountName(s.id))}</span>
+        <span class="v ${signCls(p.r)}">${p.r > 0 ? "+" : ""}${fmt(p.r)}%</span>
+        <span class="e">${fmt(p.v)}</span></div>`).join("");
+    tip.hidden = false;
+    const left = (cx / W) * rect.width;
+    tip.style.left = left > rect.width * 0.55 ? `${left - tip.offsetWidth - 12}px` : `${left + 12}px`;
+  };
+  plot.onmouseleave = () => {
+    tip.hidden = true; cross.setAttribute("visibility", "hidden"); hover.innerHTML = ""; focus(null);
+  };
 }
 
+// 行内：先转义，再把 **粗体**、`代码` 换成标签，符号本身不显示
+const inlineMd = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
 function mdToHtml(md) {
   const out = []; let rows = [];
   const flush = () => { if (rows.length) { out.push(table(rows[0], rows.slice(1))); rows = []; } };
   for (const line of md.split("\n")) {
     if (line.startsWith("|")) {
-      const cells = line.split("|").slice(1, -1).map((c) => esc(c.trim()));
+      const cells = line.split("|").slice(1, -1).map((c) => inlineMd(VERDICT[c.trim()] || c.trim()));   // 旧报告里的 reject/pass 也显示成中文
       if (!cells.every((c) => /^-+$/.test(c))) rows.push(cells);
       continue;
     }
     flush();
-    if (line.startsWith("## ")) out.push(`<h2>${esc(line.slice(3))}</h2>`);
-    else if (line.startsWith("# ")) out.push(`<h1>${esc(line.slice(2))}</h1>`);
-    else if (line.startsWith("> ")) out.push(`<blockquote>${esc(line.slice(2))}</blockquote>`);
-    else if (line.trim()) out.push(`<p>${esc(line)}</p>`);
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);   // 标题 # ~ ######：井号不显示出来
+    const lv = h ? Math.min(h[1].length, 4) : 0;
+    if (h) out.push(`<h${lv}>${inlineMd(h[2])}</h${lv}>`);
+    else if (line.startsWith("> ")) out.push(`<blockquote>${inlineMd(line.slice(2))}</blockquote>`);
+    else if (/^\s*[-*]\s+/.test(line)) out.push(`<p>• ${inlineMd(line.replace(/^\s*[-*]\s+/, ""))}</p>`);
+    else if (line.trim()) out.push(`<p>${inlineMd(line)}</p>`);
   }
   flush();
   return out.join("");
