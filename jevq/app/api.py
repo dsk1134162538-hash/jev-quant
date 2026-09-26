@@ -416,6 +416,26 @@ class Api:
         except Exception as e:
             return {"ok": False, "error": str(e), "errors": [str(e)], "warnings": []}
 
+    def _preview_env(self) -> dict:
+        """试跑用的市场情绪/外围：面板自己在跑交易时用面板状态；否则（通常是后台 daemon 在跑）
+        从决策表里最近一条情绪记录读——面板状态是空的，不读的话含这两个条件的规则试跑恒为 0。"""
+        env = {"sentiment": self._state.get("sentiment"), "overseas": self._state.get("overseas")}
+        if env["sentiment"] is not None or env["overseas"] is not None:
+            return env
+        conn = db.connect_readonly(self._db_path)
+        try:
+            row = conn.execute("SELECT detail FROM decisions WHERE verdict='sentiment' "
+                               "ORDER BY id DESC LIMIT 1").fetchone()
+        finally:
+            conn.close()
+        try:
+            detail = json.loads(row[0]) if row and row[0] else {}
+        except ValueError:
+            detail = {}
+        if isinstance(detail, dict):
+            env = {"sentiment": detail.get("label"), "overseas": detail.get("overseas")}
+        return env
+
     def rule_preview(self, spec: dict) -> dict:
         """试跑：最近一次全市场行情上 选股 → 排序 → 买点，返回命中总数与前 20 只。
         与盘中 CustomStrategy 共用同一个取值函数（jevq.strategies.custom.make_getter）；不调用 Jev、不下单。"""
@@ -423,7 +443,7 @@ class Api:
             return {"ok": False, "errors": ["策略格式错误"]}
         try:
             data = self._preview_data()
-            env = {"sentiment": self._state.get("sentiment"), "overseas": self._state.get("overseas")}
+            env = self._preview_env()
             result = custom_runtime.preview(spec, data["quotes"], data["universe"], data["features"],
                                             data["concepts"], env, datetime.now())
             return {"ok": True, **result}

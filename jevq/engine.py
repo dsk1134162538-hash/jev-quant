@@ -150,8 +150,10 @@ class Engine:
                 self.sentiment_label = None
                 self.sentiment_trace = None
             self._sentiment_at = now
+            # 外围一起记下：面板试跑（后台 daemon 在交易、面板自己没跑时）从这一行读最近的情绪与外围
             self._log(now, "", "sentiment", json.dumps(
-                {"stats": stats, "label": self.sentiment_label}, ensure_ascii=False), trace=self.sentiment_trace)
+                {"stats": stats, "label": self.sentiment_label, "overseas": self.overseas}, ensure_ascii=False),
+                trace=self.sentiment_trace)
         return self.sentiment_label
 
     def _market_stats(self, now: datetime, quotes: dict[str, Quote]) -> dict:

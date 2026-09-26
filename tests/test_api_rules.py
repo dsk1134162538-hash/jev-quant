@@ -170,6 +170,26 @@ def test_rule_preview_uses_history_features_from_closes(tmp_db):
     assert result["rows"][0]["values"]["近N日涨幅(N=3)"] == "10.00%"
 
 
+def test_rule_preview_reads_latest_sentiment_when_panel_not_running(tmp_db):
+    """后台 daemon 在交易、面板自己没跑：面板状态里没有情绪/外围，从决策表最近一条情绪记录读。"""
+    conn = db.connect(tmp_db)
+    conn.executemany("INSERT INTO decisions(ts, code, verdict, detail) VALUES (?, '', 'sentiment', ?)", [
+        ("2026-09-24T10:00:00", '{"stats": {}, "label": "冰点", "overseas": "偏弱"}'),
+        ("2026-09-25T14:50:00", '{"stats": {}, "label": "火热", "overseas": "偏强"}')])
+    conn.commit()
+    conn.close()
+    spec = dict(VALID, select={"mode": "all", "conditions": [
+        {"field": "sentiment", "op": "in", "value": ["火热"]},
+        {"field": "overseas", "op": "in", "value": ["偏强"]}]}, entry={"mode": "all", "conditions": []})
+    assert make_api(tmp_db).rule_preview(spec)["total"] == 3
+
+
+def test_rule_preview_env_empty_without_sentiment_rows(tmp_db):
+    spec = dict(VALID, select={"mode": "all", "conditions": [
+        {"field": "sentiment", "op": "in", "value": ["火热", "正常"]}]}, entry={"mode": "all", "conditions": []})
+    assert make_api(tmp_db).rule_preview(spec)["total"] == 0
+
+
 def test_rule_preview_caches_market_data_for_60_seconds(tmp_db):
     calls = {}
     api = make_api(tmp_db, calls)
