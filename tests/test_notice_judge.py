@@ -493,3 +493,26 @@ def test_title_stage_within_budget_passes_deadline(monkeypatch):
     j = NoticeJudge(conn, jev, fetch_body=lambda aid: None, jev_budget=20.0)
     assert j.check("600001", TODAY) == ("pass", "公告无雷")
     assert jev.title_deadlines == [20.0]
+
+
+def test_routine_and_stale_risk_hints_are_not_suspects():
+    """2026-09-26 对照后的口径：普通异动、例行资金占用汇总表不进疑似，也不问 Jev；风险提示只看近 10 天。"""
+    conn = setup(("甲:股票交易异常波动公告", "2026-09-24"),
+                 ("甲:2026年1-6月非经营性资金占用及其他关联资金往来情况汇总表", "2026-08-29"),
+                 ("甲:股票交易风险提示公告", "2026-09-10"),        # 16 天前
+                 ("甲:股票交易严重异常波动公告", "2026-09-22"))     # 4 天前：细判
+    jev = FakeJev(risk={"甲:股票交易严重异常波动公告": {"低": 1.0}})
+    j = judge(conn, jev)
+    assert j.check("600001", TODAY)[0] == "pass"
+    assert jev.title_calls == 0 and jev.risk_calls == 1
+    assert j.last_trace["others"] == 3
+    assert [s["title"] for s in j.last_trace["suspects"]] == ["甲:股票交易严重异常波动公告"]
+
+
+def test_stale_window_applies_to_jev_title_classification_too():
+    t = "甲:关于公司股价波动的提示性说明"
+    conn = setup((t, "2026-09-01"))
+    jev = FakeJev(title_labels={t: "风险提示"})
+    j = judge(conn, jev)
+    assert j.check("600001", TODAY) == ("pass", "公告无雷")
+    assert jev.risk_calls == 0 and j.last_trace["others"] == 1

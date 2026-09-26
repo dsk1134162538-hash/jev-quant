@@ -86,6 +86,27 @@ def keyword_category(title: str) -> str | None:
     return None
 
 
+# 2026-09-26 新旧对照后收紧（用户确认）：Jev 对交易所强制披露的普通异动公告打分偏高、也不看时效，
+# 这几条改由规则处理，不交给 Jev。
+ROUTINE_REPORT_WORDS = ("汇总表", "专项说明", "专项报告", "专项审核")
+CATEGORY_WINDOW_DAYS = {"风险提示": 10}   # 其余类别沿用 NOTICE_LOOKBACK_DAYS
+
+
+def is_routine(title: str) -> bool:
+    """例行公告：既不算疑似，也不问 Jev。
+    - 普通「股票交易异常波动」公告（没有「严重」「风险提示」字样）：连续偏离即强制披露，内容几乎都是无未披露事项；
+    - 冻结和债务类的例行报表（资金占用汇总表、专项说明/报告）。"""
+    if "异常波动" in title and "严重" not in title and "风险提示" not in title:
+        return True
+    return keyword_category(title) == "冻结和债务" and any(w in title for w in ROUTINE_REPORT_WORDS)
+
+
+def in_window(category: str, days_ago: int) -> bool:
+    """风险提示只看近 10 天：几周前的异动与风险提示，对 1～3 个交易日的持股已无意义。"""
+    window = CATEGORY_WINDOW_DAYS.get(category)
+    return window is None or days_ago <= window
+
+
 def title_criteria() -> dict[str, str]:
     return {**{name: c["title"] for name, c in RISK_CATEGORIES.items()}, **NON_RISK_TITLE}
 

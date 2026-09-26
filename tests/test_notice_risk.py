@@ -112,3 +112,22 @@ def test_other_risk_warning_and_par_value_covered_by_delisting_criteria():
 ])
 def test_score_on_exact_threshold_is_not_lost_to_float_error(probs, verdict):
     assert nr.classify_score(nr.risk_score(probs)) == verdict
+
+
+@pytest.mark.parametrize("title,routine", [
+    ("大连圣亚:股票交易异常波动公告", True),                       # 交易所强制披露的普通异动
+    ("甲:关于公司股票交易异常波动的公告", True),
+    ("甲:股票交易严重异常波动公告", False),
+    ("甲:股票交易异常波动暨风险提示公告", False),
+    ("国恩股份:2026年1-6月非经营性资金占用及其他关联资金往来情况汇总表", True),
+    ("甲:关于控股股东非经营性资金占用的专项说明", True),
+    ("甲:关于控股股东非经营性资金占用的公告", False),
+    ("甲:关于股东减持计划的公告", False),
+])
+def test_is_routine(title, routine):
+    assert nr.is_routine(title) is routine
+
+
+def test_risk_hint_only_counts_within_10_days():
+    assert nr.in_window("风险提示", 10) and not nr.in_window("风险提示", 11)
+    assert nr.in_window("减持", 90)

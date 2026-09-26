@@ -11,7 +11,8 @@ from jevq.config import RISK_BODY_BUDGET, RISK_JEV_BUDGET, RISK_JEV_TIMEOUT, RIS
 from jevq.data.notice_body import fetch_body as default_fetch_body
 from jevq.data.notice_store import notices_for
 from jevq.judge.jev import JevError
-from jevq.judge.notice_risk import (LEVELS, RISK_CATEGORIES, classify_score, keyword_category, risk_question,
+from jevq.judge.notice_risk import (LEVELS, RISK_CATEGORIES, classify_score, in_window, is_routine,
+                                    keyword_category, risk_question,
                                     risk_score, risk_state, title_criteria)
 
 TITLE_SOURCE = "jev2"      # 新分类体系的标题分类缓存；旧的 keyword/jev 行不再使用
@@ -39,16 +40,26 @@ class NoticeJudge:
 
         # 第一段：挑疑似
         suspects, others, need_title = [], 0, []
+        def add_suspect(n, cat, source):
+            nonlocal others
+            if in_window(cat, (today - date.fromisoformat(n.date)).days):
+                suspects.append((n, cat, source))
+            else:
+                others += 1             # 过了该类别的时效窗口（风险提示只看近 10 天）
+
         for n in notices:
+            if is_routine(n.title):
+                others += 1             # 例行公告：不算疑似，不问 Jev
+                continue
             cat = keyword_category(n.title)
             if cat:
-                suspects.append((n, cat, "keyword"))
+                add_suspect(n, cat, "keyword")
                 continue
             row = self.conn.execute("SELECT label FROM notice_verdicts WHERE id=? AND source=?",
                                     (n.id, TITLE_SOURCE)).fetchone()
             if row:
                 if row[0] in RISK_CATEGORIES:
-                    suspects.append((n, row[0], "jev_title"))
+                    add_suspect(n, row[0], "jev_title")
                 else:
                     others += 1
             else:
@@ -66,7 +77,7 @@ class NoticeJudge:
                 label, conf, probs = res
                 self._save_title(n.id, label, conf, probs)
                 if label in RISK_CATEGORIES:
-                    suspects.append((n, label, "jev_title"))
+                    add_suspect(n, label, "jev_title")
                 else:
                     others += 1
         suspects.sort(key=lambda s: (s[0].date, s[0].id), reverse=True)
