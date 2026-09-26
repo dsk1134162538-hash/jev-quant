@@ -2,6 +2,7 @@
 import json
 import sqlite3
 from datetime import date, datetime, time
+from time import monotonic
 
 from jevq.ledger import Ledger
 from jevq.models import Fill, Position, Quote
@@ -269,25 +270,33 @@ class CustomStrategy:
         self._cache_minute: str | None = None
 
     def on_minute(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
-        """每分钟决策：先卖出，再买入（can_buy 且有空位时）。"""
+        """每分钟决策：先卖出，再买入（= sell_step + 不限时的 buy_step）。"""
+        return self.sell_step(quotes, now) + self.buy_step(quotes, now)
+
+    def sell_step(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
+        """卖出阶段：按 exits 规则卖，不碰 Jev。"""
+        if not self._prepare(quotes, now):
+            return []
+        return self._sells(quotes, now)
+
+    def buy_step(self, quotes: dict[str, Quote], now: datetime, deadline: float | None = None) -> list[Fill]:
+        """买入阶段（can_buy 且有空位时）。deadline（time.monotonic 时刻）过了就不再对新候选问 Jev；
+        没问到的这一分钟不算判过（不进否决集），下一分钟照常。"""
+        if not self._prepare(quotes, now) or not self.can_buy:
+            return []
+        return self._buys(quotes, now, deadline)
+
+    def _prepare(self, quotes: dict[str, Quote], now: datetime) -> bool:
+        """跨日恢复否决集 + 每分钟一次的预计算缓存；没有行情返回 False（这一分钟不卖也不买）。"""
         if self._rejected_day != now.date():
             self._restore_rejected(now.date())
-
         if not quotes:
-            return []
-
-        # 更新预计算缓存
+            return False
         minute_key = now.strftime("%Y-%m-%d %H:%M")
         if self._cache_minute != minute_key:
             self._update_cache(quotes)
             self._cache_minute = minute_key
-
-        fills = self._sells(quotes, now)
-
-        if self.can_buy:
-            fills += self._buys(quotes, now)
-
-        return fills
+        return True
 
     def _restore_rejected(self, day: date):
         """重启后恢复当日已否决/出错的票。"""
@@ -332,7 +341,7 @@ class CustomStrategy:
 
         return fills
 
-    def _buys(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
+    def _buys(self, quotes: dict[str, Quote], now: datetime, deadline: float | None = None) -> list[Fill]:
         """买入：候选 = 股票池内当日行情中 eval_group(select) 为真者 → rank_codes → 逐只检查 entry。"""
         main, shadow = self.accounts
         main_slots = self.ledger.free_slots(main)
@@ -401,6 +410,10 @@ class CustomStrategy:
 
                 # 错误 3 次熔断
                 if self.error_count >= 3:
+                    break
+
+                # 本分钟 Jev 预算用完：剩下的不算判过，下一分钟再问
+                if deadline is not None and monotonic() >= deadline:
                     break
 
                 try:

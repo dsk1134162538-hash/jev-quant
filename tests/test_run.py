@@ -65,13 +65,22 @@ class FakeEngine:
         self.universe, self.ret5, self.prev_day, self.overseas = universe, ret5, prev_day, overseas
         self.fetch_quotes, self.accounts_provider = fetch_quotes, accounts_provider
         self.ticks, self.last_quotes, self.sentiment_label = [], {}, "正常"
+        self.buy_calls: list = []           # (now, deadline)
         FakeEngine.instances.append(self)
 
-    def tick(self, now):
+    def sell_step(self, now):
+        """卖出阶段（run.py 每分钟先调它）；ticks 记的是「这一分钟跑过」。"""
         self.ticks.append(now)
         if FakeEngine.behavior:
             return FakeEngine.behavior(self, now) or []
         return []
+
+    def buy_step(self, now, deadline=None):
+        self.buy_calls.append((now, deadline))
+        return []
+
+    def tick(self, now):
+        return self.sell_step(now) + self.buy_step(now)
 
 
 def seed_concepts(dbp, code="600001", concept="题材A", updated="2026-09-23"):
@@ -84,11 +93,11 @@ def seed_concepts(dbp, code="600001", concept="题材A", updated="2026-09-23"):
 
 class SpyBoard(RealBoardStrategy):
     """真实 BoardStrategy 包一层：记录实例、按需注入观察池（一次性或常驻）、按需炸一次
-    on_minute/on_fast、按需在 on_fast 里模拟真实耗时（顺手拨一下假表）。"""
+    sell_step/on_fast、按需在 on_fast 里模拟真实耗时（顺手拨一下假表）。"""
     instances: list = []
     boom_once = False
     force_watch_once: dict | None = None
-    force_watch: dict | None = None   # 常驻版：每分钟 on_minute 都补回去，不怕被剔出观察池
+    force_watch: dict | None = None   # 常驻版：每分钟 buy_step 都补回去，不怕被剔出观察池
     fast_call_times: list = []
     on_fast_latency = 0.0
     on_fast_boom_once = False
@@ -98,11 +107,14 @@ class SpyBoard(RealBoardStrategy):
         super().__init__(*a, **kw)
         SpyBoard.instances.append(self)
 
-    def on_minute(self, quotes, now):
+    def sell_step(self, quotes, now):
         if SpyBoard.boom_once:
             SpyBoard.boom_once = False
             raise RuntimeError("board boom")
-        fills = super().on_minute(quotes, now)
+        return super().sell_step(quotes, now)
+
+    def buy_step(self, quotes, now, deadline=None):
+        fills = super().buy_step(quotes, now, deadline)
         if SpyBoard.force_watch_once:
             self.watch.update(SpyBoard.force_watch_once)
             SpyBoard.force_watch_once = None
@@ -687,18 +699,18 @@ def test_once_mode_shares_same_t_for_engine_and_board_tick(env, monkeypatch):
     seen = {}
 
     class RecordingBoard(SpyBoard):
-        def on_minute(self, quotes, now):
+        def sell_step(self, quotes, now):
             seen["board_t"] = now
-            return super().on_minute(quotes, now)
+            return super().sell_step(quotes, now)
 
     monkeypatch.setattr(run, "BoardStrategy", RecordingBoard)
-    orig_tick = FakeEngine.tick
+    orig_tick = FakeEngine.sell_step
 
     def recording_tick(self, now):
         seen["engine_t"] = now
         return orig_tick(self, now)
 
-    monkeypatch.setattr(FakeEngine, "tick", recording_tick)
+    monkeypatch.setattr(FakeEngine, "sell_step", recording_tick)
     env.run(once=True)
     assert seen["board_t"] == seen["engine_t"]
 
@@ -845,9 +857,9 @@ def test_board_gets_empty_quotes_when_minute_fetch_failed(env, monkeypatch):
     seen = []
 
     class RecordingBoard(SpyBoard):
-        def on_minute(self, quotes, now):
+        def sell_step(self, quotes, now):
             seen.append((now.time().replace(second=0), dict(quotes)))
-            return super().on_minute(quotes, now)
+            return super().sell_step(quotes, now)
 
     monkeypatch.setattr(run, "BoardStrategy", RecordingBoard)
 
@@ -959,16 +971,20 @@ class FakeCustom:
     def __init__(self, conn, ledger, sid, version, spec, notice_judge, news_judge, universe, features,
                  concept_map, env_provider, prev_day, can_buy=True):
         self.conn, self.sid, self.version, self.can_buy = conn, sid, version, can_buy
-        self.calls = []
+        self.calls, self.buy_calls = [], []
         for account in (f"{sid}_main", f"{sid}_shadow"):          # 与真实 CustomStrategy 一样开户
             ledger.ensure_account(account, spec["capital"])
         FakeCustom.instances.append(self)
 
-    def on_minute(self, quotes, now):
+    def sell_step(self, quotes, now):
         self.calls.append((now, bool(quotes)))
         if self.sid in FakeCustom.boom:
             self.conn.execute("INSERT INTO turnover VALUES ('custom-half', 1)")
             raise RuntimeError("custom boom")
+        return []
+
+    def buy_step(self, quotes, now, deadline=None):
+        self.buy_calls.append((now, deadline))
         return []
 
 
@@ -1083,3 +1099,168 @@ def test_prefetch_bodies_failure_is_logged_and_day_continues(env, monkeypatch):
     path = env.run()
     assert len(FakeEngine.instances[0].ticks) == 240 and path is not None
     assert "公告正文预抓失败" in env.log_text() and "body down" in env.log_text()
+
+
+# ---- Task 4b：每分钟先让所有策略卖完再碰 Jev；买入阶段共用一个 Jev 时间预算 ----
+
+class SentimentMarket(FakeMarket):
+    def __init__(self, jev):
+        super().__init__(jev)
+        self.sentiment_trace = None
+
+    def sentiment(self, stats):
+        return "正常"
+
+
+class ClockJudge:
+    """假 Jev 判断：每次 check 记一笔事件、把假 monotonic 拨快 step 秒（模拟慢 Jev），全部否决。"""
+    def __init__(self, events, clock, step, verdict=("reject", "慢判否决")):
+        self.events, self.clock, self.step, self.verdict = events, clock, step, verdict
+        self.calls, self.last_trace = [], None
+
+    def check(self, code, *args):
+        self.calls.append(code)
+        self.events.append(("judge", code))
+        self.clock[0] += self.step
+        return self.verdict
+
+
+def _real_engine(env, monkeypatch, events, clock, step, codes=("600001",)):
+    from jevq.engine import Engine as RealEngine
+    import jevq.engine as engine_mod
+    monkeypatch.setattr(run, "Engine", RealEngine)
+    monkeypatch.setattr(run, "MarketJudge", SentimentMarket)
+    monkeypatch.setattr(run.akdata, "fetch_pool_stats", lambda d: {})
+    monkeypatch.setattr(run, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(engine_mod, "monotonic", lambda: clock[0])
+    judge = ClockJudge(events, clock, step)
+    monkeypatch.setattr(run, "NoticeJudge", lambda conn, jev: judge)
+    monkeypatch.setattr(run, "NewsJudge", lambda conn, jev: ClockJudge(events, clock, 0.0, ("pass", "ok")))
+    monkeypatch.setattr(run.akdata, "load_universe", lambda today, days: {c: c for c in codes})
+    for c in codes:
+        seed_closes(env.db, c)
+    return judge
+
+
+def test_slow_lowbuy_judge_does_not_delay_board_and_custom_sells(env, monkeypatch):
+    """低吸买入阶段的 Jev 再慢，同一分钟里扫首板、自定义策略的卖出也已经做完（卖出发生在任何 Jev 之前）。"""
+    events, clock = [], [0.0]
+    judge = _real_engine(env, monkeypatch, events, clock, step=30.0)
+    seed_custom(env)                                              # 规则：跌到 -5% 止损
+    conn = db.connect(env.db)
+    ledger = Ledger(conn)
+    ledger.ensure_account("c1_main", 50000)
+    ledger.buy("board_main", quote("600002", ts=datetime(2026, 9, 22, 10, 0)), datetime(2026, 9, 22, 10, 0), "x")
+    ledger.buy("c1_main", quote("600003", ts=datetime(2026, 9, 22, 10, 0)), datetime(2026, 9, 22, 10, 0), "x")
+    conn.close()
+    from jevq.ledger import Ledger as LedgerCls
+    orig_sell = LedgerCls.sell
+
+    def recording_sell(self, account, pos, q, now, reason):
+        events.append(("sell", account))
+        return orig_sell(self, account, pos, q, now, reason)
+
+    monkeypatch.setattr(LedgerCls, "sell", recording_sell)
+    ts = datetime(2026, 9, 23, 10, 0)
+    env.feed["quotes"] = {"600001": quote("600001", pct=-1.0, ts=ts),
+                          "600002": quote("600002", pct=-6.0, ts=ts),
+                          "600003": quote("600003", pct=-6.0, ts=ts)}
+    env.clock.t = ts
+    env.run(once=True)
+    assert judge.calls == ["600001"]                              # 低吸确实问了（慢）Jev
+    first_judge = events.index(("judge", "600001"))
+    sold = [i for i, e in enumerate(events) if e[0] == "sell"]
+    assert {events[i][1] for i in sold} == {"board_main", "c1_main"}
+    assert all(i < first_judge for i in sold)
+
+
+def test_every_minute_all_sells_run_before_any_buy_phase(env, fake_custom, monkeypatch):
+    seed_concepts(env.db)
+    seed_custom(env, "一号")
+    seed_custom(env, "二号")
+    events = []
+
+    class OrderBoard(SpyBoard):
+        def sell_step(self, quotes, now):
+            events.append((now, "sell", "board"))
+            return super().sell_step(quotes, now)
+
+        def buy_step(self, quotes, now, deadline=None):
+            events.append((now, "buy", "board"))
+            return super().buy_step(quotes, now, deadline)
+
+    monkeypatch.setattr(run, "BoardStrategy", OrderBoard)
+    FakeEngine.behavior = lambda eng, now: events.append((now, "sell", "engine"))
+    orig_buy = FakeEngine.buy_step
+    monkeypatch.setattr(FakeEngine, "buy_step",
+                        lambda self, now, deadline=None: events.append((now, "buy", "engine")) or orig_buy(
+                            self, now, deadline))
+    orig_c_sell, orig_c_buy = FakeCustom.sell_step, FakeCustom.buy_step
+    monkeypatch.setattr(FakeCustom, "sell_step", lambda self, q, now: events.append(
+        (now, "sell", self.sid)) or orig_c_sell(self, q, now))
+    monkeypatch.setattr(FakeCustom, "buy_step", lambda self, q, now, deadline=None: events.append(
+        (now, "buy", self.sid)) or orig_c_buy(self, q, now, deadline))
+    env.run()
+    minutes = sorted({t for t, _, _ in events})
+    assert len(minutes) == 240
+    for m in minutes:
+        seq = [(phase, who) for t, phase, who in events if t == m]
+        assert seq == [("sell", "engine"), ("sell", "board"), ("sell", "c1"), ("sell", "c2"),
+                       ("buy", "board"), ("buy", "engine"), ("buy", "c1"), ("buy", "c2")]
+
+
+def test_buy_phases_share_one_deadline_computed_after_sells(env, fake_custom, monkeypatch):
+    seed_concepts(env.db)
+    seed_custom(env)
+    clock = [1000.0]
+    monkeypatch.setattr(run, "monotonic", lambda: clock[0])
+    FakeEngine.behavior = lambda eng, now: clock.__setitem__(0, clock[0] + 7.0)   # 卖出阶段花了 7 秒
+    deadlines = []
+
+    class DeadlineBoard(SpyBoard):
+        def buy_step(self, quotes, now, deadline=None):
+            deadlines.append(("board", deadline))
+            return super().buy_step(quotes, now, deadline)
+
+    monkeypatch.setattr(run, "BoardStrategy", DeadlineBoard)
+    env.clock.t = datetime(2026, 9, 23, 10, 0)
+    env.run(once=True)
+    eng, custom = FakeEngine.instances[0], fake_custom.instances[0]
+    expected = 1007.0 + config.TICK_JEV_BUDGET                    # 从卖完那一刻起算
+    assert deadlines == [("board", expected)]
+    assert eng.buy_calls[0][1] == expected and custom.buy_calls[0][1] == expected
+    assert config.TICK_JEV_BUDGET == 40.0
+
+
+def test_sell_phase_error_skips_only_that_strategys_buy_phase(env, fake_custom):
+    seed_concepts(env.db)
+    seed_custom(env, "一号")
+    seed_custom(env, "二号")
+    fake_custom.boom = {"c1"}
+    env.clock.t = datetime(2026, 9, 23, 10, 0)
+    env.run(once=True)
+    by_sid = {s.sid: s for s in fake_custom.instances}
+    assert by_sid["c1"].buy_calls == []                           # 卖出出错：这一分钟不买（同旧「整轮作废」）
+    assert len(by_sid["c2"].buy_calls) == 1
+    assert len(FakeEngine.instances[0].buy_calls) == 1
+    assert "自定义策略 c1 本轮出错：RuntimeError('custom boom')" in env.log_text()
+
+
+def test_tick_jev_budget_exhausted_candidates_checked_next_minute(env, monkeypatch):
+    """预算用完：剩下的候选这一分钟不判（不记否决/错误），下一分钟接着判。"""
+    events, clock = [], [0.0]
+    codes = ("600001", "600002", "600003")
+    judge = _real_engine(env, monkeypatch, events, clock, step=30.0, codes=codes)
+    env.feed["quotes"] = {c: quote(c, pct=-1.0, ts=datetime(2026, 9, 23, 9, 29)) for c in codes}
+    path = env.run()
+    assert path is not None, env.log_text()
+    assert sorted(judge.calls) == sorted(codes) and len(judge.calls) == 3     # 每只只判一次
+    conn = db.connect(env.db)
+    try:
+        rows = conn.execute("SELECT code, verdict, substr(ts, 12, 5) FROM decisions "
+                            "WHERE strategy='lowbuy' AND code != '' ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    # 09:30：0→30、30→60，第三只时已过 40 秒预算；09:31 新预算里判第三只
+    assert [(c, v) for c, v, _ in rows] == [(c, "reject") for c in judge.calls]
+    assert [m for _, _, m in rows] == ["09:30", "09:30", "09:31"]

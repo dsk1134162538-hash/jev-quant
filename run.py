@@ -5,6 +5,7 @@ import threading
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from time import monotonic
 
 from jevq import accounts as accounts_mod
 from jevq import config, db, notify_content
@@ -285,16 +286,12 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
 
     if once:
         t = now()
-        fills = _safe_tick(engine, conn, t, log)
-        board_fills = _safe_board_minute(board, _fresh_quotes(engine, t), t, conn, log) if board is not None else []
-        custom_fills = _safe_custom_minute(customs, _fresh_quotes(engine, t), t, conn, log)
-        _notify_fills(notifier, conn, fills, state["names"], log, acct_names)
-        _notify_fills(notifier, conn, board_fills, state["names"], log, acct_names)
-        _notify_fills(notifier, conn, custom_fills, state["names"], log, acct_names)
+        fills = _run_minute(engine, board, customs, t, conn, log, notifier, state["names"], acct_names,
+                            log_each=False)
         state.update(sentiment=engine.sentiment_label, prices={c: q.price for c, q in engine.last_quotes.items()})
         if board is not None:
             state["board_watch"] = _board_watch_state(board, state["names"])
-        log(f"情绪 {engine.sentiment_label}，成交 {fills + board_fills + custom_fills}")
+        log(f"情绪 {engine.sentiment_label}，成交 {fills}")
         return None
 
     resynced = False
@@ -311,15 +308,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             # 两次；万一出于什么原因还是撞上了，这里挡一道，不重复吃这一分钟的 tick。
             last_tick_minute = minute_key
             state["phase"] = "盘中"
-            tick_fills = _safe_tick(engine, conn, t, log)
-            _log_fills(tick_fills, log)
-            _notify_fills(notifier, conn, tick_fills, state["names"], log, acct_names)
-            board_fills = _safe_board_minute(board, _fresh_quotes(engine, t), t, conn, log)
-            _log_fills(board_fills, log)
-            _notify_fills(notifier, conn, board_fills, state["names"], log, acct_names)
-            custom_fills = _safe_custom_minute(customs, _fresh_quotes(engine, t), t, conn, log)
-            _log_fills(custom_fills, log)
-            _notify_fills(notifier, conn, custom_fills, state["names"], log, acct_names)
+            _run_minute(engine, board, customs, t, conn, log, notifier, state["names"], acct_names)
             if getattr(engine, "halted", False):
                 notifier.once("halted", "⚠️ 模拟盘提醒", "行情连续失败，今日暂停开新仓，卖出照常")
             state.update(sentiment=engine.sentiment_label,
@@ -426,14 +415,50 @@ def _warn(state: dict, log: Callable[[str], None], notifier: Notifier, msg: str)
     _set_warning(state, notifier, msg)
 
 
-def _safe_tick(engine: Engine, conn, t: datetime, log: Callable[[str], None]) -> list:
-    """单轮出错只记日志；回滚这一轮没提交的半截写入，下一分钟照常卖。"""
-    try:
-        return engine.tick(t)
-    except Exception as e:
-        conn.rollback()
-        log(f"本轮出错：{e!r}")
-        return []
+def _run_minute(engine: Engine, board: BoardStrategy | None, customs: list, t: datetime, conn,
+                log: Callable[[str], None], notifier: Notifier, names: dict, acct_names: dict | None,
+                log_each: bool = True) -> list:
+    """一分钟一轮：先让所有策略卖完（低吸 → 扫首板 → 各自定义，全程不碰 Jev），推送卖出，
+    再按「扫首板 → 低吸 → 各自定义」跑买入阶段。买入阶段共用一个 Jev 时间预算（TICK_JEV_BUDGET，
+    卖出之后才开始计时）：过了时限各策略不再判断新候选，没判到的下一分钟再判——慢 Jev 永远拖不住卖出。
+
+    逐策略隔离：某策略卖出阶段出错 → 回滚、记日志，这一分钟它不进买入阶段（同旧 tick「出错这一轮作废」）；
+    其它策略不受影响。返回本分钟全部成交（卖出在前）。"""
+    fails: set = set()
+
+    def safe(key, label: str, fn) -> list:
+        try:
+            return fn()
+        except Exception as e:
+            conn.rollback()
+            log(f"{label}：{e!r}")
+            fails.add(key)
+            return []
+
+    def emit(fills: list):
+        if log_each:
+            _log_fills(fills, log)
+        _notify_fills(notifier, conn, fills, names, log, acct_names)
+
+    sells = safe("engine", "本轮出错", lambda: engine.sell_step(t))
+    quotes = _fresh_quotes(engine, t)
+    if board is not None:
+        sells += safe("board", "扫首板本轮出错", lambda: board.sell_step(quotes, t))
+    for sid, strat in customs:
+        sells += safe(sid, f"自定义策略 {sid} 本轮出错", lambda s=strat: s.sell_step(quotes, t))
+    emit(sells)
+
+    deadline = monotonic() + config.TICK_JEV_BUDGET
+    buys: list = []
+    if board is not None and "board" not in fails:        # 扫板窗口 09:30–10:30 时间最紧，先判
+        buys += safe("board", "扫首板本轮出错", lambda: board.buy_step(quotes, t, deadline))
+    if "engine" not in fails:
+        buys += safe("engine", "本轮出错", lambda: engine.buy_step(t, deadline))
+    for sid, strat in customs:
+        if sid not in fails:
+            buys += safe(sid, f"自定义策略 {sid} 本轮出错", lambda s=strat: s.buy_step(quotes, t, deadline))
+    emit(buys)
+    return sells + buys
 
 
 def _fresh_quotes(engine: Engine, t: datetime) -> dict:
@@ -478,30 +503,6 @@ def _load_customs(conn, ledger: Ledger, today: date, universe: dict, ret5: dict,
         out.append((s["id"], strat))
         log(f"自定义策略 {s['id']} v{s['version']}「{s['name']}」" + ("" if strat.can_buy else "（只卖）"))
     return out
-
-
-def _safe_custom_minute(customs: list, quotes: dict, t: datetime, conn,
-                        log: Callable[[str], None]) -> list:
-    """各自定义策略的每分钟一轮（先卖后买）；逐策略隔离，一个出错回滚并记日志，不影响其他策略。"""
-    fills: list = []
-    for sid, strat in customs:
-        try:
-            fills += strat.on_minute(quotes, t)
-        except Exception as e:
-            conn.rollback()
-            log(f"自定义策略 {sid} 本轮出错：{e!r}")
-    return fills
-
-
-def _safe_board_minute(board: BoardStrategy, quotes: dict, t: datetime, conn,
-                       log: Callable[[str], None]) -> list:
-    """扫首板的每分钟一轮（卖出 + 观察池维护）；出错只记日志，不影响低吸 tick 和下一分钟。"""
-    try:
-        return board.on_minute(quotes, t)
-    except Exception as e:
-        conn.rollback()
-        log(f"扫首板本轮出错：{e!r}")
-        return []
 
 
 def _should_fast_scan(board: BoardStrategy | None, t: time) -> bool:

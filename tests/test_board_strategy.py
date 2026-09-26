@@ -579,3 +579,60 @@ def test_on_fast_buy_exception_rolls_back_half_written_rows():
     strat.on_fast(at(9, 35))
     assert ledger.holds("board_shadow", "600001")
     assert conn.execute("SELECT COUNT(*) FROM turnover").fetchone()[0] == 0
+
+
+# ---- Task 4b：卖出/买入拆成两个阶段；判断受每分钟 Jev 预算管 ----
+
+def _board_scenario(step):
+    """同一套场景分别用 on_minute 与 sell_step+buy_step 跑：进观察池 + 判断 + 持仓止损。"""
+    notice = Judge()
+    strat, conn, ledger = make(notice=notice)
+    ledger.buy("board_main", quote("600004", pct=1.0, ts=datetime(2026, 9, 22, 10, 0)),
+               datetime(2026, 9, 22, 10, 0), "x")
+    quotes = hot_quotes()
+    quotes["600004"] = quote("600004", pct=-6.0, pre_close=10.0, ts=DAY)
+    fills = [step(strat, quotes, at(9, 35)), step(strat, quotes, at(9, 36))]
+    rows = conn.execute("SELECT ts, code, verdict, detail FROM decisions").fetchall()
+    return ([[(f.account, f.code, f.side, f.reason) for f in fs] for fs in fills], rows,
+            notice.calls, sorted(strat.watch), sorted(strat.verdicts))
+
+
+def test_board_sell_step_then_buy_step_equals_on_minute():
+    by_minute = _board_scenario(lambda s, q, t: s.on_minute(q, t))
+    by_phase = _board_scenario(lambda s, q, t: s.sell_step(q, t) + s.buy_step(q, t, None))
+    assert by_phase == by_minute
+    assert by_minute[0][0] and by_minute[2]            # 场景里确实有卖出、有判断
+
+
+def test_board_sell_step_does_not_touch_watch_or_judge():
+    notice = Judge()
+    strat, _, _ = make(notice=notice)
+    strat.sell_step(hot_quotes(), at(9, 35))
+    assert strat.watch == {} and notice.calls == []
+
+
+class ClockJudge(Judge):
+    def __init__(self, clock, step, verdicts=None):
+        super().__init__(verdicts)
+        self.clock, self.step = clock, step
+
+    def check(self, code, *args):
+        self.clock[0] += self.step
+        return super().check(code, *args)
+
+
+def test_board_deadline_leaves_unjudged_in_watch_and_judges_next_minute(monkeypatch):
+    import jevq.strategies.board as board_mod
+    clock = [0.0]
+    monkeypatch.setattr(board_mod, "monotonic", lambda: clock[0])
+    notice = ClockJudge(clock, 50.0)
+    strat, conn, _ = make(notice=notice)
+    quotes = hot_quotes()
+    strat.buy_step(quotes, at(9, 35), deadline=clock[0] - 1)    # 预算已用完：进池但不判断
+    assert strat.watch and notice.calls == [] and strat.verdicts == {}
+    assert strat.rejected == set()
+    assert conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
+    strat.buy_step(quotes, at(9, 36), deadline=clock[0] + 40.0)
+    assert notice.calls == list(strat.watch)[:1]                # 第一只问完已过时限，只判了一只
+    strat.buy_step(quotes, at(9, 37), deadline=clock[0] + 40.0)
+    assert len(notice.calls) == min(2, len(strat.watch))

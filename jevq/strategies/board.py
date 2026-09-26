@@ -1,5 +1,6 @@
 import json
 from datetime import date, datetime
+from time import monotonic
 
 from jevq.models import Fill, Quote
 from jevq.rules.board import (EXIT_PCT, SCAN_WINDOWS, WATCH_MAX, Candidate, in_scan_window, scan_trigger,
@@ -38,15 +39,26 @@ class BoardStrategy:
         return bool(self.watch)
 
     def on_minute(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
+        """一分钟一轮 = sell_step + 不限时的 buy_step。"""
+        return self.sell_step(quotes, now) + self.buy_step(quotes, now)
+
+    def sell_step(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
+        """卖出阶段：只按规则卖，不碰 Jev。"""
         if self._rejected_day != now.date():
             self._restore_rejected(now.date())
         if not quotes:
             return []       # 这一分钟没拿到新行情：不卖（不能用旧价），也不动观察池
-        fills = self._sells(quotes, now)
-        if not self.enabled:
-            return fills
-        self._maintain_watch(quotes, now)
-        return fills
+        return self._sells(quotes, now)
+
+    def buy_step(self, quotes: dict[str, Quote], now: datetime, deadline: float | None = None) -> list[Fill]:
+        """买入准备阶段：观察池维护 + 对未判断的票问 Jev（真正的买点在 on_fast）。
+        deadline（time.monotonic 时刻）过了就不再判断新票；没判到的留在池里、没有结论，下一分钟再判。"""
+        if self._rejected_day != now.date():
+            self._restore_rejected(now.date())
+        if not quotes or not self.enabled:
+            return []
+        self._maintain_watch(quotes, now, deadline)
+        return []
 
     def _restore_rejected(self, day: date):
         """重启后恢复当日已否决/出错的票，避免重复问 Jev（同 Engine._restore_rejected）；
@@ -127,7 +139,7 @@ class BoardStrategy:
                     print(f"[board] {now:%H:%M} 卖出 {account}/{pos.code} 出错: {e!r}")
         return fills
 
-    def _maintain_watch(self, quotes: dict[str, Quote], now: datetime):
+    def _maintain_watch(self, quotes: dict[str, Quote], now: datetime, deadline: float | None = None):
         today = now.date()
         for code in list(self.watch):
             q = quotes.get(code)
@@ -152,6 +164,8 @@ class BoardStrategy:
                 q = quotes.get(code)
                 if q is None:
                     continue
+                if deadline is not None and monotonic() >= deadline:
+                    break       # 本分钟 Jev 预算用完：剩下的没有结论（不进否决集），下一分钟再判
                 try:
                     self._judge(cand, q, now)
                 except Exception as e:

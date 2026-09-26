@@ -2,6 +2,7 @@ import json
 import sqlite3
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
+from time import monotonic
 
 from jevq.config import (ACCOUNTS, MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE,
                          SENTIMENT_REFRESH_MIN, STRATEGIES)
@@ -38,21 +39,38 @@ class Engine:
         self.sentiment_label: str | None = None
         self.sentiment_trace: dict | None = None
         self._sentiment_at: datetime | None = None
+        self._sold_minute: tuple[datetime, dict[str, Quote]] | None = None   # 本分钟卖出阶段取到的行情
 
     def tick(self, now: datetime) -> list[Fill]:
+        """一分钟一轮：先卖后买（= sell_step + 不限时的 buy_step）。"""
+        return self.sell_step(now) + self.buy_step(now)
+
+    def sell_step(self, now: datetime) -> list[Fill]:
+        """卖出阶段：取行情 + 按规则卖，不碰 Jev。行情留给同一分钟的 buy_step 用。"""
+        self._sold_minute = None
         if self._rejected_day != now.date():
             self._restore_rejected(now.date())
         quotes = self._fetch(now)
         if quotes is None:
             return []
         fills = self._sells(quotes, now)
+        self._sold_minute = (now, quotes)      # 卖出阶段完整走完才允许买（卖出出错 = 这一分钟不买，同旧 tick）
+        return fills
+
+    def buy_step(self, now: datetime, deadline: float | None = None) -> list[Fill]:
+        """买入阶段：情绪 → 候选排序 → 影子 → 主账户（Jev）。必须在同一分钟的 sell_step 之后调用。
+        deadline（time.monotonic 时刻）：过了就不再对新候选问 Jev；没问到的这一分钟不算判过，下一分钟照常。"""
+        if self._sold_minute is None or self._sold_minute[0] != now:
+            return []
+        quotes = self._sold_minute[1]
+        self._sold_minute = None               # 每分钟只买一轮
         mode = buy_mode(self._sentiment(now, quotes), self.overseas)
         if self.halted or not buy_window_open(mode, now.time()):
-            return fills
+            return []
         ranked = rank_candidates(
             (q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()), self.ret5)
-        fills += self._buy_shadow(ranked, now)
-        fills += self._buy_main(ranked, now, mode)
+        fills = self._buy_shadow(ranked, now)
+        fills += self._buy_main(ranked, now, mode, deadline)
         return fills
 
     def _restore_rejected(self, day: date):
@@ -147,7 +165,8 @@ class Engine:
                 fills.append(f)
         return fills
 
-    def _buy_main(self, ranked: list[Quote], now: datetime, mode: str) -> list[Fill]:
+    def _buy_main(self, ranked: list[Quote], now: datetime, mode: str,
+                  deadline: float | None = None) -> list[Fill]:
         main = self.accounts[0]
         fills, checked, errors = [], 0, 0
         for rank, q in enumerate(ranked, 1):
@@ -159,6 +178,8 @@ class Engine:
                 break
             if affordable_shares(min(self.ledger.cash(main), MAX_PER_TRADE), q.price) == 0:
                 continue
+            if deadline is not None and monotonic() >= deadline:
+                break           # 本分钟 Jev 预算用完：剩下的不算判过（不记否决），下一分钟再问
             checked += 1
             verdict, why = self._check(self.notice_judge, q.code, now.date())
             notice_trace = getattr(self.notice_judge, "last_trace", None)

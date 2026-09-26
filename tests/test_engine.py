@@ -322,3 +322,89 @@ def test_last_fetch_minute_only_set_on_successful_fetch():
     feed["quotes"] = RuntimeError("qt down")
     eng.tick(at(10, 1))
     assert eng.last_fetch_minute == "2026-09-23 10:00"     # 失败不更新，last_quotes 仍是 10:00 的旧快照
+
+
+# ---- Task 4b：卖出/买入拆成两个阶段；买入阶段受每分钟 Jev 预算管 ----
+
+def _scenario(step):
+    """同一套场景分别用 tick 与 sell_step+buy_step 跑：否决、买入、次日卖出。"""
+    notice = Judge({"600002": ("reject", "新增减持")})
+    quotes = qs(**{"600001": -1.0, "600002": -2.0, "600003": -0.5, "600004": 2.0})
+    eng, ledger, feed = make(quotes, notice=notice)
+    out = [step(eng, at(10, 0)), step(eng, at(10, 1))]
+    feed["quotes"] = {c: quote(c, pct=1.5, open_pct=1.5) for c in quotes}
+    out.append(step(eng, at(9, 31, datetime(2026, 9, 24))))
+    fills = [[(f.account, f.code, f.side, f.reason) for f in fs] for fs in out]
+    rows = eng.conn.execute("SELECT ts, code, verdict, detail FROM decisions WHERE verdict != 'sentiment'").fetchall()
+    return fills, rows, notice.calls
+
+
+def test_sell_step_then_buy_step_equals_tick():
+    by_tick = _scenario(lambda eng, t: eng.tick(t))
+    by_phase = _scenario(lambda eng, t: eng.sell_step(t) + eng.buy_step(t, None))
+    assert by_phase == by_tick
+    assert by_tick[0][0] and by_tick[0][2]           # 场景里确实有买有卖
+
+
+def test_sell_step_does_not_call_any_judge():
+    quotes = qs(**{"600001": -1.0})
+    notice, news = Judge(), Judge()
+    eng, ledger, _ = make(quotes, notice=notice, news=news)
+    calls = []
+    eng.market_judge = type("M", (), {"sentiment": lambda self, s: calls.append(s) or "正常"})()
+    eng.sell_step(at(10, 0))
+    assert notice.calls == [] and news.calls == [] and calls == []
+    assert ledger.positions("main") == [] and ledger.positions("shadow") == []
+    eng.buy_step(at(10, 0))
+    assert notice.calls == ["600001"] and ledger.holds("main", "600001")
+
+
+def test_buy_step_without_sell_step_this_minute_does_nothing():
+    notice = Judge()
+    eng, ledger, feed = make(qs(**{"600001": -1.0}), notice=notice)
+    assert eng.buy_step(at(10, 0)) == []                        # 这一分钟还没取行情
+    feed["quotes"] = RuntimeError("down")
+    eng.sell_step(at(10, 1))
+    assert eng.buy_step(at(10, 1)) == []                        # 取数失败：不能用旧行情买
+    assert notice.calls == [] and ledger.positions("shadow") == []
+
+
+class ClockJudge(Judge):
+    """每次 check 把假 monotonic 拨快 step 秒（模拟慢 Jev）。"""
+    def __init__(self, clock, step, verdicts=None):
+        super().__init__(verdicts)
+        self.clock, self.step = clock, step
+
+    def check(self, code, *args):
+        self.clock[0] += self.step
+        return super().check(code, *args)
+
+
+def test_deadline_leaves_rest_undecided_and_checks_them_next_minute(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(engine_mod, "monotonic", lambda: clock[0])
+    quotes = qs(**{"600001": -1.0, "600002": -1.0, "600003": -1.0, "600004": -1.0})
+    # 全否决，让主账户一直有空位、一直往下问
+    notice = ClockJudge(clock, 30.0, {c: ("reject", "x") for c in quotes})
+    eng, ledger, _ = make(quotes, notice=notice)
+    eng.sell_step(at(10, 0))
+    eng.buy_step(at(10, 0), deadline=clock[0] + 40.0)
+    # ranked by ret5 desc: 600002 600003 600001 600004；0→30、30→60，第三只时已过时限
+    assert notice.calls == ["600002", "600003"]
+    assert eng.rejected == {"600002", "600003"}                # 没问到的不进否决集
+    codes = [r[0] for r in eng.conn.execute("SELECT code FROM decisions WHERE code != ''")]
+    assert sorted(codes) == ["600002", "600003"]                # 也不留 reject/error 记录
+    assert [p.code for p in ledger.positions("shadow")] == ["600002"]   # 影子不走 Jev，照买
+    eng.sell_step(at(10, 1))
+    eng.buy_step(at(10, 1), deadline=clock[0] + 40.0)
+    assert notice.calls == ["600002", "600003", "600001", "600004"]    # 下一分钟接着问
+
+
+def test_expired_deadline_checks_nothing_but_shadow_still_buys(monkeypatch):
+    monkeypatch.setattr(engine_mod, "monotonic", lambda: 100.0)
+    notice = Judge()
+    eng, ledger, _ = make(qs(**{"600001": -1.0}), notice=notice)
+    eng.sell_step(at(10, 0))
+    eng.buy_step(at(10, 0), deadline=50.0)
+    assert notice.calls == [] and ledger.positions("main") == []
+    assert ledger.holds("shadow", "600001")

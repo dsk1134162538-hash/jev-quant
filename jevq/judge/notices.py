@@ -54,8 +54,11 @@ class NoticeJudge:
             else:
                 need_title.append(n)
         if need_title:
+            # 标题分类同样受 jev_budget 总时限管：到点还没问的直接算失败（→ error，当日不买），
+            # 问到的照常缓存。与第二段一样用 deadline 压住单次请求超时，线程不会活过 check。
+            deadline = monotonic() + self.jev_budget
             with ThreadPoolExecutor(self.workers) as pool:
-                results = list(pool.map(self._ask_title, need_title))
+                results = list(pool.map(lambda n: self._ask_title(n, deadline), need_title))
             for n, res in zip(need_title, results):
                 if res is None:
                     failed = True
@@ -185,11 +188,13 @@ class NoticeJudge:
                 "level": level, "score": round(score, 4), "probs": probs, "body_read": body_read,
                 "excerpt": (body or "")[:200], "verdict": classify_score(score)}
 
-    def _ask_title(self, n):
+    def _ask_title(self, n, deadline):
+        if monotonic() >= deadline:
+            return None
         try:
             ans = self.jev.ask({"公告标题": n.title, "公告类型": n.type},
                                {"kind": {"type": "choice", "instructions": "这条A股上市公司公告属于哪一类？",
-                                         "criteria": title_criteria()}})["kind"]
+                                         "criteria": title_criteria()}}, deadline=deadline)["kind"]
             label = ans["choice"]
         except (JevError, KeyError, TypeError):
             return None

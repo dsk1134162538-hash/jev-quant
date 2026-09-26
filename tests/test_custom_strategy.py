@@ -511,3 +511,74 @@ def test_leader_rank_used_by_custom_strategy_on_minute():
 def test_preview_values_use_two_decimals_for_floats():
     assert _fmt_value(-2.6, "%") == "-2.60%" and _fmt_value(-2.21, "%") == "-2.21%"
     assert _fmt_value(3, "名") == "3名" and _fmt_value(True, "") == "是" and _fmt_value(None, "%") == "—"
+
+
+# ---- Task 4b：卖出/买入拆成两个阶段；买入阶段受每分钟 Jev 预算管 ----
+
+PHASE_SPEC = {
+    "name": "阶段测试", "capital": 30000,
+    "select": {"conditions": [{"field": "pct", "op": ">=", "value": 5.0}]},
+    "entry": {},
+    "exits": [{"when": {"conditions": [{"field": "pct", "op": "<=", "value": -5}]}, "reason": "止损"}],
+    "jev": {"notices": True, "news": True},
+}
+
+
+def _custom_scenario(step):
+    notice = Judge({"600001": ("reject", "减持")})
+    strat, conn, ledger = make(PHASE_SPEC, notice=notice)
+    ledger.buy("c1_main", quote("600004", pct=0.0, ts=datetime(2026, 9, 23, 10, 0)),
+               datetime(2026, 9, 23, 10, 0), "x")
+    quotes = {"600001": quote("600001", pct=6.0, amount=3e8, ts=DAY),
+              "600002": quote("600002", pct=7.0, amount=2e8, ts=DAY),
+              "600004": quote("600004", pct=-6.0, ts=DAY)}
+    fills = [step(strat, quotes, at(10, 0)), step(strat, quotes, at(10, 1))]
+    rows = conn.execute("SELECT ts, code, verdict, detail FROM decisions").fetchall()
+    return [[(f.account, f.code, f.side, f.reason) for f in fs] for fs in fills], rows, notice.calls
+
+
+def test_custom_sell_step_then_buy_step_equals_on_minute():
+    by_minute = _custom_scenario(lambda s, q, t: s.on_minute(q, t))
+    by_phase = _custom_scenario(lambda s, q, t: s.sell_step(q, t) + s.buy_step(q, t, None))
+    assert by_phase == by_minute
+    sides = {f[2] for f in by_minute[0][0]}
+    assert sides == {"buy", "sell"}                    # 场景里确实有卖有买
+
+
+def test_custom_sell_step_does_not_call_judge():
+    notice, news = Judge(), Judge()
+    strat, _, ledger = make(PHASE_SPEC, notice=notice, news=news)
+    strat.sell_step({"600001": quote("600001", pct=6.0, ts=DAY)}, at(10, 0))
+    assert notice.calls == [] and news.calls == []
+    assert ledger.positions("c1_main") == [] and ledger.positions("c1_shadow") == []
+
+
+class ClockJudge(Judge):
+    def __init__(self, clock, step, verdicts=None):
+        super().__init__(verdicts)
+        self.clock, self.step = clock, step
+
+    def check(self, code, *args):
+        self.clock[0] += self.step
+        return super().check(code, *args)
+
+
+def test_custom_deadline_leaves_rest_undecided_and_checks_next_minute(monkeypatch):
+    import jevq.strategies.custom as custom_mod
+    clock = [0.0]
+    monkeypatch.setattr(custom_mod, "monotonic", lambda: clock[0])
+    quotes = {c: quote(c, pct=6.0, amount=a, ts=DAY)
+              for c, a in [("600001", 4e8), ("600002", 3e8), ("600003", 2e8)]}
+    notice = ClockJudge(clock, 30.0, {c: ("reject", "x") for c in quotes})
+    spec = dict(PHASE_SPEC, jev={"notices": True, "news": False})
+    strat, conn, ledger = make(spec, notice=notice)
+    strat.sell_step(quotes, at(10, 0))
+    strat.buy_step(quotes, at(10, 0), deadline=clock[0] + 40.0)
+    assert len(notice.calls) == 2                                 # 0→30、30→60；第三只时已过时限
+    left = (set(quotes) - set(notice.calls)).pop()
+    assert left not in strat.rejected
+    assert conn.execute("SELECT COUNT(*) FROM decisions WHERE code=?", (left,)).fetchone()[0] == 0
+    assert len(ledger.positions("c1_shadow")) == 1                # 影子不走 Jev，照买
+    strat.sell_step(quotes, at(10, 1))
+    strat.buy_step(quotes, at(10, 1), deadline=clock[0] + 40.0)
+    assert notice.calls[2:] == [left]                             # 下一分钟接着问

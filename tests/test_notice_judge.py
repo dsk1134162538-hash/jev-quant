@@ -450,3 +450,46 @@ def test_failed_check_marks_trace_incomplete():
     ok = judge(setup(t), FakeJev(risk={t: {"低": 1.0}}))
     ok.check("600001", TODAY)
     assert "incomplete" not in ok.last_trace
+
+
+# ---- 第一段标题分类也受 jev_budget 管（Task 4b）：慢 Jev 不能让标题分类无上限地拖交易 tick ----
+
+class TitleClockJev(FakeJev):
+    """每次标题分类调用把假 monotonic 拨快 step 秒；记录每次传进来的 deadline。"""
+    def __init__(self, clock, step, **kw):
+        super().__init__(**kw)
+        self.clock, self.step, self.title_deadlines = clock, step, []
+
+    def ask(self, state, questions, timeout=None, deadline=None):
+        if "kind" in questions:
+            self.title_deadlines.append(deadline)
+            self.clock[0] += self.step
+        return super().ask(state, questions, timeout=timeout, deadline=deadline)
+
+
+def test_title_stage_deadline_passed_is_error_and_stops_asking(monkeypatch):
+    import jevq.judge.notices as mod
+    clock = [1000.0]
+    monkeypatch.setattr(mod, "monotonic", lambda: clock[0])
+    titles = [f"甲:董事会决议公告{i}" for i in range(4)]
+    conn = setup(*titles)
+    jev = TitleClockJev(clock, 6.0)
+    j = NoticeJudge(conn, jev, workers=1, fetch_body=lambda aid: None, jev_budget=10.0)
+    assert j.check("600001", TODAY) == ("error", "Jev 不可用")
+    assert jev.title_calls == 2                                  # 0→6、6→12；第三条时已过时限，不再问
+    assert jev.title_deadlines == [1010.0, 1010.0]               # 时限传给了 JevClient（管住单次超时与重试）
+    assert j.last_trace.get("incomplete") is True
+    n = conn.execute("SELECT COUNT(*) FROM notice_verdicts WHERE source='jev2'").fetchone()[0]
+    assert n == 2                                                # 问到的照常缓存，下次不用重问
+    assert jev.risk_calls == 0
+
+
+def test_title_stage_within_budget_passes_deadline(monkeypatch):
+    import jevq.judge.notices as mod
+    clock = [0.0]
+    monkeypatch.setattr(mod, "monotonic", lambda: clock[0])
+    conn = setup("甲:董事会决议公告")
+    jev = TitleClockJev(clock, 1.0)
+    j = NoticeJudge(conn, jev, fetch_body=lambda aid: None, jev_budget=20.0)
+    assert j.check("600001", TODAY) == ("pass", "公告无雷")
+    assert jev.title_deadlines == [20.0]
