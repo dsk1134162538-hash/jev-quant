@@ -158,6 +158,10 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run.tencent, "fetch_quotes", fetch_quotes)
     monkeypatch.setattr(run, "sync_notices", lambda conn, today: 0)
+    # 公告正文预抓默认顶掉：绝不真的去敲东方财富正文接口；需要验证的测试自己再注入。
+    prefetch_calls = []
+    monkeypatch.setattr(run, "prefetch_bodies",
+                        lambda conn, today, codes: prefetch_calls.append((today, list(codes))) or 0)
     monkeypatch.setattr(run, "MarketJudge", FakeMarket)
     monkeypatch.setattr(run, "Engine", FakeEngine)
     FakeMarket.fail = False
@@ -184,6 +188,7 @@ def env(tmp_path, monkeypatch):
     e = Env()
     e.db, e.reports, e.clock, e.feed, e.logs = str(dbp), reports, clock, feed, logs
     e.feed_zt = feed_zt
+    e.prefetch_calls = prefetch_calls
     e.run = lambda **kw: run.run_day(log=logs.append, **kw)
     e.log_text = lambda: "\n".join(logs)
     e.boards = SpyBoard.instances
@@ -1051,3 +1056,28 @@ def test_custom_holding_outside_universe_is_sold_and_pushed(env):
         conn.close()
     assert reasons == ["止损"]
     assert any(t.startswith("【测试规则·主(Jev) 卖出】") for t, _ in notifier.sent)
+
+
+# ---- 公告正文预抓 ----
+
+
+def test_prefetch_bodies_runs_after_each_notice_sync(env, monkeypatch):
+    events = []
+    monkeypatch.setattr(run, "sync_notices", lambda conn, today: events.append("sync") or 0)
+    monkeypatch.setattr(run, "prefetch_bodies",
+                        lambda conn, today, codes: events.append(("prefetch", today, list(codes))) or 2)
+    path = env.run()
+    pre = ("prefetch", date(2026, 9, 23), ["600001"])
+    assert events == ["sync", pre, "sync", pre]          # 盘前 + 13:00 重同步后各预抓一次
+    assert path is not None
+    assert "公告正文预抓 2 条" in env.log_text()
+
+
+def test_prefetch_bodies_failure_is_logged_and_day_continues(env, monkeypatch):
+    def fail(conn, today, codes):
+        raise RuntimeError("body down")
+
+    monkeypatch.setattr(run, "prefetch_bodies", fail)
+    path = env.run()
+    assert len(FakeEngine.instances[0].ticks) == 240 and path is not None
+    assert "公告正文预抓失败" in env.log_text() and "body down" in env.log_text()

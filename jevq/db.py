@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS notices(id TEXT PRIMARY KEY, code TEXT, title TEXT, t
 CREATE INDEX IF NOT EXISTS idx_notices_code ON notices(code, date);
 CREATE TABLE IF NOT EXISTS notice_fetch(date TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS notice_verdicts(id TEXT PRIMARY KEY, label TEXT, confidence REAL, source TEXT);
+CREATE TABLE IF NOT EXISTS notice_bodies(id TEXT PRIMARY KEY, text TEXT, fetched TEXT);
 CREATE TABLE IF NOT EXISTS day_cache(date TEXT, kind TEXT, key TEXT, value TEXT,
   PRIMARY KEY(date, kind, key));
 CREATE TABLE IF NOT EXISTS jev_calls(

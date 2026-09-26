@@ -11,6 +11,7 @@ from jevq import config, db, notify_content
 from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
 from jevq.data import akdata, board_events, closes, concepts, custom_store, tencent
 from jevq.data.features import history_features
+from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
 from jevq.engine import Engine
 from jevq.judge.jev import JevClient
@@ -247,6 +248,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if not late:
         state["phase"] = "同步公告"
         _sync_notices(conn, today, log)
+        _prefetch_bodies(conn, today, universe, log)
 
     notice_judge, news_judge = NoticeJudge(conn, jev), NewsJudge(conn, jev)
     # 账户集合当天固定（自定义策略新版本次日才生效）：盘前算一次，低吸取行情时连自定义账户的持仓一起拉，
@@ -302,6 +304,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         if not resynced and t.time() >= NOTICE_RESYNC_AT:
             resynced = True
             _sync_notices(conn, today, log)
+            _prefetch_bodies(conn, today, universe, log)
         minute_key = t.replace(second=0, microsecond=0)
         if in_session(t.time()) and minute_key != last_tick_minute:
             # 防重复的安全网：正常情况下 _fast_scan 固定在 :02 边界交回控制权，不会撞到同一分钟
@@ -555,6 +558,14 @@ def _sync_notices(conn, today: date, log: Callable[[str], None]):
         log(f"公告同步 {sync_notices(conn, today)} 条")
     except Exception as e:
         log(f"公告同步失败：{e!r}")
+
+
+def _prefetch_bodies(conn, today: date, universe, log: Callable[[str], None]):
+    """早盘/午间同步公告后预抓疑似公告正文；失败只记日志，不影响交易。"""
+    try:
+        log(f"公告正文预抓 {prefetch_bodies(conn, today, list(universe))} 条")
+    except Exception as e:
+        log(f"公告正文预抓失败：{e!r}")
 
 
 def run_backfill(log: Callable[[str], None] = print) -> None:
