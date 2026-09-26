@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS custom_strategies(
 
 MIGRATIONS = [("decisions", "trace", "TEXT"), ("notice_verdicts", "probs", "TEXT"),
               ("decisions", "strategy", "TEXT"), ("fills", "version", "INTEGER"),
-              ("decisions", "version", "INTEGER")]
+              ("decisions", "version", "INTEGER"), ("closes", "volume", "REAL")]   # closes.volume：日成交量（手）
 
 
 def _migrate(conn: sqlite3.Connection):

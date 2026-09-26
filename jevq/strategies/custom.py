@@ -8,7 +8,8 @@ from jevq.ledger import Ledger
 from jevq.models import Fill, Position, Quote
 from jevq.rules import board as board_rules
 from jevq.rules.custom import FIELDS, eval_cond, eval_group, first_exit, rank_codes
-from jevq.rules.metrics import avg_pct, body_pct, committee, outer_ratio, seal_amount, seal_ratio
+from jevq.rules.metrics import (avg_pct, body_pct, committee, outer_ratio, projected_volume, seal_amount,
+                                seal_ratio, vol_step)
 
 
 def minute_context(quotes: dict[str, Quote], universe, concept_map: dict[str, list[str]],
@@ -119,6 +120,13 @@ def make_getter(code: str, q: Quote, *, features: dict, amount_ranks: dict[str, 
             return seal_amount(q)
         if key == "seal_ratio":
             return seal_ratio(q)
+        if key in ("vol_step_down", "vol_step_up"):
+            # 历史最后一天必须早于这份行情的日期：周末/盘前预览时行情还是上一交易日的，别把同一天算两次
+            until = feat.get("vols_until")
+            if until is None or q.ts.date().isoformat() <= until:
+                return None
+            return vol_step(feat.get("vols") or [], projected_volume(q.volume, t), n,
+                            down=key == "vol_step_down")
 
         # 估值相关
         if key == "float_mcap":
@@ -152,6 +160,8 @@ def make_getter(code: str, q: Quote, *, features: dict, amount_ranks: dict[str, 
             return round((q.price / ma - 1) * 100, 2)
         if key == "up_streak":
             return feat.get("up_streak")
+        if key == "down_streak":
+            return feat.get("down_streak")
 
         # 题材相关
         if key == "concept_heat":

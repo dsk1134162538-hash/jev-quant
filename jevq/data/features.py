@@ -5,13 +5,15 @@ from datetime import date
 RET_NS = (3, 5, 10, 20)
 LIMIT_UP_NS = (3, 5, 10, 20)
 MA_NS = (5, 10, 20)
+VOL_DAYS = 5          # 阶梯缩量/放量的 N 最大 5，保留最近 5 个日期的成交量
 
 
 def history_features(conn, codes: Iterable[str], today: date) -> dict[str, dict]:
     """最近 21 个不同日期（date < today）算历史特征，一次性查询，按代码返回。
 
     每只代码返回 {"ret": {n: 涨幅}, "limit_up": {n: 是否涨停过}, "boards": 连板数, "ma": {n: 均线},
-    "up_streak": 连涨天数（截至昨日）}。
+    "up_streak": 连涨天数（截至昨日）, "down_streak": 连跌天数（截至昨日）,
+    "vols": 最近 VOL_DAYS 个全局日期的成交量（手，升序；缺行或 NULL 为 None）, "vols_until": 最新日期}。
     ret/ma 数据不足对应 n 时该键缺失；limit_up 按已有的相邻日对判断，始终存在。
     """
     codes = list(codes)
@@ -22,18 +24,21 @@ def history_features(conn, codes: Iterable[str], today: date) -> dict[str, dict]
         (today.isoformat(),)).fetchall()]
     if not dates:
         return {c: {"ret": {}, "limit_up": {n: False for n in LIMIT_UP_NS}, "boards": 0, "ma": {},
-                    "up_streak": 0}
+                    "up_streak": 0, "down_streak": 0, "vols": [], "vols_until": None}
                 for c in codes}
     dates.sort()  # 升序，方便按相邻两天比较
 
     date_placeholders = ",".join("?" * len(dates))
     code_placeholders = ",".join("?" * len(codes))
     rows = conn.execute(
-        f"SELECT code, date, close FROM closes WHERE date IN ({date_placeholders}) "
+        f"SELECT code, date, close, volume FROM closes WHERE date IN ({date_placeholders}) "
         f"AND code IN ({code_placeholders})", (*dates, *codes)).fetchall()
     by_code: dict[str, dict[str, float]] = {}
-    for code, d, close in rows:
+    vol_by_code: dict[str, dict[str, float]] = {}
+    for code, d, close, volume in rows:
         by_code.setdefault(code, {})[d] = close
+        if volume is not None and volume > 0:
+            vol_by_code.setdefault(code, {})[d] = volume
 
     out: dict[str, dict] = {}
     for code in codes:
@@ -82,5 +87,21 @@ def history_features(conn, codes: Iterable[str], today: date) -> dict[str, dict]
                 break
             up_streak += 1
 
-        out[code] = {"ret": ret, "limit_up": limit_up, "boards": boards, "ma": ma, "up_streak": up_streak}
+        # 连跌天数：与连涨天数镜像（收盘价逐日比较、截至昨日、缺口处断开）。
+        down_flags: list[bool] = []
+        for i in range(1, len(dates)):
+            prev, cur = vals.get(dates[i - 1]), vals.get(dates[i])
+            down_flags.append(prev is not None and cur is not None and cur < prev)
+
+        down_streak = 0
+        for f in reversed(down_flags):
+            if not f:
+                break
+            down_streak += 1
+
+        # 成交量：对齐全局最近 VOL_DAYS 个日期，缺行/NULL 留 None，由取值函数判断窗口内是否齐全。
+        vols = [vol_by_code.get(code, {}).get(d) for d in dates[-VOL_DAYS:]]
+
+        out[code] = {"ret": ret, "limit_up": limit_up, "boards": boards, "ma": ma, "up_streak": up_streak,
+                     "down_streak": down_streak, "vols": vols, "vols_until": dates[-1]}
     return out

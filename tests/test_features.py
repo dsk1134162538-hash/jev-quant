@@ -96,7 +96,7 @@ def test_no_history_returns_empty_dict():
     c = conn()
     assert history_features(c, ["600005"], TODAY) == {
         "600005": {"ret": {}, "limit_up": {3: False, 5: False, 10: False, 20: False},
-                   "boards": 0, "ma": {}, "up_streak": 0}
+                   "boards": 0, "ma": {}, "up_streak": 0, "down_streak": 0, "vols": [], "vols_until": None}
     }
 
 
@@ -175,3 +175,58 @@ def test_ma_n_uses_available_closes_in_window_despite_a_gap():
     assert feats["ma"][5] == round(sum(own_closes[-5:]) / 5, 2)
     assert feats["ma"][10] == round(sum(own_closes[-10:]) / 10, 2)
     assert feats["ma"][20] == round(sum(own_closes[-20:]) / 20, 2)
+
+
+def test_down_streak_counts_trailing_consecutive_losses():
+    c = conn()
+    dates = dates_before(TODAY, 21)
+    # 最后三天逐日下跌，倒数第四天是上涨，不计入（与 up_streak 镜像）
+    closes = [10.0] * 16 + [10.0, 11.0, 10.8, 10.5, 10.1]
+    seed(c, "600011", dates, closes)
+    feats = history_features(c, ["600011"], TODAY)["600011"]
+    assert feats["down_streak"] == 3
+    assert feats["up_streak"] == 0
+
+
+def test_down_streak_flat_day_breaks_and_up_streak_unaffected():
+    c = conn()
+    dates = dates_before(TODAY, 21)
+    closes = [10.0] * 18 + [9.5, 9.5, 9.0]        # 走平一天打断连跌，只剩最后 1 天
+    seed(c, "600012", dates, closes)
+    feats = history_features(c, ["600012"], TODAY)["600012"]
+    assert feats["down_streak"] == 1 and feats["up_streak"] == 0
+
+
+def test_down_streak_does_not_cross_missing_day_gap():
+    c = conn()
+    dates = dates_before(TODAY, 21)
+    seed(c, "FILLER", dates, [10.0] * 21)
+    own_dates = dates[:-2] + dates[-1:]            # 缺倒数第二天
+    own_closes = [12.0] * (len(own_dates) - 1) + [10.0]
+    seed(c, "600013", own_dates, own_closes)
+    feats = history_features(c, ["600013"], TODAY)["600013"]
+    assert feats["down_streak"] == 0
+
+
+def seed_vol(c, code, dates, vols):
+    c.executemany("INSERT INTO closes(date, code, close, volume) VALUES (?, ?, 10.0, ?)",
+                  [(d, code, v) for d, v in zip(dates, vols)])
+    c.commit()
+
+
+def test_vols_are_last_five_global_dates_oldest_first():
+    c = conn()
+    dates = dates_before(TODAY, 8)
+    seed_vol(c, "600014", dates, [1, 2, 3, 4, 5, 6, 7, 8])
+    feats = history_features(c, ["600014"], TODAY)["600014"]
+    assert feats["vols"] == [4.0, 5.0, 6.0, 7.0, 8.0]
+    assert feats["vols_until"] == dates[-1]
+
+
+def test_vols_keep_null_and_gap_as_none():
+    c = conn()
+    dates = dates_before(TODAY, 5)
+    seed_vol(c, "FILLER", dates, [1] * 5)
+    seed_vol(c, "600015", dates[:2] + dates[3:], [1, 2, None, 5])   # 缺中间一天，最后一天量为 NULL
+    feats = history_features(c, ["600015"], TODAY)["600015"]
+    assert feats["vols"] == [1.0, 2.0, None, None, 5.0]     # 缺行（第 3 天）和 NULL（第 4 天）都是 None

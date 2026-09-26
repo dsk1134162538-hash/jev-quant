@@ -4,13 +4,27 @@ from collections.abc import Callable, Iterable
 from datetime import date, datetime
 
 
-def save_closes(conn, day: date, prices: dict[str, float]) -> int:
-    """把当天的收盘价（或当日报价）写入 closes 表；价格 <= 0 的跳过。返回写入条数。"""
-    rows = [(day.isoformat(), code, price) for code, price in prices.items()
+UPSERT_SQL = ("INSERT INTO closes(date, code, close, volume) VALUES (?, ?, ?, ?) "
+              "ON CONFLICT(date, code) DO UPDATE SET close = excluded.close, "
+              "volume = COALESCE(excluded.volume, closes.volume)")
+
+
+def _lots(v) -> float | None:
+    """成交量（手）；缺失或 <= 0（停牌/没成交）记 NULL，不当成真实的 0 手。"""
+    return float(v) if v is not None and v > 0 else None
+
+
+def save_closes(conn, day: date, prices: dict[str, float],
+                volumes: dict[str, float] | None = None) -> int:
+    """把当天的收盘价（或当日报价）写入 closes 表；价格 <= 0 的跳过。返回写入条数。
+
+    volumes：code → 当日成交量（手，Quote.volume 的口径）。没给量的代码保留库里已有的量。"""
+    volumes = volumes or {}
+    rows = [(day.isoformat(), code, price, _lots(volumes.get(code))) for code, price in prices.items()
             if price is not None and price > 0]
     if not rows:
         return 0
-    conn.executemany("INSERT OR REPLACE INTO closes(date, code, close) VALUES (?, ?, ?)", rows)
+    conn.executemany(UPSERT_SQL, rows)
     conn.commit()
     return len(rows)
 
@@ -104,10 +118,15 @@ def recent_limit_up_codes(conn, codes: Iterable[str], today: date, days: int = 1
 
 
 def backfill_closes(conn, codes: Iterable[str], today: date,
-                     fetch_kline: Callable[[str], list[tuple[str, float]]], pause: float = 0.1,
+                     fetch_kline: Callable[[str], list[tuple]], pause: float = 0.1,
                      max_consecutive_failures: int = 30, deadline: datetime | None = None,
-                     log=print) -> int:
-    """给收盘价不足 6 条的 code 逐只串行补数。返回实际写入了新收盘价的 code 数（fetch 成功但一行都没写进去的不算）。"""
+                     log=print, fill_volume: bool = False, volume_days: int = 10) -> int:
+    """给收盘价不足 6 条的 code 逐只串行补数。返回实际写入了新收盘价的 code 数（fetch 成功但一行都没写进去的不算）。
+
+    fetch_kline(code) 返回 (date_str, close) 或 (date_str, close, volume_手) 的列表；
+    带量的行同时写量，不带量的只更新收盘价、保留库里已有的量。
+    fill_volume=True 时，最近 volume_days 个日期（date < today）里有量为 NULL 的 code 也重新拉一遍，
+    用来给历史行补上成交量（fetch_kline 需带量，例如 akdata.fetch_daily_sina）。"""
     codes = list(codes)
     if not codes:
         return 0
@@ -116,7 +135,17 @@ def backfill_closes(conn, codes: Iterable[str], today: date,
     counts = dict(conn.execute(
         f"SELECT code, COUNT(*) FROM closes WHERE date < ? AND code IN ({placeholders}) "
         "GROUP BY code", (today_iso, *codes)).fetchall())
-    todo = [c for c in codes if counts.get(c, 0) < 6]
+    need_volume: set[str] = set()
+    if fill_volume:
+        recent = [r[0] for r in conn.execute(
+            "SELECT DISTINCT date FROM closes WHERE date < ? ORDER BY date DESC LIMIT ?",
+            (today_iso, volume_days)).fetchall()]
+        if recent:
+            date_placeholders = ",".join("?" * len(recent))
+            need_volume = {r[0] for r in conn.execute(
+                f"SELECT DISTINCT code FROM closes WHERE volume IS NULL AND date IN ({date_placeholders}) "
+                f"AND code IN ({placeholders})", (*recent, *codes)).fetchall()}
+    todo = [c for c in codes if counts.get(c, 0) < 6 or c in need_volume]
 
     done = 0
     consecutive_failures = 0
@@ -133,9 +162,10 @@ def backfill_closes(conn, codes: Iterable[str], today: date,
             time.sleep(pause)
             continue
         consecutive_failures = 0
-        rows = [(d, code, c) for d, c in rows if d < today_iso and c > 0]
+        rows = [(r[0], code, r[1], _lots(r[2]) if len(r) > 2 else None)
+                for r in rows if r[0] < today_iso and r[1] > 0]
         if rows:
-            conn.executemany("INSERT OR REPLACE INTO closes(date, code, close) VALUES (?, ?, ?)", rows)
+            conn.executemany(UPSERT_SQL, rows)
             conn.commit()
             done += 1
         time.sleep(pause)

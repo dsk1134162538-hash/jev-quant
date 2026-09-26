@@ -221,3 +221,79 @@ def test_prev_closes_none_when_second_date_is_not_prev_prev_day():
     seed(c, "600001", dates=["2026-09-18", "2026-09-22"], prices=[9.0, 9.5])   # 09-21 缺
     assert prev_closes_from_db(c, ["600001"], TODAY, date(2026, 9, 22), date(2026, 9, 21)) ==         {"600001": None}
     assert prev_closes_from_db(c, ["600001"], TODAY, date(2026, 9, 22)) == {"600001": 9.0}
+
+
+# ---- 日成交量（手）：收盘存库 + 补数 ----
+
+def test_save_closes_stores_volume_in_lots():
+    c = conn()
+    n = save_closes(c, TODAY, {"600001": 10.5, "600002": 8.0, "600003": 7.0},
+                    volumes={"600001": 12345, "600002": 0})
+    assert n == 3
+    rows = sorted(c.execute("SELECT code, close, volume FROM closes").fetchall())
+    # 量为 0（停牌/没成交）和没给量的都存 NULL，不当成真实的 0 手
+    assert rows == [("600001", 10.5, 12345.0), ("600002", 8.0, None), ("600003", 7.0, None)]
+
+
+def test_save_closes_without_volume_keeps_existing_volume():
+    c = conn()
+    save_closes(c, TODAY, {"600001": 10.0}, volumes={"600001": 500})
+    save_closes(c, TODAY, {"600001": 10.9})
+    assert c.execute("SELECT close, volume FROM closes").fetchone() == (10.9, 500.0)
+
+
+def test_backfill_stores_volume_from_three_tuple_fetcher():
+    c = conn()
+
+    def fetch(code):
+        return [("2026-09-21", 10.0, 1200.0), ("2026-09-22", 10.1, 900.0)]
+
+    n = backfill_closes(c, ["600001"], TODAY, fetch, pause=0)
+    rows = sorted(c.execute("SELECT date, close, volume FROM closes WHERE code='600001'").fetchall())
+    assert rows == [("2026-09-21", 10.0, 1200.0), ("2026-09-22", 10.1, 900.0)]
+    assert n == 1
+
+
+def test_backfill_two_tuple_fetcher_keeps_existing_volume():
+    c = conn()
+    c.execute("INSERT INTO closes(date, code, close, volume) VALUES ('2026-09-22', '600001', 10.0, 800)")
+    c.commit()
+    backfill_closes(c, ["600001"], TODAY, lambda code: [("2026-09-22", 10.2)], pause=0)
+    assert c.execute("SELECT close, volume FROM closes").fetchone() == (10.2, 800.0)
+
+
+def test_backfill_fill_volume_refetches_codes_with_null_volume():
+    c = conn()
+    seed(c, "600001")                                  # 7 天收盘价齐全，但量全是 NULL
+    seed(c, "600002")
+    c.execute("UPDATE closes SET volume = 100 WHERE code = '600002'")
+    c.commit()
+    calls = []
+
+    def fetch(code):
+        calls.append(code)
+        return [(d, 10.0, 1000.0 + i) for i, d in enumerate(DATES)]
+
+    assert backfill_closes(c, ["600001", "600002"], TODAY, fetch, pause=0) == 0   # 默认不管量
+    assert calls == []
+    n = backfill_closes(c, ["600001", "600002"], TODAY, fetch, pause=0, fill_volume=True)
+    assert calls == ["600001"] and n == 1              # 量已齐的 600002 不再拉
+    vols = [r[0] for r in c.execute("SELECT volume FROM closes WHERE code='600001' ORDER BY date")]
+    assert vols == [1000.0 + i for i in range(len(DATES))]
+
+
+def test_fetch_daily_sina_converts_shares_to_lots(monkeypatch):
+    import pandas as pd
+
+    from jevq.data import akdata
+    seen = {}
+
+    def fake_daily(symbol, start_date, end_date, adjust=""):
+        seen.update(symbol=symbol, start_date=start_date, end_date=end_date, adjust=adjust)
+        return pd.DataFrame({"date": [date(2026, 9, 21), date(2026, 9, 22)], "close": [10.0, 10.5],
+                             "volume": [123400.0, 5600.0]})
+
+    monkeypatch.setattr(akdata.ak, "stock_zh_a_daily", fake_daily)
+    rows = akdata.fetch_daily_sina("600001", today=date(2026, 9, 23))
+    assert rows == [("2026-09-21", 10.0, 1234.0), ("2026-09-22", 10.5, 56.0)]
+    assert seen["symbol"] == "sh600001" and seen["adjust"] == "" and seen["end_date"] == "20260923"

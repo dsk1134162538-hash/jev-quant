@@ -479,6 +479,19 @@ def test_report_saves_closes_before_writing_it(env):
     assert "收盘价存库" in env.log_text()
 
 
+def test_report_saves_day_volume_in_lots_with_close(env):
+    env.feed["quotes"] = {"600001": quote("600001", pct=2.0, name="甲", volume=45678,
+                                          ts=datetime(2026, 9, 23, 15, 0))}
+    env.run()
+    conn = db.connect(env.db)
+    try:
+        row = conn.execute("SELECT volume FROM closes WHERE date=? AND code='600001'",
+                           ("2026-09-23",)).fetchone()
+    finally:
+        conn.close()
+    assert row == (45678.0,)                              # Quote.volume 已是手，原样存
+
+
 def test_stale_quote_is_not_saved_to_closes(env):
     # ts 是昨天的行情（比如刷新失败沿用的快照），不能当成今天的收盘价存库。
     env.feed["quotes"] = {"600001": quote("600001", pct=2.0, name="甲",

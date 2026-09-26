@@ -2,7 +2,7 @@ import re
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import akshare as ak
 import pandas as pd
@@ -38,6 +38,18 @@ class News:
 def trade_days() -> list[date]:
     df = _ak(ak.tool_trade_date_hist_sina)
     return sorted(pd.Timestamp(d).date() for d in df["trade_date"])
+
+
+def fetch_daily_sina(code: str, today: date | None = None, days: int = 60) -> list[tuple[str, float, float]]:
+    """新浪日 K（不复权，ak.stock_zh_a_daily）最近 days 个自然日：[(date_str, close, volume_手)]。
+    新浪的 volume 单位是股，这里 /100 换成手，与 Quote.volume、closes.volume 同口径。
+    给 closes.backfill_closes 当 fetch_kline 用（腾讯 K 线接口被 WAF 封了）。"""
+    today = today or date.today()
+    sym = ("sh" if code.startswith("6") else "sz") + code
+    df = _ak(ak.stock_zh_a_daily, symbol=sym, start_date=(today - timedelta(days=days)).strftime("%Y%m%d"),
+             end_date=today.strftime("%Y%m%d"), adjust="")
+    return [(pd.Timestamp(r["date"]).date().isoformat(), float(r["close"]), float(r["volume"]) / 100)
+            for _, r in df.iterrows()]
 
 
 def filter_universe(rows: Iterable[tuple[str, str, date]], today: date,

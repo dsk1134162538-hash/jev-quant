@@ -61,3 +61,19 @@ def test_connect_readonly_reads_but_cannot_write(tmp_path):
     conn.close()
     ro = db.connect_readonly(path)                      # 写连接已关闭（WAL 文件被清理）后也能只读打开
     assert ro.execute("SELECT amount FROM cash").fetchone() == (1.0,)
+
+
+def test_migrates_old_closes_adds_volume_column_idempotently(tmp_path):
+    path = str(tmp_path / "old3.sqlite")
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE closes(date TEXT, code TEXT, close REAL, PRIMARY KEY(date, code))")
+    old.execute("INSERT INTO closes VALUES ('2026-09-23', '600001', 10.0)")
+    old.commit()
+    old.close()
+    conn = db.connect(path)
+    assert "volume" in {r[1] for r in conn.execute("PRAGMA table_info(closes)")}
+    assert conn.execute("SELECT close, volume FROM closes").fetchone() == (10.0, None)   # 旧行的量留空
+    conn.close()
+    conn = db.connect(path)                            # 再连一次不报错（迁移幂等）
+    pk = [r[1] for r in conn.execute("PRAGMA table_info(closes)") if r[5]]
+    assert pk == ["date", "code"]                      # 主键不变

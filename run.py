@@ -335,8 +335,9 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             quotes = tencent.fetch_quotes(close_codes)
             prices.update({c: q.price for c, q in quotes.items()})
             names = {**{c: q.name for c, q in quotes.items()}, **names}
-            today_prices = {c: q.price for c, q in quotes.items() if q.ts.date() == today}
-            saved = closes.save_closes(conn, today, today_prices)
+            today_quotes = {c: q for c, q in quotes.items() if q.ts.date() == today}
+            saved = closes.save_closes(conn, today, {c: q.price for c, q in today_quotes.items()},
+                                       volumes={c: q.volume for c, q in today_quotes.items()})
             log(f"收盘价存库 {saved} 条")
         except Exception as e:
             log(f"收盘价刷新失败，沿用最后快照：{e!r}")
