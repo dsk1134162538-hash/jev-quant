@@ -32,7 +32,8 @@ class NoticeJudge:
         return {"suspects": [], "others": 0, "skipped": []}
 
     def check(self, code: str, today: date) -> tuple[str, str]:
-        self.last_trace = self._empty_trace()      # 中途抛异常时，调用方读到的也不会是上一只票的
+        # 中途抛异常时，调用方读到的也不会是上一只票的；并标上 incomplete，面板不会把它显示成「无疑似雷」
+        self.last_trace = {**self._empty_trace(), "incomplete": True}
         notices = notices_for(self.conn, code, today)
         failed = False
 
@@ -106,6 +107,7 @@ class NoticeJudge:
         self.last_trace = {"suspects": items, "others": others,
                            "skipped": [{"date": n.date, "title": n.title, "category": cat} for n, cat, _ in skipped]}
         if failed:
+            self.last_trace["incomplete"] = True      # Jev 中途失败：疑似/其余只是已判完的那部分
             return "error", "Jev 不可用"
         if not items:
             return "pass", "公告无雷"

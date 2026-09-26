@@ -79,3 +79,65 @@ def test_decision_detail_renders_new_notice_risk_and_legacy_list():
     js = _scripts()
     assert "Array.isArray(t.notices)" in js and "t.notices.suspects" in js
     assert "已读正文" in js and "仅标题" in js
+
+
+_RENDER_HARNESS = r"""
+const vm = require("vm"), fs = require("fs");
+const noop = () => {};
+const ctx = {console, document: {addEventListener: noop, getElementById: () => null,
+                                 querySelectorAll: () => [], querySelector: () => null},
+             window: {addEventListener: noop}, CSS: {escape: (s) => s}, setInterval: noop, setTimeout: noop};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8") + "\n;globalThis.renderTrace = renderTrace;", ctx);
+const cases = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+console.log(JSON.stringify(cases.map((c) => ctx.renderTrace(c))));
+"""
+
+
+def _render(tmp_path, cases: list) -> list[str]:
+    import json
+    (tmp_path / "ui.js").write_text(_scripts(), encoding="utf-8")
+    (tmp_path / "h.js").write_text(_RENDER_HARNESS, encoding="utf-8")
+    (tmp_path / "cases.json").write_text(json.dumps(cases, ensure_ascii=False), encoding="utf-8")
+    r = subprocess.run(["node", str(tmp_path / "h.js"), str(tmp_path / "ui.js"), str(tmp_path / "cases.json")],
+                       capture_output=True, text=True, encoding="utf-8")
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def _decision(verdict, detail, notices):
+    return {"code": "600001", "name": "甲", "time": "10:00", "verdict": verdict, "detail": detail,
+            "trace": {"strategy": "lowbuy", "candidate": {"pct": -1}, "notices": notices}}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="没有安装 node")
+def test_notice_risk_detail_escapes_and_survives_partial_fields(tmp_path):
+    evil = {"title": "<script>x</script>", "category": "<b>c</b>", "level": "<i>", "score": None,
+            "probs": {"<k>": 1, "高": "<y>"}, "body_read": True, "excerpt": "<img src=x onerror=1>",
+            "days_ago": "<z>", "date": "<d>", "verdict": "<v>"}
+    html = _render(tmp_path, [
+        _decision("pass", "ok", {"suspects": [evil], "others": "<o>",
+                                 "skipped": [{"date": "<a>", "title": "<t>", "category": "<c>"}]}),
+        _decision("pass", "ok", {}),
+        _decision("pass", "ok", {"suspects": [{}]}),
+        _decision("pass", "ok", [{"date": "2026-09-01", "title": "旧<公告>", "label": "无关"}]),
+    ])
+    assert "<script>" not in html[0] and "<img" not in html[0] and "<b>c</b>" not in html[0]
+    assert "&lt;script&gt;" in html[0] and "&lt;o&gt;" in html[0] and "&lt;t&gt;" in html[0]
+    assert "放行" not in html[0]                       # 不认识的结论不能默认写成放行
+    assert "没有疑似雷的公告" in html[1]
+    assert "仅标题" in html[2]
+    assert "公告排雷" in html[3] and "旧&lt;公告&gt;" in html[3]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="没有安装 node")
+def test_notice_risk_detail_error_verdict_is_not_shown_as_clean(tmp_path):
+    empty = {"suspects": [], "others": 0, "skipped": []}
+    html = _render(tmp_path, [
+        _decision("error", "判断异常：RuntimeError()", {**empty, "incomplete": True}),
+        _decision("error", "Jev 不可用", {**empty, "others": 3}),          # 加 incomplete 标记之前的留痕
+        _decision("error", "消息面判断失败", empty),                       # 公告判完了，是消息面出错
+    ])
+    for h in html[:2]:
+        assert "公告没判完" in h and "没有疑似雷的公告" not in h
+    assert "公告没判完" not in html[2] and "没有疑似雷的公告" in html[2]

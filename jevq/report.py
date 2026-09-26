@@ -27,8 +27,8 @@ def _strategy_groups(conn: sqlite3.Connection, day: date) -> tuple[list[dict], d
 def notice_risk_stats(conn, day: date) -> dict:
     """当天所有决策留痕里的疑似公告（按公告 id 去重）统计。旧格式（list）trace 跳过。"""
     seen: dict[str, dict] = {}
-    for (raw,) in conn.execute("SELECT trace FROM decisions WHERE substr(ts, 1, 10)=? AND trace IS NOT NULL",
-                               (day.isoformat(),)):
+    for (raw,) in conn.execute("SELECT trace FROM decisions WHERE substr(ts, 1, 10)=? AND trace IS NOT NULL "
+                               "ORDER BY id", (day.isoformat(),)):     # 同一公告取当天最后一次判定
         try:
             notices = (json.loads(raw) or {}).get("notices")
         except (ValueError, AttributeError):
@@ -36,7 +36,7 @@ def notice_risk_stats(conn, day: date) -> dict:
         if not isinstance(notices, dict):
             continue
         for s in notices.get("suspects") or []:
-            if s.get("id"):
+            if isinstance(s, dict) and s.get("id"):
                 seen[s["id"]] = s
     by_cat: dict[str, int] = {}
     for s in seen.values():

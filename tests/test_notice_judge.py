@@ -419,7 +419,7 @@ def test_trace_reset_even_if_check_raises(monkeypatch):
         j.check("600002", TODAY)
     except RuntimeError:
         pass
-    assert j.last_trace == {"suspects": [], "others": 0, "skipped": []}
+    assert j.last_trace == {"suspects": [], "others": 0, "skipped": [], "incomplete": True}
 
 
 def test_cached_title_only_verdict_has_no_excerpt():
@@ -433,3 +433,20 @@ def test_cached_title_only_verdict_has_no_excerpt():
     j.check("600001", TODAY)
     s = j.last_trace["suspects"][0]
     assert s["body_read"] is False and s["excerpt"] == ""
+
+
+def test_failed_check_marks_trace_incomplete():
+    """Jev 中途失败时 trace 只含判完的部分，要标 incomplete，面板才不会把它显示成「无疑似雷」。"""
+    t = "甲:关于股东减持计划的公告"
+    conn = setup(t)
+
+    class BadJev(FakeJev):
+        def ask(self, state, questions, timeout=None, deadline=None):
+            return {"其他": {}}
+
+    j = judge(conn, BadJev())
+    assert j.check("600001", TODAY) == ("error", "Jev 不可用")
+    assert j.last_trace["incomplete"] is True
+    ok = judge(setup(t), FakeJev(risk={t: {"低": 1.0}}))
+    ok.check("600001", TODAY)
+    assert "incomplete" not in ok.last_trace

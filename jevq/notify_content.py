@@ -92,7 +92,7 @@ def buy_push_notices_line(notices: dict | list) -> list[str]:
                 line = f"· {date_str} {title} → {item.get('label')}"
                 lines.append(f"{line} {probs}" if probs else line)
         return lines
-    suspects, others = notices.get("suspects") or [], notices.get("others", 0)
+    suspects, others = notices.get("suspects") or [], notices.get("others") or 0
     if not suspects:
         return [f"▍Jev 公告排雷（近 {NOTICE_LOOKBACK_DAYS} 天 {others} 条公告，无疑似雷）"]
     lines = [f"▍Jev 公告排雷（近 {NOTICE_LOOKBACK_DAYS} 天：疑似 {len(suspects)} 条，其余 {others} 条无关）"]

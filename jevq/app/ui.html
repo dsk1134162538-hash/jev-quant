@@ -480,7 +480,9 @@ function renderTrace(d) {
       return `<span class="risk-bar">${segs}</span><span class="risk-probs">${txt}</span>`;
     };
     const verdictTag = (v) => v === "reject" ? '<b class="risk-hi">❌ 高风险</b>'
-      : v === "unsure" ? '<b class="risk-mid">⚠️ 拿不准</b>' : '<span class="tag">放行</span>';
+      : v === "unsure" ? '<b class="risk-mid">⚠️ 拿不准</b>' : v === "pass" ? '<span class="tag">放行</span>' : "";
+    // Jev 中途失败：trace 只有判完的那部分（甚至是空的），不能显示成「没有疑似雷」
+    const incomplete = t.notices.incomplete || (d.verdict === "error" && d.detail === "Jev 不可用");
     const levelCls = (lv) => lv === "高" ? "risk-hi" : lv === "中" ? "risk-mid" : "";
     const row = (s) => [
       esc(s.date) + (s.days_ago != null ? `<span class="tag">　${esc(s.days_ago)} 天前</span>` : ""),
@@ -491,8 +493,9 @@ function renderTrace(d) {
       probBar(s.probs),
       s.body_read ? "已读正文" : '<span class="risk-mid">仅标题</span>'];
     parts.push(`<h4>公告风险（近 90 天：疑似 ${sus.length} 条，其余 ${esc(t.notices.others || 0)} 条无关公告）</h4>` +
+      (incomplete ? '<div class="risk-hi">Jev 中途不可用，公告没判完：下面只是已判完的部分，不代表没有雷</div>' : "") +
       (sus.length ? table(["日期", "标题", "类别", "等级 · 风险分", "Jev 概率", "依据"], sus.map(row), [1])
-                  : '<div class="tag">没有疑似雷的公告</div>') +
+                  : incomplete ? "" : '<div class="tag">没有疑似雷的公告</div>') +
       (skipped.length ? `<details class="risk-excerpt"><summary>另有 ${skipped.length} 条疑似超过每票细判上限，未细判</summary>` +
         `<div>${skipped.map((k) => `${esc(k.date)} ${esc(k.title)}（${esc(k.category)}）`).join("<br>")}</div></details>` : ""));
   }
