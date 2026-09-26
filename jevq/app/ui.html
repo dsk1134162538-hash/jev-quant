@@ -165,6 +165,10 @@
   .notice.ok { color:var(--down); } .notice.err { color:var(--up); }
   button.wide { width:100%; }
   .preview { margin-top:8px; max-height:420px; overflow:auto; }
+  .preview th { white-space:normal; line-height:1.3; vertical-align:bottom; }
+  .preview th:nth-child(-n+2), .preview td:nth-child(-n+2) { position:sticky; background:var(--card); z-index:1; }
+  .preview th:nth-child(1), .preview td:nth-child(1) { left:0; min-width:28px; }
+  .preview th:nth-child(2), .preview td:nth-child(2) { left:28px; }
   .builtin-sec h4 { margin:12px 0 4px; font-size:13px; color:var(--muted); font-weight:500; }
   .builtin-sec ul { margin:4px 0; padding-left:18px; }
   .history { margin-bottom:12px; }
@@ -1156,8 +1160,11 @@ function previewTableHtml() {
   const rows = R.preview.rows;
   if (!rows.length) return '<div class="empty">当前行情下没有命中</div>';
   const keys = Object.keys(rows[0].values || {});
-  return `<div class="preview">${table(["#", "代码", "名称", ...keys.map(esc)],
-    rows.map((r) => [esc(r.rank), esc(r.code), esc(r.name), ...keys.map((k) => esc((r.values || {})[k]))]), [])}</div>`;
+  // 侧栏窄：股票合成一列并固定在左边，指标表头允许换行，横向滚动时始终看得到是哪只票
+  const head = ["#", "股票", ...keys.map((k) => esc(k).replace(/\(N=(\d+)\)/, "<br>N=$1"))];
+  return `<div class="preview">${table(head,
+    rows.map((r) => [esc(r.rank), `${esc(r.name)}<br><span class="tag">${esc(r.code)}</span>`,
+      ...keys.map((k) => esc((r.values || {})[k]))]), [])}</div>`;
 }
 
 function renderAside() {
@@ -1172,7 +1179,8 @@ function renderAside() {
   const hit = noSelect ? '<span class="tag">先在「选股」墙上选指标</span>'
     : R.previewing ? '<span class="tag">计算命中数…</span>'
     : R.previewErr ? `<span class="err-text">${esc(R.previewErr)}</span>`
-    : R.preview ? `命中 <b class="big-num">${esc(R.preview.total)}</b> 只`
+    : R.preview ? `命中 <b class="big-num">${esc(R.preview.total)}</b> 只` +
+      (R.preview.total > R.preview.rows.length ? `<div class="tag">下表只列排序后的前 ${esc(R.preview.rows.length)} 只${R.draft.rank && R.draft.rank.field ? "" : "（未设排序，顺序不代表优先级）"}</div>` : "")
     : '<span class="tag">—</span>';
   const saveDisabled = R.checking || R.errors.length > 0 || R.saving;
   el.innerHTML = `<div class="aside-card"><h4>体检</h4>${check}</div>
