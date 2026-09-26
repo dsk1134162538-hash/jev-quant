@@ -257,7 +257,7 @@ class CustomStrategy:
         for account in self.accounts:
             ledger.ensure_account(account, capital)
 
-        # 当日否决集和错误计数
+        # 当日否决集；check_count 每分钟清零，error_count 当日累计（3 次后当天不再问 Jev）
         self.rejected: set[str] = set()
         self._rejected_day: date | None = None
         self.check_count = 0
@@ -296,6 +296,7 @@ class CustomStrategy:
         if self._cache_minute != minute_key:
             self._update_cache(quotes)
             self._cache_minute = minute_key
+            self.check_count = 0        # 「每分钟最多检查 10 只」：新的一分钟重新计数（错误熔断仍按天）
         return True
 
     def _restore_rejected(self, day: date):

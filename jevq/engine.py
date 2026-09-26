@@ -50,6 +50,8 @@ class Engine:
         self._sold_minute = None
         if self._rejected_day != now.date():
             self._restore_rejected(now.date())
+            if self._sentiment_at is None:
+                self._restore_sentiment(now.date())
         quotes = self._fetch(now)
         if quotes is None:
             return []
@@ -81,6 +83,19 @@ class Engine:
             "AND substr(ts, 1, 10) = ?", (day.isoformat(),)).fetchall()
         self.rejected = {r[0] for r in rows}
         self._rejected_day = day
+
+    def _restore_sentiment(self, day: date):
+        """重启后恢复当日最后一次情绪标签，只给卖出阶段（自定义退出条件）一个合理值；
+        _sentiment_at 不动，买入阶段照旧立即重新判断。"""
+        try:
+            row = self.conn.execute(
+                "SELECT detail FROM decisions WHERE verdict='sentiment' AND (strategy IS NULL OR strategy='lowbuy') "
+                "AND substr(ts, 1, 10) = ? ORDER BY ts DESC, rowid DESC LIMIT 1", (day.isoformat(),)).fetchone()
+            label = json.loads(row[0]).get("label") if row else None
+        except Exception as e:
+            print(f"[engine] 恢复当日情绪失败: {e!r}")
+            return
+        self.sentiment_label = label if isinstance(label, str) else None
 
     def _fetch(self, now: datetime) -> dict[str, Quote] | None:
         held = {p.code for a in self.accounts_provider() for p in self.ledger.positions(a)}

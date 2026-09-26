@@ -582,3 +582,18 @@ def test_custom_deadline_leaves_rest_undecided_and_checks_next_minute(monkeypatc
     strat.sell_step(quotes, at(10, 1))
     strat.buy_step(quotes, at(10, 1), deadline=clock[0] + 40.0)
     assert notice.calls[2:] == [left]                             # 下一分钟接着问
+
+
+def test_check_limit_resets_every_minute():
+    """「每分钟最多检查 10 只」是每分钟：第一分钟问满 10 只，下一分钟接着问剩下的（不是当天只问 10 只）。"""
+    codes = [f"6100{i:02d}" for i in range(15)]
+    quotes = {c: quote(c, pct=6.0, amount=1e8 + i, ts=DAY) for i, c in enumerate(codes)}
+    notice = Judge({c: ("reject", "x") for c in codes})
+    spec = dict(PHASE_SPEC, jev={"notices": True, "news": False})
+    strat, _, _ = make(spec, notice=notice)
+    strat.universe = {c: f"股票{c}" for c in codes}          # 不改全局 UNIVERSE
+    strat.on_minute(quotes, at(10, 0))
+    assert len(notice.calls) == 10
+    strat.on_minute(quotes, at(10, 1))
+    assert len(notice.calls) == 15
+    assert set(notice.calls) == set(codes)

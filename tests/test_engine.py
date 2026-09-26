@@ -408,3 +408,30 @@ def test_expired_deadline_checks_nothing_but_shadow_still_buys(monkeypatch):
     eng.buy_step(at(10, 0), deadline=50.0)
     assert notice.calls == [] and ledger.positions("main") == []
     assert ledger.holds("shadow", "600001")
+
+
+def test_restart_restores_todays_sentiment_for_sells_but_buy_phase_still_refreshes():
+    """卖出阶段不碰 Jev，自定义卖出读到的情绪是上次刷新的值。重启后第一分钟别是 None：
+    从当日最后一条 sentiment 决策恢复标签；买入阶段照旧立即重新判断（不沿用恢复值定买入模式）。"""
+    quotes = qs(**{"600001": -1.0})
+    eng, ledger, _ = make(quotes, sentiment="火热")
+    eng.tick(at(10, 0))
+    assert eng.sentiment_label == "火热"
+    fetch = lambda codes: {c: x for c, x in quotes.items() if c in codes}
+    again = Engine(eng.conn, ledger, Judge(), Judge(), Market("冰点"), fetch, lambda d: {"涨停家数": 50},
+                   eng.universe, eng.ret5, date(2026, 9, 22), "中性")
+    again.sell_step(at(10, 5))
+    assert again.sentiment_label == "火热"
+    again.buy_step(at(10, 5))
+    assert again.sentiment_label == "冰点"
+
+
+def test_sentiment_not_restored_from_previous_day():
+    quotes = qs(**{"600001": -1.0})
+    eng, ledger, _ = make(quotes, sentiment="火热")
+    eng.tick(at(10, 0))
+    fetch = lambda codes: {c: x for c, x in quotes.items() if c in codes}
+    nxt = Engine(eng.conn, ledger, Judge(), Judge(), Market("冰点"), fetch, lambda d: {"涨停家数": 50},
+                 eng.universe, eng.ret5, DAY.date(), "中性")
+    nxt.sell_step(at(10, 0, datetime(2026, 9, 24)))
+    assert nxt.sentiment_label is None
