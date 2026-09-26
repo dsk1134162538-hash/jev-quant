@@ -38,6 +38,15 @@ NEWS_LOOKBACK_HOURS = 24
 MIN_LISTED_TRADING_DAYS = 60
 LOW_CONFIDENCE = 0.6
 
+# 公告风险细判（docs/specs/2026-09-26-notice-risk-design.md）
+RISK_REJECT = 0.5          # 风险分 ≥ 此值：否决「高风险」
+RISK_UNSURE = 0.35         # 风险分落在 [RISK_UNSURE, RISK_REJECT)：否决「拿不准」
+RISK_VERSION = 1           # 改判断口径时 +1，旧的 notice_risk 缓存自动失效重判
+RISK_MAX_PER_CHECK = 20    # 每票每次最多细判的疑似公告条数
+BODY_CHARS = 1500          # 交给 Jev 的正文长度
+PREFETCH_CAP = 300         # 早盘预抓正文每次最多条数
+RISK_JEV_TIMEOUT = 15.0    # 带正文的 Jev 调用超时（秒）
+
 # Jev
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_MODEL = "jev-latest"
