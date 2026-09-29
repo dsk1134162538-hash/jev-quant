@@ -93,6 +93,43 @@ def test_main_calls_runner_once_then_stops(monkeypatch, tmp_path):
     assert calls == [1]
 
 
+def test_main_starts_watchdog_thread_once_lock_is_held(monkeypatch, tmp_path):
+    monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "jevq.sqlite"))
+    calls = []
+
+    def watchdog_start(stop, notifier, repo, python_exe):
+        calls.append((stop, notifier, repo, python_exe))
+
+    def runner(stop, log):
+        stop.set()
+
+    stop = FakeStop()
+    fake_notifier = object()
+    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=stop,
+                     git_rev_parse=_no_git_rev_parse, sync_and_deploy=_no_sync,
+                     restart=_boom_restart, notifier=fake_notifier,
+                     repo=tmp_path, python_exe=tmp_path / "python.exe",
+                     watchdog_start=watchdog_start)
+    assert rc == 0
+    assert calls == [(stop, fake_notifier, tmp_path, tmp_path / "python.exe")]
+
+
+def test_main_does_not_start_watchdog_when_not_injected(monkeypatch, tmp_path):
+    """不传 watchdog_start 时（现有测试的情况）不该有任何看门狗线程被起来。"""
+    monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "jevq.sqlite"))
+    before = threading.active_count()
+
+    def runner(stop, log):
+        stop.set()
+
+    stop = FakeStop()
+    rc = daemon.main(runner=runner, clock=lambda: WED_1000, stop=stop,
+                     git_rev_parse=_no_git_rev_parse, sync_and_deploy=_no_sync,
+                     restart=_boom_restart)
+    assert rc == 0
+    assert threading.active_count() == before
+
+
 def test_main_logs_runner_exception_and_does_not_crash(monkeypatch, tmp_path):
     monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "jevq.sqlite"))
     logged = []
