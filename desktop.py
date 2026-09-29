@@ -21,7 +21,7 @@ def bootstrap() -> None:
 
 def main():
     api = Api()
-    window = webview.create_window("Jev 低吸模拟盘", str(ROOT / "jevq" / "app" / "ui.html"),
+    window = webview.create_window("Jev 模拟盘", str(ROOT / "jevq" / "app" / "ui.html"),
                                    js_api=api, width=1280, height=820, min_size=(960, 640))
 
     def on_closing(*_):

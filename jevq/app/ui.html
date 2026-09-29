@@ -2,15 +2,15 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>Jev 低吸模拟盘</title>
+<title>Jev 模拟盘</title>
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --text:#1d2129; --muted:#86909c; --line:#e5e6eb;
-          --up:#d93026; --down:#1a9e5c; --accent:#3370ff; --shadow:#8f5cf7;
+          --up:#d93026; --down:#1a9e5c; --accent:#3370ff;
           --board-accent:#e08b00; --board-shadow:#14b8a6; --rebound-accent:#be185d; --rebound-shadow:#4d7c0f;
           --warn:#c77700; --tile:#f2f3f5; }
   @media (prefers-color-scheme: dark) {
     :root { --bg:#17181a; --card:#232429; --text:#e8e9eb; --muted:#8a8f98; --line:#34363c;
-            --up:#f5584a; --down:#2fbf71; --accent:#5b8cff; --shadow:#a98bff;
+            --up:#f5584a; --down:#2fbf71; --accent:#5b8cff;
             --board-accent:#f0a83a; --board-shadow:#3ad6c0; --rebound-accent:#f472b6; --rebound-shadow:#a3e635;
             --warn:#f0a83a; --tile:#2b2d33; }
   }
@@ -178,7 +178,7 @@
 </head>
 <body>
 <header>
-  <h1>Jev 低吸模拟盘</h1>
+  <h1>Jev 模拟盘</h1>
   <span><span id="dot" class="dot"></span><span id="phase">未运行</span></span>
   <span class="tag">外围 <b id="overseas">–</b></span>
   <span class="tag">情绪 <b id="sentiment">–</b></span>
@@ -217,10 +217,9 @@ let selectedId = null;
 let strategyFilter = null;
 let noticesExpanded = false;
 
-// ---- 账户颜色与名称：内置六个固定色，自定义策略按 c{n} 的序号分配颜色，影子账户用虚线 ----
-const BUILTIN_ORDER = ["main", "shadow", "board_main", "board_shadow", "rebound_main", "rebound_shadow"];
-const BUILTIN_COLORS = {main: "var(--accent)", shadow: "var(--shadow)",
-  board_main: "var(--board-accent)", board_shadow: "var(--board-shadow)",
+// ---- 账户颜色与名称：内置四个固定色，自定义策略按 c{n} 的序号分配颜色，影子账户用虚线 ----
+const BUILTIN_ORDER = ["board_main", "board_shadow", "rebound_main", "rebound_shadow"];
+const BUILTIN_COLORS = {board_main: "var(--board-accent)", board_shadow: "var(--board-shadow)",
   rebound_main: "var(--rebound-accent)", rebound_shadow: "var(--rebound-shadow)"};
 const PALETTE = ["#e8590c", "#0ea5e9", "#c026d3", "#65a30d", "#e11d48", "#0d9488", "#7c3aed", "#ca8a04"];
 const CUSTOM_ACCOUNT = /^c(\d+)_(main|shadow)$/;
@@ -461,8 +460,6 @@ function renderTrace(d) {
       : '<div class="tag">没有记录命中条件</div>'));
   } else if (t.strategy === "rebound") {
     parts.push(`<h4>为什么被选中</h4><div>当前 ${fmt(c.pct)}%（0~-3% 区间）｜近 5 日 ${fmt(c.ret5)}%（跌得多的优先）｜候选排名 ${esc(c.rank)}/${esc(c.of)}｜现价 ${fmt(c.price)}</div>`);
-  } else {
-    parts.push(`<h4>为什么被选中</h4><div>当前 ${fmt(c.pct)}%（0~-3% 低吸区间）｜近 5 日 ${fmt(c.ret5)}%｜候选排名 ${esc(c.rank)}/${esc(c.of)}｜现价 ${fmt(c.price)}</div>`);
   }
   if (Array.isArray(t.notices)) {      // 2026-09-26 之前的旧留痕：每条公告一个判定
     const flagged = t.notices.filter((n) => n.mine || n.unsure);
@@ -514,12 +511,7 @@ function renderTrace(d) {
       + (news.length ? `<ul>${news.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : '<div class="tag">无新闻，按中性处理</div>')
       + (t.news.probabilities ? `<div class="tag">Jev：${probsTxt(t.news.probabilities)}${t.news.confidence != null ? `（置信度 ${fmt(t.news.confidence)}）` : ""}</div>` : ""));
   }
-  if (!t.strategy || t.strategy === "lowbuy") {   // 市场/情绪/外围是低吸的买入条件，扫首板和自定义策略不用，不显示
-    const m = t.market || {};
-    parts.push(`<h4>当时市场：${m.mode === "tail" ? "只在尾盘买" : "盘中可买"}</h4>`);
-    parts.push(marketBlock("市场情绪", m.sentiment, m.sentiment_trace));
-    parts.push(marketBlock("外围", m.overseas, m.overseas_trace));
-  } else if (t.strategy === "rebound") {        // 超跌反弹只看情绪，不看外围
+  if (t.strategy === "rebound") {        // 超跌反弹只看情绪，不看外围；扫首板和自定义策略不显示市场
     const m = t.market || {};
     parts.push(`<h4>当时市场：${m.mode === "tail" ? "只在尾盘买" : "盘中可买"}</h4>`);
     parts.push(marketBlock("市场情绪", m.sentiment, m.sentiment_trace));
@@ -530,7 +522,7 @@ function renderTrace(d) {
 }
 
 function strategyFilters() {
-  const out = [[null, "全部"], ["lowbuy", "低吸"], ["board", "扫首板"], ["rebound", "超跌反弹"]];
+  const out = [[null, "全部"], ["board", "扫首板"], ["rebound", "超跌反弹"]];
   const custom = {...ruleNames};
   for (const m of Object.values(accountMeta)) if (CUSTOM_ID.test(m.strategy || "")) custom[m.strategy] = m.strategyName;
   Object.keys(custom).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))

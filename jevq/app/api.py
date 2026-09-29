@@ -24,20 +24,6 @@ def builtin_summaries() -> list[dict]:
     hm = lambda t: t.strftime("%H:%M")      # noqa: E731
     windows = "、".join(f"{hm(a)}~{hm(b)}" for a, b in board_rules.SCAN_WINDOWS)
     return [
-        {"id": "lowbuy", "name": STRATEGIES["lowbuy"]["name"], "accounts": list(STRATEGIES["lowbuy"]["accounts"]),
-         "sections": [
-             {"title": "选股", "lines": [
-                 f"主板 60/00、非 ST、上市满 {config.MIN_LISTED_TRADING_DAYS} 个交易日",
-                 f"当前涨幅在 {config.BUY_ZONE_LOW:g}% ~ {config.BUY_ZONE_HIGH:g}% 之间",
-                 "按近 5 日涨幅从高到低排序"]},
-             {"title": "买点", "lines": [
-                 f"情绪偏弱或外围偏弱时只在尾盘 {hm(config.TAIL_BUY_START)}~{hm(config.BUY_END)} 买，否则盘中可买",
-                 f"主账户经 Jev 公告排雷 + 消息面判断，每分钟最多检查 {config.MAX_CHECKS_PER_TICK} 只"]},
-             {"title": "卖出（次日起）", "lines": [
-                 f"跌到 {config.STOP_LOSS:g}% 止损",
-                 f"高开 ≥ {config.TAKE_PROFIT:g}% 止盈；开盘 > {config.LOW_OPEN:g}% 时摸到 +{config.TAKE_PROFIT:g}% 卖",
-                 f"低开时回到 {config.ZERO_LINE:g}% 或从最低反弹 {config.REBOUND:g} 点卖",
-                 f"{hm(config.EOD_SELL)} 尾盘清仓"]}]},
         {"id": "board", "name": STRATEGIES["board"]["name"], "accounts": list(STRATEGIES["board"]["accounts"]),
          "sections": [
              {"title": "选股", "lines": [
@@ -229,7 +215,7 @@ class Api:
             else:
                 rows = conn.execute(
                     "SELECT id, ts, code, verdict, detail, trace IS NOT NULL FROM decisions "
-                    "WHERE substr(ts, 1, 10)=? AND COALESCE(strategy, 'lowbuy')=? ORDER BY id DESC LIMIT 300",
+                    "WHERE substr(ts, 1, 10)=? AND strategy=? ORDER BY id DESC LIMIT 300",
                     (day, strategy)).fetchall()
         finally:
             conn.close()
@@ -273,7 +259,8 @@ class Api:
             accounts += [f"{sid}_main", f"{sid}_shadow"]
         out: dict[str, list] = {a: [] for a in accounts}
         for d, a, v in rows:
-            out.setdefault(a, []).append([d, v])
+            if a in out:                     # 已下线的低吸 main/shadow 净值留在库里，面板不画
+                out[a].append([d, v])
         return out
 
     def reports(self) -> list[str]:

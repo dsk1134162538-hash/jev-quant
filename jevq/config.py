@@ -18,14 +18,7 @@ BUY_ZONE_HIGH = 0.0
 MAX_CHECKS_PER_TICK = 10
 MAX_ERRORS_PER_TICK = 3
 
-# 卖出
-STOP_LOSS = -3.0
-ZERO_LINE = -0.2
-REBOUND = 1.5
-TAKE_PROFIT = 1.0
-LOW_OPEN = -1.0
-
-# 超跌反弹（当日区间、尾盘时刻、Jev 检查额度与低吸共用）
+# 超跌反弹（当日区间用上面的 BUY_ZONE_*，尾盘时刻、Jev 检查额度与其他策略共用）
 REBOUND_RET5_LOW = -20.0       # 近 5 日涨幅下限（%）
 REBOUND_RET5_HIGH = 0.0        # 近 5 日涨幅上限（%）
 REBOUND_BOARD_LOOKBACK = 40    # 近 N 个交易日出现过连板的排除
@@ -75,13 +68,12 @@ REPORT_DIR = "reports"
 
 # 策略与账户
 STRATEGIES = {
-    "lowbuy": {"name": "低吸", "accounts": ("main", "shadow")},
     "board": {"name": "扫首板", "accounts": ("board_main", "board_shadow")},
     "rebound": {"name": "超跌反弹", "accounts": ("rebound_main", "rebound_shadow")},
 }
 ACCOUNTS = tuple(a for s in STRATEGIES.values() for a in s["accounts"])
 ACCOUNT_NAMES = {
-    "main": "低吸·主(Jev)", "shadow": "低吸·影子",
+    "main": "低吸·主(已下线)", "shadow": "低吸·影子(已下线)",      # 低吸已下线，只给历史成交显示名字
     "board_main": "首板·主(Jev)", "board_shadow": "首板·影子",
     "rebound_main": "超跌·主(Jev)", "rebound_shadow": "超跌·影子",
 }
@@ -89,7 +81,7 @@ ACCOUNT_STRATEGY = {a: sid for sid, s in STRATEGIES.items() for a in s["accounts
 
 
 def builtin_accounts() -> tuple[str, ...]:
-    """内置账户（低吸 main/shadow + 扫首板 board_main/board_shadow + 超跌反弹 rebound_main/rebound_shadow）。"""
+    """内置账户（扫首板 board_main/board_shadow + 超跌反弹 rebound_main/rebound_shadow）。"""
     return ACCOUNTS
 
 

@@ -161,7 +161,7 @@ def test_board_main_position_sold_on_blowup_next_day():
     strat, conn, ledger = make()
     yesterday = quote("600001", pct=8.0, pre_close=10.0, ts=at(14, 0, DAY.replace(day=DAY.day - 1)))
     ledger.buy("board_main", yesterday, at(10, 0, DAY.replace(day=DAY.day - 1)), "manual")
-    ledger.buy("main", yesterday, at(10, 0, DAY.replace(day=DAY.day - 1)), "manual")
+    ledger.buy("rebound_main", yesterday, at(10, 0, DAY.replace(day=DAY.day - 1)), "manual")
 
     # 炸板：盘中摸过涨停(open=limit_up) 但当前价未封死
     blowup = quote("600001", pct=5.0, open_pct=10.0, pre_close=10.0, ts=at(10, 0))
@@ -170,7 +170,7 @@ def test_board_main_position_sold_on_blowup_next_day():
     board_fills = [f for f in fills if f.account == "board_main"]
     assert board_fills and board_fills[0].reason == "炸板"
     assert not ledger.holds("board_main", "600001")
-    assert ledger.holds("main", "600001")          # 低吸账户不受 BoardStrategy 影响
+    assert ledger.holds("rebound_main", "600001")  # 别的策略的账户不受 BoardStrategy 影响
 
 
 def test_disabled_only_sells_no_watch_selection():
@@ -282,27 +282,12 @@ def test_restores_rejected_from_decisions_on_first_minute_of_day():
             ("2026-09-23T09:31:00", "600002", "reject", "新增减持", "board"),
             ("2026-09-23T09:32:00", "600003", "error", "判断异常", "board"),
             ("2026-09-22T09:31:00", "600001", "reject", "昨天的", "board"),          # 昨天的不恢复
-            ("2026-09-23T09:33:00", "600004", "reject", "低吸的否决", "lowbuy"),      # 别的策略不恢复
+            ("2026-09-23T09:33:00", "600004", "reject", "超跌反弹的否决", "rebound"),  # 别的策略不恢复
         ])
     conn.commit()
 
     strat.on_minute({}, at(10, 0))
     assert strat.rejected == {"600002", "600003"}
-
-
-def test_board_reject_does_not_leak_into_lowbuy_engine():
-    import test_engine as te
-
-    notice = te.Judge()
-    eng, ledger, _ = te.make(te.qs(**{"600002": -1.0}), notice=notice)
-    eng.conn.execute(
-        "INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES (?, ?, ?, ?, ?)",
-        ("2026-09-23T09:31:00", "600002", "reject", "board 的否决", "board"))
-    eng.conn.commit()
-
-    eng.tick(te.at(10, 0))
-    assert notice.calls == ["600002"]               # board 的否决不影响低吸判断
-    assert ledger.holds("main", "600002")
 
 
 def test_sells_exception_isolated_per_position():

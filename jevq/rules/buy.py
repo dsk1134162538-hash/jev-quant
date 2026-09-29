@@ -13,22 +13,9 @@ def in_buy_zone(q: Quote) -> bool:
             and BUY_ZONE_LOW <= q.pct <= BUY_ZONE_HIGH)
 
 
-def buy_mode(sentiment: str | None, overseas: str | None) -> str:
-    if sentiment is None or overseas is None:
-        return "tail"
-    if sentiment in WEAK_SENTIMENT or overseas == "偏弱":
-        return "tail"
-    return "intraday"
-
-
 def buy_window_open(mode: str, t: time) -> bool:
     start = TAIL_BUY_START if mode == "tail" else MARKET_OPEN
     return start <= t < BUY_END
-
-
-def rank_candidates(quotes: Iterable[Quote], ret5: dict[str, float]) -> list[Quote]:
-    pool = [q for q in quotes if q.code in ret5 and in_buy_zone(q)]
-    return sorted(pool, key=lambda q: ret5[q.code], reverse=True)
 
 
 def rebound_mode(sentiment: str | None) -> str:
@@ -39,7 +26,7 @@ def rebound_mode(sentiment: str | None) -> str:
 
 
 def rank_rebound(quotes: Iterable[Quote], ret5: dict[str, float], excluded: set[str]) -> list[Quote]:
-    """超跌反弹候选：当日在低吸区间、近 5 日涨幅在 [REBOUND_RET5_LOW, REBOUND_RET5_HIGH]、
+    """超跌反弹候选：当日涨幅在买入区间（in_buy_zone）、近 5 日涨幅在 [REBOUND_RET5_LOW, REBOUND_RET5_HIGH]、
     近两个月没连板过（excluded）；5 日跌得多的优先。"""
     pool = [q for q in quotes if q.code in ret5 and q.code not in excluded and in_buy_zone(q)
             and REBOUND_RET5_LOW <= ret5[q.code] <= REBOUND_RET5_HIGH]
