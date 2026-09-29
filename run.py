@@ -20,6 +20,7 @@ from jevq.judge.market import MarketJudge
 from jevq.judge.news import NewsJudge
 from jevq.judge.notices import NoticeJudge
 from jevq.ledger import Ledger
+from jevq.live import store as live_store
 from jevq.notify import Notifier, notifier_from_env
 from jevq.report import write_report
 from jevq.rules.board import in_scan_window
@@ -146,6 +147,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if not trading and not once:
         log(f"{today} 非交易日，退出")
         return None
+    live_store.set_state(conn, "trading_day", today.isoformat())
 
     late = not once and now().time() >= REPORT_AT
     if late and (Path(REPORT_DIR) / f"{today.isoformat()}.md").exists():
@@ -468,6 +470,10 @@ def _run_minute(engine: Engine, board: BoardStrategy | None, customs: list, t: d
             return []
 
     def emit(fills: list):
+        try:
+            live_store.add_intents(conn, fills, names)
+        except Exception as e:
+            log(f"实盘意图写入失败：{e!r}")
         if log_each:
             _log_fills(fills, log)
         _notify_fills(notifier, conn, fills, names, log, acct_names)

@@ -11,6 +11,7 @@ from factories import quote
 from jevq import config, db
 from jevq.data import board_events as be
 from jevq.ledger import Ledger
+from jevq.live import store as live_store
 from jevq.models import Fill
 from jevq.notify import Notifier
 from jevq.rules.board import SCAN_WINDOWS, Candidate
@@ -1399,4 +1400,60 @@ def test_rebound_reads_sentiment_from_lowbuy_engine(env, spy_rebound):
     [strat] = spy_rebound.instances
     FakeEngine.instances[0].sentiment_label = "冰点"
     assert strat.sentiment_provider() == "冰点"
+
+
+# ---- 实盘跟单：意图写入 / trading_day ----
+
+class _FillEngine:
+    """_run_minute 用的最小假引擎：sell_step 返回预设成交，buy_step 恒不成交。"""
+
+    def __init__(self, fills):
+        self._fills = fills
+
+    def sell_step(self, now):
+        return self._fills
+
+    def buy_step(self, now, deadline=None):
+        return []
+
+
+def test_run_minute_writes_live_intent_for_rebound_main_fill_only():
+    conn = db.connect(":memory:")
+    t = datetime(2026, 9, 29, 9, 31)
+    fills = [Fill("rebound_main", "600001", "sell", 9.5, 500, 5.0, t, "止损"),
+             Fill("main", "600002", "sell", 8.0, 100, 5.0, t, "止损")]
+    run._run_minute(_FillEngine(fills), None, [], t, conn, lambda s: None, Notifier(None),
+                    {"600001": "甲", "600002": "乙"}, {})
+    assert [r[0] for r in conn.execute("SELECT code FROM live_intents")] == ["600001"]
+
+
+def test_run_minute_add_intents_exception_does_not_block_trading_or_push(monkeypatch):
+    conn = db.connect(":memory:")
+    t = datetime(2026, 9, 29, 9, 31)
+    fills = [Fill("rebound_main", "600001", "sell", 9.5, 500, 5.0, t, "止损")]
+    logs: list[str] = []
+
+    class BoomNotifier:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, title, content):
+            self.sent.append((title, content))
+
+    def boom(*a, **kw):
+        raise RuntimeError("db locked")
+
+    monkeypatch.setattr(run.live_store, "add_intents", boom)
+    notifier = BoomNotifier()
+    result = run._run_minute(_FillEngine(fills), None, [], t, conn, logs.append, notifier,
+                             {"600001": "甲"}, {"rebound_main": "超跌·主"})
+    assert result == fills                                      # 成交结果照常返回，不受影响
+    assert any("实盘意图写入失败：RuntimeError('db locked')" in line for line in logs)
+    assert len(notifier.sent) == 1 and notifier.sent[0][0] == "【超跌·主 卖出】甲 @9.5"   # 推送照常
+
+
+def test_run_day_sets_trading_day_state_when_continuing(env):
+    env.run(once=True)
+    conn = db.connect(env.db)
+    assert live_store.get_state(conn, "trading_day") == "2026-09-23"
 

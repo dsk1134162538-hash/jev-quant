@@ -99,3 +99,35 @@ MAX_CUSTOM_ENABLED = 5
 # 每日 GitHub 同步 + 收盘后自动上线
 SYNC_ENABLED = True
 DEPLOY_ENABLED = True
+
+# 实盘跟单（docs/specs/2026-09-29-live-trading-design.md）
+LIVE_ACCOUNT = "rebound_main"
+LIVE_BUDGET = 20_000.0
+LIVE_MAX_POSITIONS = 1
+LIVE_MAX_BUYS_PER_DAY = 2
+LIVE_INTENT_TTL = 60            # 秒：意图超过这么久没处理就作废（买入）
+LIVE_BUY_SLIP = 0.005           # 买入限价最多比模拟成交价高 0.5%
+LIVE_BUY_WAIT = 30              # 秒：买单挂多久没成交完就撤
+LIVE_SELL_DISCOUNT = 0.01       # 卖出限价 = 最新价 × (1 - 1%)，不低于跌停价
+LIVE_SELL_WAIT = 20             # 秒：卖单每轮等多久
+LIVE_SELL_ROUNDS = 3            # 卖单撤了重挂最多几轮，之后每分钟重试
+LIVE_SELL_RETRY = 60            # 秒：几轮都没卖完后，下次重试间隔
+LIVE_CASH_BUFFER = 0.002        # 算股数时资金留 0.2% 余量
+LIVE_POLL = 5                   # 秒：等成交时查当日委托的间隔
+LIVE_RECONCILE_HOLDING = 5      # 分钟：有持仓时对账间隔
+LIVE_RECONCILE_IDLE = 15        # 分钟：空仓时读资金确认在线的间隔
+LIVE_READ_FAIL_PAUSE = 3        # 连续读取失败几次自动暂停
+LIVE_REDUCE_CONFIRM = 60        # 秒：客户端股数变少，两次读数至少隔这么久才减账
+LIVE_BUY_WINDOWS = ((time(9, 30), time(11, 30)), (time(13, 0), time(14, 57)))
+LIVE_SELL_WINDOWS = ((time(9, 30), time(11, 30)), (time(13, 0), time(15, 0)))
+LIVE_NO_CANCEL_AFTER = time(14, 57)   # 收盘集合竞价不能撤单
+LIVE_PAUSE_CLOSE = time(15, 0)        # 「暂停到收盘」的截止
+LIVE_SELF_CHECK = time(9, 5)
+LIVE_CLOSE_SUMMARY = time(15, 2)
+LIVE_WATCHDOG_STALE = 120       # 秒：心跳多久没更新算断
+LIVE_WATCHDOG_MAX_RESTARTS = 3  # daemon 每天最多替它重启几次
+LIVE_HTTP_PORT = 8766
+LIVE_BROKER = "gateway"         # "gateway" | "easytrader"：家里实测后定
+LIVE_GATEWAY_URL = "http://127.0.0.1:5000"
+LIVE_EASYTRADER_EXE = r"C:\同花顺软件\同花顺\xiadan.exe"   # 实测时按实际安装路径改
+LIVE_LOCK_NAME = "live.lock"

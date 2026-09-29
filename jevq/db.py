@@ -35,6 +35,16 @@ CREATE TABLE IF NOT EXISTS sell_followups(
 CREATE TABLE IF NOT EXISTS custom_strategies(
   id TEXT, version INTEGER, name TEXT, spec TEXT, created TEXT, active_from TEXT, enabled INTEGER,
   PRIMARY KEY(id, version));
+CREATE TABLE IF NOT EXISTS live_intents(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, source TEXT, side TEXT, code TEXT, name TEXT,
+  sim_price REAL, sim_shares INTEGER, reason TEXT, status TEXT, note TEXT, handled_ts TEXT);
+CREATE TABLE IF NOT EXISTS live_orders(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id INTEGER, ts TEXT, side TEXT, code TEXT,
+  price REAL, shares INTEGER, filled INTEGER, avg_price REAL, entrust_no TEXT, status TEXT,
+  note TEXT, updated_ts TEXT);
+CREATE TABLE IF NOT EXISTS live_positions(
+  code TEXT PRIMARY KEY, shares INTEGER, cost REAL, buy_price REAL, buy_date TEXT, sim_buy_price REAL);
+CREATE TABLE IF NOT EXISTS live_state(key TEXT PRIMARY KEY, value TEXT);
 """
 
 
