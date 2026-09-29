@@ -327,7 +327,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             except Exception as e:
                 log(f"卖飞跟踪失败：{e!r}")
             if getattr(engine, "halted", False):
-                notifier.once("halted", "⚠️ 模拟盘提醒", "行情连续失败，今日暂停开新仓，卖出照常")
+                notifier.once("halted", "⚠️ 模拟盘提醒", "行情连续 3 次获取失败；取不到行情的这几分钟各策略都不交易，恢复后照常")
             state.update(sentiment=engine.sentiment_label,
                          prices={c: q.price for c, q in engine.last_quotes.items()})
             state["board_watch"] = _board_watch_state(board, state["names"])

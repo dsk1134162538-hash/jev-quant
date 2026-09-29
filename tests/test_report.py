@@ -107,6 +107,17 @@ def test_report_check_table_has_strategy_column(tmp_path):
     assert "| 09:50 | 扫首板 | 600003 |" in text
 
 
+def test_report_check_table_labels_null_strategy_as_unknown(tmp_path):
+    """decisions.strategy 是 NULL 的旧数据行，检查表里不该露出字面的 None。"""
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    t = datetime(2026, 9, 23, 9, 50).isoformat()
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail) VALUES (?, ?, ?, ?)",
+                (t, "600004", "reject", "旧数据没打策略标签"))
+    text = write_report(conn, ledger, date(2026, 9, 23), {}, "中性", "正常", tmp_path).read_text(encoding="utf-8")
+    assert "| 09:50 | 未知 | 600004 |" in text
+
+
 def test_report_shows_verdicts_in_chinese(tmp_path):
     """检查记录的结果列显示「否决/通过」，不露出 reject/pass。"""
     from datetime import datetime
