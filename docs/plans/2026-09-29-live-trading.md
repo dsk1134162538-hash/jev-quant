@@ -48,7 +48,89 @@
 
 ### Task 1: 下单层 + 实测脚本 + 家里安装说明
 
-（见本文件末尾「Task 1 详细」，依赖 xiadan-gateway / easytrader 源码审查结论。）
+（执行顺序在 Task 2 之后：`jevq/live/broker.py` 的接口类型由 Task 2 先建好，本任务在其上扩展。）
+
+**依据：** `.superpowers/sdd/2026-09-29-live-trading/research-gateway.md`、`research-easytrader.md`（源码审查结论，实现前必读）。
+
+**Files:**
+- Modify: `jevq/live/broker.py`
+- Create: `jevq/live/gateway.py`、`jevq/live/easytrader_broker.py`、`scripts/live_probe.py`、`docs/live-setup.md`
+- Test: `tests/test_live_broker.py`（表头映射）、`tests/test_live_gateway.py`、`tests/test_live_easytrader.py`
+
+**broker.py 扩展（Produces）：**
+
+```python
+# 1. OrderRow 末尾加字段 cancelled: int = 0（撤消数量），open 改为：
+#    self.filled + self.cancelled < self.shares and not any(s in self.status for s in _CLOSED)
+#    _CLOSED = ("已成", "全部成交", "已撤", "部撤", "全部撤单", "部分撤单", "废")   # 「已报待撤」「待撤」仍算 open
+# 2. REJECT_CODES（委托肯定没报出去）改为：
+REJECT_CODES = frozenset({"INSUFFICIENT_BALANCE", "INSUFFICIENT_SHARES", "SHORT_SELLING_FORBIDDEN",
+                          "T1_RESTRICTION", "PRICE_OUT_OF_RANGE", "OUTSIDE_TRADING_HOURS", "SERVER_CLEARING",
+                          "ORDER_SUBMIT_FAILED", "VALIDATION_ERROR", "ORDER_PRICE_REQUIRED", "INPUT_VERIFY_FAILED"})
+# 3. 结果不明、单子可能稍后才报出去的错误码：
+INFLIGHT_CODES = frozenset({"QUEUE_TIMEOUT", "TASK_TIMEOUT", "TASK_TIMEOUT_RECOVERY_FAILED", "TIMEOUT"})
+# 4. 表头映射（两个适配器共用；认不出 → BrokerError(..., "UNKNOWN_HEADER")，消息里列出实际表头）
+def holding_from_row(row: dict) -> Holding
+    # code: 「证券代码」去空白后取末 6 位再 zfill(6)；shares: 股票余额|当前持仓|证券数量|实际数量；
+    # available: 可用余额|可卖数量|可用股份|可用数量；数字允许带逗号、空白，空串按 0
+def order_from_row(row: dict) -> OrderRow
+    # entrust_no: 合同编号|委托编号；side: 操作|买卖标志|买卖方向|委托类别，含「买」→buy、含「卖」→sell，否则 UNKNOWN_HEADER；
+    # price: 委托价格；shares: 委托数量；filled: 成交数量（缺省 0）；avg_price: 成交均价|成交价格（缺省 0.0）；
+    # cancelled: 撤消数量|撤单数量（缺省 0）；status: 备注|委托状态|状态说明（缺省 ""）；
+    # time: 委托时间，"093105" 规范成 "09:31:05"
+def cash_from_balance(d: dict) -> float   # 可用金额|可用资金|可用余额
+```
+
+**gateway.py（Produces）：**
+
+```python
+class GatewayBroker:
+    def __init__(self, base_url: str, token: str | None, session=None, timeout: float = 60.0)
+    def health(self) -> dict                         # GET /health 原样返回 data（探测脚本用；不抛 logged_in=false）
+    def balance(self) -> float                       # GET /account/balance → cash_from_balance
+    def positions(self) -> dict[str, Holding]        # GET /positions
+    def place(self, side, code, price, shares) -> str | None
+        # 边界校验（网关不校验，直接当按键敲）：code 必须匹配 ^(60|00)\d{4}$，shares 为正且是 100 的倍数，price > 0，否则 ValueError；
+        # POST /orders json={"code": code, "status": "1"|"2", "amount": str(shares), "price": f"{price:.2f}", "price_type": "limit"}，
+        # 请求头 Idempotency-Key = uuid4().hex；返回 data.get("entrust_no")（None 表示没截到号）
+    def orders_today(self) -> list[OrderRow]         # GET /orders/pending（当天全部委托）
+    def cancel_last(self) -> bool                    # POST /orders/cancel-all json={"type": "L"} → bool(data["success"])；绝不发不带 type 的撤单
+```
+- 每个请求带 `Authorization: Bearer <token>`（token 为 None 不带），不带 `Origin`。
+- `status != "success"` → `BrokerError(message, error_code)`；`requests.Timeout` → `BrokerError(..., "TIMEOUT")`；其他 `requests.RequestException` → `"UNREACHABLE"`；响应不是 JSON → `"BAD_RESPONSE"`（附 HTTP 状态码）。
+- 单 worker：本类不做并发调用（执行器本来就是串行）。
+
+**easytrader_broker.py（Produces）：**
+
+```python
+class EasytraderBroker:
+    def __init__(self, exe_path: str, connect=None)
+        # connect：无参可调用，返回已连接的 easytrader user；默认实现里才 `import easytrader`：
+        #   u = easytrader.use("universal_client"); u.connect(exe_path); return u
+        # 首次调用时懒连接；任何调用抛异常 → 丢掉连接（下次重连）并包成 BrokerError
+    def balance(self) -> float                       # cash_from_balance(user.balance)
+    def positions(self) -> dict[str, Holding]        # user.position 为 None → BrokerError("读持仓失败", "READ_FAILED")
+    def place(self, side, code, price, shares) -> str | None
+        # 同 GatewayBroker 的边界校验；user.buy/sell(code, price=round(price, 2), amount=shares)；
+        # 异常类名为 TradeError → BrokerError(str(e), "ORDER_SUBMIT_FAILED")；返回 dict 的 entrust_no（没有则 None）
+    def orders_today(self) -> list[OrderRow]         # user.today_entrusts
+    def cancel_last(self) -> bool
+        # 读当日委托，取 time 最晚的 open 委托；没有 → False；user.cancel_entrust(它的 entrust_no)；
+        # 返回 message 含「成功」或等于 "success" → True
+```
+
+**scripts/live_probe.py（家里实测，用户本人运行）：**
+- `python scripts/live_probe.py read --broker gateway|easytrader [--n 20] [--url http://127.0.0.1:5000] [--exe <xiadan.exe>]`：循环 n 次依次读资金、持仓、当日委托；统计每类成功次数、失败的错误码、耗时（平均/最大）；最后打印一次解析结果（持仓：代码 股数 可卖；委托：时间 代码 方向 价格 数量 成交 撤消 备注）。gateway 另打印 `/health`。token 从环境变量 `XIADAN_GATEWAY_TOKEN`（没有再读 HKCU，复用 `jevq.notify._windows_env_fallback`）取，绝不打印。
+- `python scripts/live_probe.py order-test --broker ... --code 601398 --i-understand`：非连续竞价时段（09:30–11:30、13:00–14:57 之外）直接退出；用 `jevq.data.tencent.fetch_quotes` 取跌停价；打印「将以跌停价 X 买 100 股 CODE，然后立刻撤单」，要求键盘输入 `yes`；下单 → 等 3 秒 → 当日委托里找到这笔且 open → `cancel_last()` → 等 3 秒 → 再读，确认这笔已不 open；逐步打印 PASS/FAIL。没带 `--i-understand` 拒绝运行。
+- 探测脚本不写单元测试（手动工具），但 `python scripts/live_probe.py --help` 要能跑。
+
+**docs/live-setup.md（给用户看的家里安装步骤，中文，按顺序）：** 1) Tailscale：电脑和手机装、同一账号登录，记下电脑的 100.x 地址，`setx JEVQ_LIVE_HOST 100.x.x.x`；2) ToDesk/向日葵，关「断开后锁屏」，不用 Windows 远程桌面；3) Windows：电源永不睡眠、关锁屏和屏保密码、更新活动时间 08:00–16:00；4) 同花顺独立下单：快速交易四项「否」、界面不操作超时 0、默认买卖价格数量为空、窗口不最小化不拖出屏幕、标题须为「网上股票交易系统5.0」；5) xiadan-gateway：装 uv，`git clone` 后 `git checkout 1662adf5b7d0afc73d1ee2f0f15101104d2c07af`，`uv sync`、`uv add numpy`，写 `config/app_config.json`（给出完整示例：host 127.0.0.1、port 5000、auth.enabled true、auth.token 占位「<你生成的随机串>」、window_monitor.enabled true、alerts.webhook_url 空、trading_app_paths 填实际路径），生成 token：`python -c "import secrets; print(secrets.token_hex(24))"`，同一个值 `setx XIADAN_GATEWAY_TOKEN ...`；启动 `uv run python main.py`，浏览器开 `http://127.0.0.1:5000/health` 看 `logged_in: true`；**警告：网关仓库 scripts/ 下的脚本会真实下单，绝不能运行**；6) easytrader（备选）：`.venv\Scripts\pip install "git+https://github.com/shidenggui/easytrader@def5a8edc5ebd7d49bf92a9f39e9e30c9bf47101" pywin32`；7) 实测：两种 broker 各跑 `read --n 20`，把输出发给 Claude；交易时段本人跑一次 `order-test`；8) 程序操作客户端期间不要碰家里电脑的鼠标键盘，要用先在手机页暂停。
+
+- [ ] **Step 1: 写测试**：`test_live_broker.py`：网关样本表头（研究文件里的持仓/委托列）解析正确；easytrader 的「当前持仓」表头变体；「093105」→「09:31:05」；代码「1216」→「001216」；带逗号数字；认不出表头 → UNKNOWN_HEADER 且消息含实际表头；`open`：备注「未成交」open、「全部撤单」closed、成交+撤消=委托数量 closed、「已报待撤」open。`test_live_gateway.py`（假 session：记录 method/url/json/headers，返回可设定的 JSON 或非 JSON）：各接口解析；place 的 JSON 和请求头（Bearer、Idempotency-Key、无 Origin）；错误信封 → BrokerError 带 error_code；超时 → TIMEOUT；非 JSON → BAD_RESPONSE；cancel_last 发 `{"type": "L"}`；非法代码/股数 → ValueError 且没发请求。`test_live_easytrader.py`（假 user）：balance/positions/orders；buy 返回 entrust_no / `{'message': 'success'}` → None；名为 TradeError 的异常 → ORDER_SUBMIT_FAILED；cancel_last 撤 time 最晚的 open 委托；异常后下一次调用重新 connect。
+- [ ] **Step 2: 跑测试确认失败**
+- [ ] **Step 3: 实现 broker.py 扩展、两个适配器、探测脚本、安装说明**（Task 2 的 FakeBroker 若依赖旧 `OrderRow` 字段顺序，按关键字参数构造即可兼容，必要时一并调整）
+- [ ] **Step 4: 全量测试通过；`python scripts/live_probe.py --help` 能跑**
+- [ ] **Step 5: 提交** `feat(live): broker adapters (xiadan-gateway, easytrader), probe script, home setup guide`
 
 ---
 
@@ -222,6 +304,7 @@ class Executor:
 - 模式 `dryrun`：`add_order(status='dryrun')`，`put_position(shares, cost=shares*price+buy_fee, buy_price=price, buy_date=today, sim_buy_price=intent.sim_price)`，意图 `done`（note「演练」），不调 `place`。
 - 模式 `live`：先 `add_order(status='sending')`，再 `broker.place('buy', code, price, shares)`：
   - 抛 `BrokerError` 且 `code in REJECT_CODES` → 订单 `failed`（note 写错误），意图 `done`（note「券商拒单：…」），通知。
+  - 抛 `BrokerError` 且 `code in INFLIGHT_CODES`（网关超时类：单子可能稍后才报出）→ 订单**保持 `sending`**，`_auto_pause("下单结果不明：…可能稍后才报出，恢复前请在 App 里核对")`，意图 `done`（note「结果不明」）。之后的 startup / 恢复会再做 sending 核对。
   - 抛其他异常 → 走「单笔核对」（同 startup 的 sending 核对）：对上当日委托 → 当作已提交继续；对不上 → `failed`；读不到 → `_auto_pause("下单结果不明")`。
   - 返回委托号（可能 None）→ 订单 `submitted`，写 `entrust_no`；`_wait_fill(..., wait=LIVE_BUY_WAIT)`：每 `LIVE_POLL` 秒读一次当日委托，按委托号匹配，委托号为 None 时按（代码、方向、价格、数量、时间 ≥ 下单时刻的 HH:MM:SS）匹配最新一条；全部成交即返回；到时没成交完 → `_cancel_last_checked(row)` → 再读一次当日委托取最终成交数。
   - 成交数 > 0 → `put_position(...)`（`buy_price` 用成交均价，没有就用限价；`cost = filled*buy_price + buy_fee(filled*buy_price)`），订单 `filled`/`partial`/`cancelled`（0 成交撤单）；通知「💰 实盘 买入 名称 N股 @均价（模拟 @x，差 y%）」或「没成交，已撤单」。
@@ -278,7 +361,7 @@ class Executor:
 **Files:** Modify `jevq/live/executor.py`；Create `tests/test_live_control.py`
 
 **规则（spec「暂停、恢复、立即卖出」「对账」「通知」）：**
-- `step()` 顺序（最终形态，原样实现）：心跳 → 模式 off → 交易日门槛 → 处理 `resume_requested`（清掉暂停、先对账、删掉该键）→ 手动暂停到点（`kind=='manual'` 且 `now >= until`）自动恢复（同上，通知「暂停结束」）→ 若仍暂停：new 买入意图 skipped「暂停中」，对每只待卖票通知一次（key `paused_sell:<code>`）「暂停中，X 该卖了，程序没卖」，卖出意图 done「暂停中延后」，返回 → 09:05 后当天第一次：自检（读资金+持仓，通知「自检通过：模式、可用资金、程序持仓」，失败通知「自检失败」；记 `self_check_day`）→ 卖出对齐 → 买入意图 → remote 意图收尾（程序持仓清空 → 意图 done → `pause(今天 15:00, "立即卖出", 'manual')`）→ 定时对账 → 15:02 后当天第一次：收盘小结（今天实盘委托、成交、持仓，和模拟 `LIVE_ACCOUNT` 今天成交的对照），记 `close_summary_day`。
+- `step()` 顺序（最终形态，原样实现）：心跳 → 模式 off → 交易日门槛 → 处理 `resume_requested`（清掉暂停、先做一遍 sending 核对（同 startup）、再对账、删掉该键）→ 手动暂停到点（`kind=='manual'` 且 `now >= until`）自动恢复（同上，通知「暂停结束」）→ 若仍暂停：new 买入意图 skipped「暂停中」，对每只待卖票通知一次（key `paused_sell:<code>`）「暂停中，X 该卖了，程序没卖」，卖出意图 done「暂停中延后」，返回 → 09:05 后当天第一次：自检（读资金+持仓，通知「自检通过：模式、可用资金、程序持仓」，失败通知「自检失败」；记 `self_check_day`）→ 卖出对齐 → 买入意图 → remote 意图收尾（程序持仓清空 → 意图 done → `pause(今天 15:00, "立即卖出", 'manual')`）→ 定时对账 → 15:02 后当天第一次：收盘小结（今天实盘委托、成交、持仓，和模拟 `LIVE_ACCOUNT` 今天成交的对照），记 `close_summary_day`。
 - `step()` 开头若发现 `paused` 刚被写入（页面线程写的），当前这一笔已经在上一轮处理完，所以直接按暂停处理即可——不需要额外同步。
 - 暂停状态变化要通知：执行器记住上一轮是否暂停（`self._was_paused`），未暂停 → 暂停时通知「暂停开始（到 HH:MM / 需手动恢复：原因）」，暂停 → 恢复时通知「暂停结束」。
 - 对账 `_reconcile(now)`：读客户端持仓（失败按 `_read` 计数）；对每只 `live_positions`：客户端股数 ≥ 程序股数 → 删 `reduce:<code>`；客户端股数 < 程序股数 → 若已有 `reduce:<code>` 且股数相同、时间差 ≥ `LIVE_REDUCE_CONFIRM` → 按客户端股数减账（0 删行），通知「按客户端减账：X 程序账 a 股 → b 股（记为人工卖出）」，删键；否则写/更新 `reduce:<code>`。触发时机：每次 `_buy` 前（已有读持仓，复用结果）、恢复时、startup、有持仓每 `LIVE_RECONCILE_HOLDING` 分钟、空仓每 `LIVE_RECONCILE_IDLE` 分钟读一次资金。
