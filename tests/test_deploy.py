@@ -100,6 +100,12 @@ def test_code_change_and_tests_pass_deploys(tmp_path):
     assert tests_called[0][2] is False                          # requirements.txt 没变
     assert any(c[0] == "worktree" and c[1] == "add" for c in run_git.calls)
     assert any(c[0] == "worktree" and c[1] == "remove" for c in run_git.calls)
+    assert any(c[0] == "worktree" and c[1] == "add" and c[-1] == "origin/master"
+              for c in run_git.calls)                            # worktree 基于 origin/master，不是本地 HEAD
+    assert any(c[0] == "rebase" for c in run_git.calls)
+    assert ["push", "origin", "HEAD:master"] in run_git.calls
+    cmds = [c[0] for c in run_git.calls]
+    assert cmds.index("worktree") < cmds.index("rebase")         # 先测试，测完才 rebase
     _never_destructive(run_git.calls)
 
 
@@ -111,7 +117,12 @@ def test_tests_fail_deploy_false_and_notifies(tmp_path):
                              run_tests=lambda *a: (False, "1 failed, 4 passed"))
     assert result == {"deploy": False}
     assert any("1 failed" in content for _, content in notifier.sent)
+    assert any("没推送" in content for _, content in notifier.sent)
     assert any(c[0] == "worktree" and c[1] == "remove" for c in run_git.calls)  # 失败也要清理
+    assert any(c[0] == "worktree" and c[1] == "add" and c[-1] == "origin/master"
+              for c in run_git.calls)                                          # 测的是 origin/master
+    assert not any(c[0] == "rebase" for c in run_git.calls)   # 测试没过：磁盘上的旧代码不能动
+    assert not any(c[0] == "push" for c in run_git.calls)     # 今天的数据也不推
     _never_destructive(run_git.calls)
 
 
@@ -206,6 +217,11 @@ def test_never_calls_reset_hard_clean_or_force_push(tmp_path):
         sync_and_deploy(tmp_path, TODAY, lambda m: None, FakeNotifier(), Path("python"),
                         "old111", run_git=run_git, run_tests=lambda *a: (True, "ok"))
         _never_destructive(run_git.calls)
+
+
+def test_code_paths_includes_live_py():
+    from jevq.sync.deploy import CODE_PATHS
+    assert "live.py" in CODE_PATHS
 
 
 def test_daily_commit_is_limited_to_data_paths(tmp_path):

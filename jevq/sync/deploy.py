@@ -13,7 +13,7 @@ from pathlib import Path
 from jevq.sync.secrets import scan_staged
 
 # 收盘后判断"是否需要上线"时比较的代码路径。
-CODE_PATHS = ["jevq/", "run.py", "daemon.py", "desktop.py", "requirements.txt", "tests/"]
+CODE_PATHS = ["jevq/", "run.py", "daemon.py", "desktop.py", "live.py", "requirements.txt", "tests/"]
 
 # git add 只加这些路径（数据/账本），绝不带上代码改动。
 DATA_PATHS = ["reports", "exports", ".superpowers", ".gitignore"]
@@ -67,6 +67,25 @@ def _has_uncommitted_code_changes(run_git) -> bool:
             continue
         return True
     return False
+
+
+def _rebase_and_push(run_git, log, notifier) -> bool:
+    """把 origin/master rebase 到本地分支上并推送。失败（冲突或 push 出错）时已经记过日志、
+    发过提醒，调用方只需要据此决定要不要继续。"""
+    rebase = run_git(["rebase", "origin/master"])
+    if rebase.returncode != 0:
+        run_git(["rebase", "--abort"])
+        log(f"rebase 冲突：{rebase.stderr}")
+        notifier.send("⚠️ 模拟盘提醒", "同步冲突，需要人工处理")
+        return False
+
+    push = run_git(["push", "origin", "HEAD:master"])
+    if push.returncode != 0:
+        log(f"git push 失败：{push.stderr}")
+        notifier.send("⚠️ 模拟盘提醒", "同步失败：git push 出错")
+        return False
+
+    return True
 
 
 def sync_and_deploy(repo: Path, today: date, log, notifier, python_exe: Path,
@@ -123,46 +142,30 @@ def _sync_and_deploy(repo: Path, today: date, log, notifier, python_exe: Path,
         notifier.send("⚠️ 模拟盘提醒", "同步失败：git fetch 出错")
         return {"deploy": False}
 
-    # 3. 合并远端
-    rebase = run_git(["rebase", "origin/master"])
-    if rebase.returncode != 0:
-        run_git(["rebase", "--abort"])
-        log(f"rebase 冲突：{rebase.stderr}")
-        notifier.send("⚠️ 模拟盘提醒", "同步冲突，需要人工处理")
-        return {"deploy": False}
-
-    # 4. push（失败只提醒，不算致命）
-    push = run_git(["push", "origin", "HEAD:master"])
-    if push.returncode != 0:
-        log(f"git push 失败：{push.stderr}")
-        notifier.send("⚠️ 模拟盘提醒", "同步失败：git push 出错")
-        return {"deploy": False}
-
+    # 3. 本机代码是脏的：不测试、不上线，数据照旧 rebase 到 origin/master 之上推送
     if code_dirty:
+        _rebase_and_push(run_git, log, notifier)
         return {"deploy": False}
 
-    head = run_git(["rev-parse", "HEAD"])
-    new_head = (getattr(head, "stdout", "") or "").strip()
-    if head.returncode != 0 or not new_head:
-        log(f"读取 HEAD 失败：{getattr(head, 'stderr', '')}")
-        return {"deploy": False}
-
-    changed: list[str] | None = None
-    if running_commit is not None and running_commit != new_head:
-        diff = run_git(["diff", "--name-only", running_commit, new_head, "--", *CODE_PATHS])
+    # 4. 判断 origin/master 相对正在运行的版本，代码有没有变化——这里用 origin/master 而不是
+    #    本地 HEAD，因为还没 rebase，磁盘上跑的仍是 running_commit
+    if running_commit is not None:
+        diff = run_git(["diff", "--name-only", running_commit, "origin/master", "--", *CODE_PATHS])
         changed = (diff.stdout or "").splitlines() if diff.returncode == 0 else []
-    elif running_commit == new_head:
-        return {"deploy": False}
-    # running_commit is None → 视为总是需要检查（daemon 启动时读不到当前运行的提交）
+    else:
+        changed = None  # 读不到当前运行的提交（如 daemon 刚启动）→ 视为总要检查
 
     if running_commit is not None and not changed:
+        # 代码没变：不用测试，直接把 origin/master 合过来推送
+        _rebase_and_push(run_git, log, notifier)
         return {"deploy": False}
 
-    # 6. 隔离测试：临时 worktree，跑完立即清理
+    # 5. 代码有变化（或没有 running_commit 可比较）：先在临时 worktree 里测 origin/master，
+    #    测试通过才允许 rebase + push；不通过就保持磁盘上的旧代码继续跑，今天的数据也不推
     worktree_dir = Path(tempfile.mkdtemp(prefix="jevq_deploy_"))
     install_requirements = bool(changed) and "requirements.txt" in changed
     try:
-        wt = run_git(["worktree", "add", "--detach", str(worktree_dir), "HEAD"])
+        wt = run_git(["worktree", "add", "--detach", str(worktree_dir), "origin/master"])
         if wt.returncode != 0:
             log(f"创建隔离测试 worktree 失败：{wt.stderr}")
             notifier.send("⚠️ 模拟盘提醒", "同步失败：创建测试环境出错")
@@ -177,7 +180,18 @@ def _sync_and_deploy(repo: Path, today: date, log, notifier, python_exe: Path,
         failed_n = _count_failed(detail)
         log(f"新代码测试未通过（{failed_n} failed）：{detail}")
         old = running_commit[:7] if running_commit else "?"
-        notifier.send("⚠️ 模拟盘提醒", f"新代码测试未通过（{failed_n} failed），继续使用旧版本 {old}")
+        notifier.send("⚠️ 模拟盘提醒",
+                      f"新代码测试未通过（{failed_n} failed），继续使用旧版本 {old}，今天的数据没推送")
+        return {"deploy": False}
+
+    # 6. 测试通过，这才 rebase + push，磁盘上换成测过的新代码
+    if not _rebase_and_push(run_git, log, notifier):
+        return {"deploy": False}
+
+    head = run_git(["rev-parse", "HEAD"])
+    new_head = (getattr(head, "stdout", "") or "").strip()
+    if head.returncode != 0 or not new_head:
+        log(f"读取 HEAD 失败：{getattr(head, 'stderr', '')}")
         return {"deploy": False}
 
     return {"deploy": True, "commit": new_head}
