@@ -4,9 +4,10 @@ from datetime import date
 from pathlib import Path
 
 from jevq import accounts as accounts_mod
-from jevq.config import REPORT_DIR, STRATEGIES
+from jevq.config import LIVE_ACCOUNT, REPORT_DIR, STRATEGIES
 from jevq.data import custom_store, sell_followups
 from jevq.ledger import Ledger
+from jevq.live import store as live_store
 
 
 
@@ -46,6 +47,86 @@ def notice_risk_stats(conn, day: date) -> dict:
             "unsure": sum(1 for s in seen.values() if s.get("verdict") == "unsure"),
             "unread": sum(1 for s in seen.values() if not s.get("body_read")),
             "by_category": by_cat}
+
+
+def _closed_trade_returns(conn: sqlite3.Connection, upto: str) -> list[float]:
+    """每只代码从建仓到净持仓归零算一笔：买卖各自按股数加权算均价，平仓时记一笔 (卖出均价/买入均价 - 1)。"""
+    rows = conn.execute(
+        "SELECT code, side, avg_price, filled FROM live_orders "
+        "WHERE filled > 0 AND substr(ts, 1, 10) <= ? ORDER BY code, ts, id", (upto,)).fetchall()
+    returns = []
+    cycles: dict[str, dict] = {}
+    for code, side, avg_price, filled in rows:
+        cy = cycles.setdefault(code, {"buy_shares": 0, "buy_cost": 0.0, "sell_shares": 0, "sell_cost": 0.0, "open": 0})
+        if side == "buy":
+            cy["buy_shares"] += filled
+            cy["buy_cost"] += avg_price * filled
+            cy["open"] += filled
+        else:
+            cy["sell_shares"] += filled
+            cy["sell_cost"] += avg_price * filled
+            cy["open"] -= filled
+            if cy["open"] <= 0 and cy["buy_shares"] > 0:
+                buy_avg = cy["buy_cost"] / cy["buy_shares"]
+                sell_avg = cy["sell_cost"] / cy["sell_shares"]
+                returns.append(sell_avg / buy_avg - 1)
+                cycles[code] = {"buy_shares": 0, "buy_cost": 0.0, "sell_shares": 0, "sell_cost": 0.0, "open": 0}
+    return returns
+
+
+def live_report_lines(conn: sqlite3.Connection, day: date) -> list[str]:
+    """「实盘跟单」段：只写百分比和笔数，不写金额、股数（报告会推到 GitHub）。
+    live_orders 从没有过记录、且当前模式为 off（从没跑过实盘）→ 不出这一段。"""
+    ever_run = conn.execute("SELECT COUNT(*) FROM live_orders").fetchone()[0]
+    current_mode = live_store.mode(conn)
+    if ever_run == 0 and current_mode == "off":
+        return []
+
+    d = day.isoformat()
+    title = "实盘跟单（演练）" if current_mode == "dryrun" else "实盘跟单"
+    lines = ["", f"## {title}", ""]
+
+    sim_n = conn.execute("SELECT COUNT(*) FROM fills WHERE account=? AND substr(ts, 1, 10)=?",
+                         (LIVE_ACCOUNT, d)).fetchone()[0]
+    live_n = conn.execute("SELECT COUNT(*) FROM live_orders WHERE filled > 0 AND substr(ts, 1, 10)=?",
+                          (d,)).fetchone()[0]
+    skip_rows = conn.execute(
+        "SELECT note, COUNT(*) FROM live_intents WHERE status='skipped' AND substr(ts, 1, 10)=? "
+        "GROUP BY note ORDER BY COUNT(*) DESC, note", (d,)).fetchall()
+    skip_n = sum(cnt for _, cnt in skip_rows)
+    lines.append(f"今天模拟 {LIVE_ACCOUNT} 成交 {sim_n} 笔 → 实盘成交 {live_n} 笔、跳过 {skip_n} 笔")
+    if skip_rows:
+        lines.append("跳过原因：" + "、".join(f"{note or '未注明'} {cnt} 笔" for note, cnt in skip_rows))
+
+    slip_rows = conn.execute(
+        "SELECT o.side, o.code, o.avg_price, i.sim_price FROM live_orders o "
+        "JOIN live_intents i ON o.intent_id = i.id "
+        "WHERE o.filled > 0 AND substr(o.ts, 1, 10)=? ORDER BY o.id", (d,)).fetchall()
+    for side, label in (("buy", "买入滑点"), ("sell", "卖出滑点")):
+        items = [(code, (avg / sim - 1) * 100) for s, code, avg, sim in slip_rows if s == side and sim]
+        if items:
+            lines.append(f"{label}：" + "、".join(f"{code} {pct:+.2f}%" for code, pct in items))
+
+    base_day = conn.execute(
+        "SELECT MIN(substr(ts, 1, 10)) FROM live_orders WHERE filled > 0 AND substr(ts, 1, 10) <= ?",
+        (d,)).fetchone()[0]
+    if base_day:
+        base_equity = conn.execute("SELECT value FROM equity WHERE date=? AND account=?",
+                                   (base_day, LIVE_ACCOUNT)).fetchone()
+        now_equity = conn.execute("SELECT value FROM equity WHERE date=? AND account=?",
+                                  (d, LIVE_ACCOUNT)).fetchone()
+        if base_equity and now_equity and base_equity[0]:
+            sim_pct = (now_equity[0] / base_equity[0] - 1) * 100
+            trades = _closed_trade_returns(conn, d)
+            if trades:
+                prod = 1.0
+                for r in trades:
+                    prod *= (1 + r)
+                real_str = f"{(prod - 1) * 100:+.2f}%"
+            else:
+                real_str = "—"
+            lines.append(f"累计收益率：实盘 {real_str}｜模拟 {sim_pct:+.2f}%")
+    return lines
 
 
 def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: dict[str, float],
@@ -110,6 +191,8 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
         lines += [f"| {d} | {account_names.get(a, a)} | {code} | {names.get(code, '')} | {reason} | {price:.2f} "
                   f"| {pct(high, price)} | {pct(close, price)} | {pct(nhigh, price)} | {pct(nclose, price)} |"
                   for d, a, code, reason, price, high, close, nhigh, nclose in followups]
+
+    lines += live_report_lines(conn, day)
 
     lines += ["", "> 成交价取分钟快照，开盘附近会比实盘略好。"]
 
