@@ -3,7 +3,8 @@ from datetime import datetime
 
 import pytest
 
-from jevq.live.broker import BrokerError, Holding, OrderRow, REJECT_CODES
+from jevq.live.broker import (BrokerError, Holding, OrderRow, REJECT_CODES, INFLIGHT_CODES,
+                              holding_from_row, order_from_row, cash_from_balance)
 from live_fakes import FakeBroker, FakeClock, FakeNotifier
 
 
@@ -34,14 +35,44 @@ def test_order_row_open_false_when_rejected():
     assert o.open is False
 
 
-# ---- BrokerError / REJECT_CODES ----
+def test_order_row_open_true_when_status_text_unfilled():
+    o = OrderRow("1", "600001", "buy", 9.5, 500, 0, 0.0, "未成交", "09:31:00")
+    assert o.open is True
+
+
+def test_order_row_open_false_when_status_all_cancelled_variant():
+    o = OrderRow("1", "600001", "buy", 9.5, 500, 0, 0.0, "全部撤单", "09:31:00")
+    assert o.open is False
+
+
+def test_order_row_open_false_when_filled_plus_cancelled_equals_shares():
+    o = OrderRow("1", "600001", "buy", 9.5, 500, 300, 9.5, "部成部撤", "09:31:00", cancelled=200)
+    assert o.open is False
+
+
+def test_order_row_open_true_when_status_reported_pending_cancel():
+    o = OrderRow("1", "600001", "buy", 9.5, 500, 0, 0.0, "已报待撤", "09:31:00")
+    assert o.open is True
+
+
+def test_order_row_cancelled_defaults_to_zero():
+    o = OrderRow("1", "600001", "buy", 9.5, 500, 0, 0.0, "已报", "09:31:00")
+    assert o.cancelled == 0
+
+
+# ---- BrokerError / REJECT_CODES / INFLIGHT_CODES ----
 
 def test_broker_error_defaults_to_unknown_code():
     assert BrokerError("出错了").code == "UNKNOWN"
 
 
 def test_reject_codes_contains_definite_rejections():
-    assert {"INSUFFICIENT_BALANCE", "ORDER_SUBMIT_FAILED"} <= REJECT_CODES
+    assert {"INSUFFICIENT_BALANCE", "ORDER_SUBMIT_FAILED", "VALIDATION_ERROR",
+            "ORDER_PRICE_REQUIRED", "INPUT_VERIFY_FAILED"} <= REJECT_CODES
+
+
+def test_inflight_codes_contains_timeout_variants():
+    assert INFLIGHT_CODES == {"QUEUE_TIMEOUT", "TASK_TIMEOUT", "TASK_TIMEOUT_RECOVERY_FAILED", "TIMEOUT"}
 
 
 # ---- FakeBroker ----
@@ -173,3 +204,121 @@ def test_fake_notifier_send_always_appends():
     n.send("a", "1")
     n.send("a", "1")
     assert n.sent == [("a", "1"), ("a", "1")]
+
+
+# ---- holding_from_row ----
+
+def test_holding_from_row_gateway_sample_header():
+    row = {"序号": "1", "证券代码": "600001", "证券名称": "平安银行", "股票余额": "500", "可用余额": "500",
+           "冻结数量": "0", "成本价": "9.50", "市价": "9.60", "市值": "4800", "盈亏": "50",
+           "盈亏比例(%)": "1.05", "当日盈亏": "50", "当日盈亏比(%)": "1.05", "当日买入": "0",
+           "当日卖出": "0", "仓位占比(%)": "10", "交易市场": "深A", "操作": ""}
+    assert holding_from_row(row) == Holding("600001", 500, 500)
+
+
+def test_holding_from_row_easytrader_variant_header():
+    # research-easytrader.md：另一种表头变体，用「当前持仓」「可卖数量」
+    row = {"证券代码": "600001", "当前持仓": "500", "可卖数量": "300", "参考成本价": "9.50",
+           "盈亏比例(%)": "1.05"}
+    assert holding_from_row(row) == Holding("600001", 500, 300)
+
+
+def test_holding_from_row_code_padded_to_six_digits():
+    row = {"证券代码": "1216", "股票余额": "100", "可用余额": "100"}
+    assert holding_from_row(row).code == "001216"
+
+
+def test_holding_from_row_code_stripped_and_last_six_digits():
+    row = {"证券代码": " SH600001 ", "股票余额": "100", "可用余额": "100"}
+    assert holding_from_row(row).code == "600001"
+
+
+def test_holding_from_row_accepts_comma_and_blank_numbers():
+    row = {"证券代码": "600001", "股票余额": "1,000", "可用余额": ""}
+    h = holding_from_row(row)
+    assert h.shares == 1000 and h.available == 0
+
+
+def test_holding_from_row_unknown_header_raises_and_lists_actual_keys():
+    row = {"foo": "1", "bar": "2"}
+    with pytest.raises(BrokerError) as exc:
+        holding_from_row(row)
+    assert exc.value.code == "UNKNOWN_HEADER"
+    assert "foo" in str(exc.value) and "bar" in str(exc.value)
+
+
+# ---- order_from_row ----
+
+def test_order_from_row_gateway_sample_header():
+    row = {"委托时间": "093105", "证券代码": "600001", "证券名称": "平安银行", "操作": "买入",
+           "委托价格": "9.50", "委托数量": "500", "成交数量": "0", "成交均价": "0.00",
+           "撤消数量": "0", "合同编号": "1234567", "备注": "未成交", "交易市场": "深A"}
+    o = order_from_row(row)
+    assert o == OrderRow("1234567", "600001", "buy", 9.5, 500, 0, 0.0, "未成交", "09:31:05", cancelled=0)
+
+
+def test_order_from_row_time_hhmmss_normalized():
+    row = {"委托时间": "093105", "证券代码": "600001", "操作": "卖出", "委托价格": "9.5",
+           "委托数量": "100", "合同编号": "7"}
+    assert order_from_row(row).time == "09:31:05"
+
+
+def test_order_from_row_time_already_normalized_passes_through():
+    row = {"委托时间": "09:31:05", "证券代码": "600001", "操作": "卖出", "委托价格": "9.5",
+           "委托数量": "100", "合同编号": "7"}
+    assert order_from_row(row).time == "09:31:05"
+
+
+def test_order_from_row_side_from_category_keyword():
+    row = {"委托时间": "10:00:00", "证券代码": "600001", "委托类别": "卖出", "委托价格": "9.5",
+           "委托数量": "100", "委托编号": "7"}
+    assert order_from_row(row).side == "sell"
+
+
+def test_order_from_row_comma_number_in_shares():
+    row = {"委托时间": "10:00:00", "证券代码": "600001", "操作": "买入", "委托价格": "9.5",
+           "委托数量": "1,000", "合同编号": "7"}
+    assert order_from_row(row).shares == 1000
+
+
+def test_order_from_row_defaults_for_missing_optional_fields():
+    row = {"委托时间": "10:00:00", "证券代码": "600001", "操作": "买入", "委托价格": "9.5",
+           "委托数量": "100", "合同编号": "7"}
+    o = order_from_row(row)
+    assert o.filled == 0 and o.avg_price == 0.0 and o.cancelled == 0 and o.status == ""
+
+
+def test_order_from_row_unknown_header_raises_and_lists_actual_keys():
+    row = {"foo": "1"}
+    with pytest.raises(BrokerError) as exc:
+        order_from_row(row)
+    assert exc.value.code == "UNKNOWN_HEADER"
+    assert "foo" in str(exc.value)
+
+
+def test_order_from_row_unrecognized_side_text_raises_unknown_header():
+    row = {"委托时间": "10:00:00", "证券代码": "600001", "操作": "撤单", "委托价格": "9.5",
+           "委托数量": "100", "合同编号": "7"}
+    with pytest.raises(BrokerError) as exc:
+        order_from_row(row)
+    assert exc.value.code == "UNKNOWN_HEADER"
+
+
+# ---- cash_from_balance ----
+
+def test_cash_from_balance_gateway_key_with_comma():
+    assert cash_from_balance({"资金余额": "10000.00", "可用金额": "9,500.00"}) == 9500.0
+
+
+def test_cash_from_balance_easytrader_key_numeric():
+    assert cash_from_balance({"可用金额": 4000.0}) == 4000.0
+
+
+def test_cash_from_balance_alt_key_available_balance():
+    assert cash_from_balance({"可用余额": "100"}) == 100.0
+
+
+def test_cash_from_balance_unknown_header_raises():
+    with pytest.raises(BrokerError) as exc:
+        cash_from_balance({"foo": "1"})
+    assert exc.value.code == "UNKNOWN_HEADER"
