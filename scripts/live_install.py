@@ -31,6 +31,7 @@ from jevq.notify import _windows_env_fallback  # noqa: E402
 
 REPO_URL = "https://github.com/hylyq/xiadan-gateway.git"
 PIN = "1662adf5b7d0afc73d1ee2f0f15101104d2c07af"
+PATCH_FILE = DEV / "patches" / "xiadan-gateway-ocr-alnum.patch"    # 本地增量，锁在 PIN 之上
 PORT = 5000
 SHORTCUT = "xiadan网关"
 SESSION_START = time(9, 15)
@@ -66,12 +67,33 @@ def sync_gateway(gw: Path) -> None:
     print(f"网关代码已在 {PIN[:7]}")
 
 
+def apply_patch(gw: Path) -> None:
+    """幂等地把本地增量补丁应用到网关目录。PIN 锁上游代码，patch 锁本地增量。
+    判定：git apply --check 成功 → 未 apply → 打上；否则 git apply --check -R 成功 → 已 apply → 跳过；
+    两者都失败 → 与其它未提交改动冲突 → 停下让人工看。"""
+    if not PATCH_FILE.exists():
+        print(f"没找到补丁 {PATCH_FILE}，跳过（网关跑的是纯上游代码）")
+        return
+    forward = subprocess.run(["git", "apply", "--check", str(PATCH_FILE)], cwd=gw, capture_output=True)
+    if forward.returncode == 0:
+        run(["git", "apply", str(PATCH_FILE)], cwd=gw)
+        print(f"补丁已应用：{PATCH_FILE.name}")
+        return
+    reverse = subprocess.run(["git", "apply", "--check", "-R", str(PATCH_FILE)], cwd=gw, capture_output=True)
+    if reverse.returncode == 0:
+        print(f"补丁已在网关里：{PATCH_FILE.name}")
+        return
+    sys.exit(f"补丁 {PATCH_FILE.name} 既不能 apply、也不能反向 apply（网关目录有别的未提交改动？）；"
+             f"人工看 `git -C {gw} diff` 后再决定")
+
+
 # ---- 2. 依赖 ----
 
 def install_deps(gw: Path) -> None:
     if subprocess.run([sys.executable, "-m", "uv", "--version"], capture_output=True).returncode != 0:
         run([sys.executable, "-m", "pip", "install", "-q", "uv"])
-    run([sys.executable, "-m", "uv", "sync"], cwd=gw)
+    # --extra ocr：装 ddddocr（识别字母数字混合验证码，见 patches/xiadan-gateway-ocr-alnum.patch）
+    run([sys.executable, "-m", "uv", "sync", "--extra", "ocr"], cwd=gw)
     # 网关顶层 import numpy 却没写进依赖；用 uv pip 装进它的 .venv，不改网关仓库里的文件
     run([sys.executable, "-m", "uv", "pip", "install", "--python", gw / ".venv" / "Scripts" / "python.exe",
          "numpy"], cwd=gw)
@@ -224,6 +246,7 @@ def main() -> None:
         xiadan = Path(typed) if typed else None
     gw = args.gateway_dir
     sync_gateway(gw)
+    apply_patch(gw)
     install_deps(gw)
     write_config(gw, xiadan)
     ensure_live_host()
