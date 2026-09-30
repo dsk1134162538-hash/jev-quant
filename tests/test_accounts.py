@@ -16,17 +16,19 @@ def spec(name="尾盘弱转强"):
             "jev": {"notices": True, "news": True}}
 
 
-def test_all_accounts_is_builtin_six_with_no_custom_strategies():
+BUILTIN = ("board_main", "board_shadow", "rebound_main", "rebound_shadow")
+
+
+def test_all_accounts_is_builtin_four_with_no_custom_strategies():
     conn = db.connect(":memory:")
-    assert accounts.all_accounts(conn, TODAY) == ("main", "shadow", "board_main", "board_shadow", "rebound_main", "rebound_shadow")
+    assert accounts.all_accounts(conn, TODAY) == BUILTIN          # 低吸 main/shadow 已下线
 
 
 def test_all_accounts_includes_active_custom_strategy_next_day():
     conn = db.connect(":memory:")
     custom_store.save(conn, spec(), TODAY, DAYS)
-    assert accounts.all_accounts(conn, TODAY) == ("main", "shadow", "board_main", "board_shadow", "rebound_main", "rebound_shadow")
-    assert accounts.all_accounts(conn, NEXT_DAY) == (
-        "main", "shadow", "board_main", "board_shadow", "rebound_main", "rebound_shadow", "c1_main", "c1_shadow")
+    assert accounts.all_accounts(conn, TODAY) == BUILTIN
+    assert accounts.all_accounts(conn, NEXT_DAY) == (*BUILTIN, "c1_main", "c1_shadow")
 
 
 def test_account_names_uses_custom_strategy_name():
@@ -35,7 +37,9 @@ def test_account_names_uses_custom_strategy_name():
     names = accounts.account_names(conn, NEXT_DAY)
     assert names["c1_main"] == "尾盘弱转强·主(Jev)"
     assert names["c1_shadow"] == "尾盘弱转强·影子"
-    assert names["main"] == "低吸·主(Jev)"                  # 内置账户名不变
+    assert names["board_main"] == "首板·主(Jev)"                  # 内置账户名不变
+    # 低吸下线：历史成交还要显示名字
+    assert names["main"] == "低吸·主(已下线)" and names["shadow"] == "低吸·影子(已下线)"
 
 
 def test_account_strategy_maps_custom_accounts_to_id():
@@ -43,7 +47,8 @@ def test_account_strategy_maps_custom_accounts_to_id():
     custom_store.save(conn, spec(), TODAY, DAYS)
     strategy = accounts.account_strategy(conn, NEXT_DAY)
     assert strategy["c1_main"] == "c1" and strategy["c1_shadow"] == "c1"
-    assert strategy["main"] == "lowbuy"
+    assert strategy["rebound_main"] == "rebound"
+    assert "main" not in strategy and "shadow" not in strategy
 
 
 def test_disabled_but_held_custom_strategy_still_in_all_accounts():

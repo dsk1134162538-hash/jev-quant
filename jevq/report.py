@@ -82,7 +82,7 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
                         "WHERE substr(ts, 1, 10)=? AND code != '' ORDER BY id",
                         (day.isoformat(),)).fetchall()
     lines += ["", "## 主账户检查记录", "", "| 时间 | 策略 | 代码 | 名称 | 结果 | 原因 |", "|---|---|---|---|---|---|"]
-    lines += [f"| {ts[11:16]} | {strategy_labels.get(sid or 'lowbuy', sid or 'lowbuy')} | {code} "
+    lines += [f"| {ts[11:16]} | {strategy_labels.get(sid) or sid or '未知'} | {code} "
               f"| {names.get(code, '')} | {VERDICT_LABELS.get(verdict, verdict)} | {detail} |"
               for ts, sid, code, verdict, detail in rows]
 

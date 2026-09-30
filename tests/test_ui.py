@@ -81,6 +81,13 @@ def test_decision_detail_renders_new_notice_risk_and_legacy_list():
     assert "已读正文" in js and "仅标题" in js
 
 
+def test_ui_has_no_lowbuy_left():
+    """低吸下线：面板上没有低吸的账户颜色、策略筛选、留痕分支和标题。"""
+    html = UI.read_text(encoding="utf-8")
+    assert "低吸" not in html and "lowbuy" not in html
+    assert 'BUILTIN_ORDER = ["board_main", "board_shadow", "rebound_main", "rebound_shadow"]' in html
+
+
 _RENDER_HARNESS = r"""
 const vm = require("vm"), fs = require("fs");
 const noop = () => {};
@@ -107,7 +114,7 @@ def _render(tmp_path, cases: list) -> list[str]:
 
 def _decision(verdict, detail, notices):
     return {"code": "600001", "name": "甲", "time": "10:00", "verdict": verdict, "detail": detail,
-            "trace": {"strategy": "lowbuy", "candidate": {"pct": -1}, "notices": notices}}
+            "trace": {"strategy": "rebound", "candidate": {"pct": -1}, "notices": notices}}
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="没有安装 node")

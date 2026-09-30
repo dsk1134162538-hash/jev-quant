@@ -28,20 +28,42 @@ def make_api(paths, runner=None, fetch=None):
 
 def test_status_marks_positions_to_fetched_prices(paths):
     conn = db.connect(paths[0])
-    Ledger(conn).buy("main", quote("600001", pct=-1.0), T, "x")
+    Ledger(conn).buy("rebound_main", quote("600001", pct=-1.0), T, "x")
     conn.close()
     api = make_api(paths, fetch=lambda codes: {"600001": quote("600001", pct=1.0)})
     s = api.status()
-    main, shadow, board_main, board_shadow, _rebound_main, _rebound_shadow = s["accounts"]
-    assert main["id"] == "main" and main["positions"][0]["price"] == 10.1
+    board_main, board_shadow, main, shadow = s["accounts"]
+    assert main["id"] == "rebound_main" and main["positions"][0]["price"] == 10.1
     assert main["positions"][0]["pnl_pct"] == round((10.1 / 9.9 - 1) * 100, 2)
-    assert main["strategy"] == "lowbuy" and main["strategy_name"] == "低吸"
-    assert shadow["equity"] == 30000 and shadow["positions"] == []
+    assert main["strategy"] == "rebound" and main["strategy_name"] == "超跌反弹"
+    assert shadow["id"] == "rebound_shadow" and shadow["equity"] == 30000 and shadow["positions"] == []
     assert board_main["id"] == "board_main" and board_main["strategy"] == "board"
     assert board_main["strategy_name"] == "扫首板"
     assert board_shadow["id"] == "board_shadow" and board_shadow["strategy"] == "board"
     assert s["running"] is False and s["phase"] == "未运行"
     assert s["warning"] is None
+
+
+def test_retired_lowbuy_accounts_stay_off_panel_but_old_fills_keep_their_name(paths):
+    """低吸下线：库里 main/shadow 的历史（现金、持仓、净值、成交）不删，但面板账户和净值曲线不再出现；
+    查到历史成交时显示「已下线」的名字。"""
+    conn = db.connect(paths[0])
+    conn.execute("INSERT INTO cash VALUES ('main', 31000.0), ('shadow', 30500.0)")
+    conn.execute("INSERT INTO positions VALUES ('main', '600001', 100, 1005.1, 10.0, '2026-09-21')")
+    conn.execute("INSERT INTO equity VALUES ('2026-09-21', 'main', 31000.0), ('2026-09-21', 'shadow', 30500.0), "
+                 "('2026-09-21', 'rebound_main', 30100.0)")
+    conn.execute("INSERT INTO fills(account, code, side, price, shares, fee, ts, reason) "
+                 "VALUES ('main', '600001', 'buy', 10.0, 100, 5.1, '2026-09-21T10:00:00', '低吸-1.0%')")
+    conn.commit()
+    conn.close()
+    api = make_api(paths)
+    assert [a["id"] for a in api.status()["accounts"]] == ["board_main", "board_shadow", "rebound_main",
+                                                          "rebound_shadow"]
+    curve = api.equity_curve()
+    assert "main" not in curve and "shadow" not in curve
+    assert curve["rebound_main"] == [["2026-09-21", 30100.0]]
+    [f] = api.fills("2026-09-21")
+    assert f["account_id"] == "main" and f["account"] == "低吸·主(已下线)"
 
 
 def test_status_surfaces_warning_from_state(paths):
@@ -78,10 +100,10 @@ def test_board_stats_returns_summary(paths):
 
 def test_fills_decisions_curve(paths):
     conn = db.connect(paths[0])
-    Ledger(conn).buy("main", quote("600001", pct=-1.0), T, "低吸")
-    conn.execute("INSERT INTO decisions(ts, code, verdict, detail) "
-                 "VALUES ('2026-09-23T10:00:00', '600002', 'reject', '新增减持')")
-    conn.execute("INSERT INTO equity VALUES ('2026-09-23', 'main', 30100)")
+    Ledger(conn).buy("rebound_main", quote("600001", pct=-1.0), T, "超跌")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy) "
+                 "VALUES ('2026-09-23T10:00:00', '600002', 'reject', '新增减持', 'rebound')")
+    conn.execute("INSERT INTO equity VALUES ('2026-09-23', 'rebound_main', 30100)")
     conn.commit()
     conn.close()
     api = make_api(paths)
@@ -92,27 +114,28 @@ def test_fills_decisions_curve(paths):
     assert d["id"] and d["has_trace"] is False
     assert {k: v for k, v in d.items() if k not in ("id", "has_trace")} == {
         "time": "10:00", "code": "600002", "name": "", "verdict": "reject", "detail": "新增减持"}
-    assert api.equity_curve() == {"main": [["2026-09-23", 30100.0]], "shadow": [],
-                                  "board_main": [], "board_shadow": [],
-                                  "rebound_main": [], "rebound_shadow": []}
+    assert api.equity_curve() == {"board_main": [], "board_shadow": [],
+                                  "rebound_main": [["2026-09-23", 30100.0]], "rebound_shadow": []}
 
 
 def test_decisions_filtered_by_strategy(paths):
     conn = db.connect(paths[0])
     conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES "
-                 "('2026-09-23T10:00:00', '600002', 'reject', '新增减持', 'lowbuy')")
+                 "('2026-09-23T10:00:00', '600002', 'reject', '新增减持', 'rebound')")
     conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES "
                  "('2026-09-23T10:01:00', '300001', 'pass', '首板', 'board')")
     conn.execute("INSERT INTO decisions(ts, code, verdict, detail) VALUES "
                  "('2026-09-23T10:02:00', '600003', 'reject', '旧数据无 strategy')")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES "
+                 "('2026-09-23T10:03:00', '', 'sentiment', '{}', 'market')")
     conn.commit()
     conn.close()
     api = make_api(paths)
-    board = api.decisions("2026-09-23", "board")
-    assert [d["code"] for d in board] == ["300001"]
-    lowbuy = api.decisions("2026-09-23", "lowbuy")
-    assert sorted(d["code"] for d in lowbuy) == ["600002", "600003"]     # NULL 视为 lowbuy
-    assert len(api.decisions("2026-09-23")) == 3
+    assert [d["code"] for d in api.decisions("2026-09-23", "board")] == ["300001"]
+    assert [d["code"] for d in api.decisions("2026-09-23", "rebound")] == ["600002"]
+    # 低吸下线：没有 strategy 的老记录（当年的低吸）不再默认归到低吸，只在「全部」里
+    assert api.decisions("2026-09-23", "lowbuy") == []
+    assert [d["code"] for d in api.decisions("2026-09-23")] == ["市场", "600003", "300001", "600002"]
 
 
 def test_decision_detail(paths):
@@ -182,8 +205,8 @@ def test_runner_error_is_logged(paths):
 def test_names_from_state_then_quotes_cache(paths):
     conn = db.connect(paths[0])
     ledger = Ledger(conn)
-    ledger.buy("main", quote("600001", pct=-1.0), T, "x")
-    ledger.buy("shadow", quote("600002", pct=-1.0), T, "y")
+    ledger.buy("board_main", quote("600001", pct=-1.0), T, "x")
+    ledger.buy("board_shadow", quote("600002", pct=-1.0), T, "y")
     conn.execute("INSERT INTO decisions(ts, code, verdict, detail) VALUES "
                  "('2026-09-23T10:00:00', '600001', 'pass', 'ok'), ('2026-09-23T10:00:00', '', 'sentiment', '{}')")
     conn.commit()
@@ -206,7 +229,7 @@ def test_names_from_state_then_quotes_cache(paths):
 
 def test_query_methods_never_open_write_connection(paths, monkeypatch):
     conn = db.connect(paths[0])
-    Ledger(conn).buy("main", quote("600001", pct=-1.0), T, "x")
+    Ledger(conn).buy("board_main", quote("600001", pct=-1.0), T, "x")
     conn.execute("INSERT INTO decisions(ts, code, verdict, detail) "
                  "VALUES ('2026-09-23T10:00:00', '600002', 'reject', 'x')")
     conn.commit()
@@ -221,14 +244,13 @@ def test_query_methods_never_open_write_connection(paths, monkeypatch):
     assert len(api.fills("2026-09-23")) == 1
     rows = api.decisions("2026-09-23")
     assert api.decision(rows[0]["id"])["code"] == "600002"
-    assert api.equity_curve() == {"main": [], "shadow": [], "board_main": [], "board_shadow": [],
-                                  "rebound_main": [], "rebound_shadow": []}
+    assert api.equity_curve() == {"board_main": [], "board_shadow": [], "rebound_main": [], "rebound_shadow": []}
 
 
 def test_api_init_creates_fresh_db(paths):
     api = make_api(paths)
     s = api.status()
-    assert [a["equity"] for a in s["accounts"]] == [30000] * 6
+    assert [a["equity"] for a in s["accounts"]] == [30000] * 4
 
 
 def test_status_includes_active_custom_strategy_accounts(paths):
@@ -305,7 +327,7 @@ def test_status_accounts_carry_capital_baseline(paths):
     conn.close()
     s = make_api(paths).status()
     by_id = {a["id"]: a for a in s["accounts"]}
-    assert by_id["main"]["baseline"] == 30000
+    assert by_id["rebound_main"]["baseline"] == 30000
     assert by_id["c1_main"]["baseline"] == 100000
     # c1_shadow 还没开户（交易进程尚未构造 CustomStrategy）：按本金空仓显示，status 不能抛异常
     shadow = by_id["c1_shadow"]
@@ -325,13 +347,12 @@ def test_rules_list_includes_builtin_readonly_summaries(paths):
     result = make_api(paths).rules_list()
     assert result["ok"] and result["rules"] == []
     builtin = {b["id"]: b for b in result["builtin"]}
-    assert set(builtin) == {"lowbuy", "board", "rebound"}
-    assert builtin["lowbuy"]["accounts"] == ["main", "shadow"]
+    assert set(builtin) == {"board", "rebound"}                  # 低吸已下线
     titles = [s["title"] for s in builtin["board"]["sections"]]
     assert titles[0] == "选股" and all(s["lines"] for s in builtin["board"]["sections"])
-    assert any("-3%" in line for s in builtin["lowbuy"]["sections"] for line in s["lines"])
     rebound_lines = [line for s in builtin["rebound"]["sections"] for line in s["lines"]]
     assert builtin["rebound"]["accounts"] == ["rebound_main", "rebound_shadow"]
+    assert any("-3%" in line for line in rebound_lines)
     assert any("-20%" in line and "0%" in line for line in rebound_lines)
     assert any("40" in line and "2 连板" in line for line in rebound_lines)
     assert any("从低到高" in line for line in rebound_lines)

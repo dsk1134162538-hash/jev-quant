@@ -133,11 +133,6 @@ def buy_push_content(conn, f: Fill, stock_name: str) -> str:
                          f"5日第{ranks.get('ret5')}）")
             sealed = "已封死" if trace.get("sealed_at_snapshot") else "未封死"
             lines.append(f"扫板触发 +{cand.get('pct')}%，快照时{sealed}")
-        elif strategy == "lowbuy":
-            ret5 = cand.get("ret5")
-            ret5_str = f"{ret5:+.2f}" if isinstance(ret5, (int, float)) else "未知"
-            lines.append(f"跌幅 {cand.get('pct')}%｜近 5 日 {ret5_str}%｜"
-                         f"候选排名 {cand.get('rank')}/{cand.get('of')}")
         elif strategy == "rebound":
             ret5 = cand.get("ret5")
             ret5_str = f"{ret5:+.2f}" if isinstance(ret5, (int, float)) else "未知"
@@ -162,16 +157,7 @@ def buy_push_content(conn, f: Fill, stock_name: str) -> str:
             lines += buy_push_news_lines(trace.get("news"))
     except Exception:
         pass
-    if strategy == "lowbuy":
-        try:
-            market = trace.get("market") or {}
-            mode_label = "盘中可买" if market.get("mode") == "intraday" else "只在尾盘买"
-            sent = fmt_judge_label(market.get("sentiment"), market.get("sentiment_trace"))
-            over = fmt_judge_label(market.get("overseas"), market.get("overseas_trace"))
-            lines.append(f"▍当时市场：{mode_label}｜情绪 {sent}｜外围 {over}")
-        except Exception:
-            pass
-    elif strategy == "rebound":      # 超跌反弹的买入时机只看情绪，不看外围
+    if strategy == "rebound":      # 超跌反弹的买入时机只看情绪，不看外围
         try:
             market = trace.get("market") or {}
             mode_label = "盘中可买" if market.get("mode") == "intraday" else "只在尾盘买"
