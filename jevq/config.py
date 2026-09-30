@@ -114,6 +114,7 @@ LIVE_SELL_ROUNDS = 3            # 卖单撤了重挂最多几轮，之后每分�
 LIVE_SELL_RETRY = 60            # 秒：几轮都没卖完后，下次重试间隔
 LIVE_CASH_BUFFER = 0.002        # 算股数时资金留 0.2% 余量
 LIVE_POLL = 5                   # 秒：等成交时查当日委托的间隔
+LIVE_CANCEL_WAIT = 30           # 秒：撤单后等「已报待撤」变成终态最多多久，还没变就自动暂停
 LIVE_RECONCILE_HOLDING = 5      # 分钟：有持仓时对账间隔
 LIVE_RECONCILE_IDLE = 15        # 分钟：空仓时读资金确认在线的间隔
 LIVE_READ_FAIL_PAUSE = 3        # 连续读取失败几次自动暂停

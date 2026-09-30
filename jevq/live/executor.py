@@ -188,8 +188,9 @@ class Executor:
         if not matched.open:
             self._settle_wait_result(order_id, intent, matched, True, price, shares)
             return
-        result, confirmed = self._cancel_and_confirm(intent.code, "buy", price, shares, matched.entrust_no,
-                                                      order_ts, matched)
+        # 对上了且还挂着：当作已提交，照常等成交
+        result, confirmed = self._wait_fill(intent.code, "buy", price, shares, matched.entrust_no or None,
+                                            order_ts, config.LIVE_BUY_WAIT)
         self._settle_wait_result(order_id, intent, result, confirmed, price, shares)
 
     def _settle_wait_result(self, order_id: int, intent: Intent, matched, confirmed: bool,
@@ -221,36 +222,47 @@ class Executor:
 
     def _wait_fill(self, code: str, side: str, price: float, shares: int, entrust_no, since_ts: datetime,
                    wait: float):
-        """每 LIVE_POLL 秒读一次当日委托，直到确认不再 open 或等够 wait 秒；没等到就核对撤单再确认一次。
+        """每 LIVE_POLL 秒读一次当日委托，直到确认不再 open 或等够 wait 秒（按时钟算：网关一次读要好几秒）；
+        没等到就核对撤单再确认。
         返回 (matched, confirmed)：confirmed=True 才代表真的知道最终状态（成功读到 + 不再 open），
         confirmed=False 时 matched 只是最后一次读到的参考，不能拿来当真。"""
-        polls = max(1, int(wait // config.LIVE_POLL))
+        deadline = self.clock() + timedelta(seconds=wait)
         matched = None
-        for _ in range(polls):
+        while True:
             self.sleep(config.LIVE_POLL)
             try:
                 orders = self._read(self.broker.orders_today)
             except Exception:
-                continue
-            matched = self._match_order(orders, code, side, price, shares, entrust_no, since_ts)
-            if matched is not None and not matched.open:
-                return matched, True
+                orders = None
+            if orders is not None:
+                matched = self._match_order(orders, code, side, price, shares, entrust_no, since_ts)
+                if matched is not None and not matched.open:
+                    return matched, True
+            if self.clock() >= deadline:
+                break
         return self._cancel_and_confirm(code, side, price, shares, entrust_no, since_ts, matched)
 
     def _cancel_and_confirm(self, code: str, side: str, price: float, shares: int, entrust_no,
                             since_ts: datetime, matched):
-        """等够时间还没等到终态：核对撤单（_cancel_last_checked 会自己在核对不上/读不到时暂停），
-        再读一次确认。只有这次读成功且显示不再 open，才算数；否则 (matched, False)。"""
+        """等够时间还没等到终态：核对撤单（_cancel_last_checked 会自己在核对不上/读不到时暂停），再确认。
+        真实撤单是异步的（「已报待撤」仍算 open）：撤单发出去了就每 LIVE_POLL 秒读一次，最多 LIVE_CANCEL_WAIT 秒；
+        没发出去只读一次。只有读成功且显示不再 open，才算数；否则 (matched, False)。"""
         row = {"entrust_no": entrust_no, "code": code, "side": side, "price": price, "shares": shares}
-        self._cancel_last_checked(row)
-        try:
-            orders = self._read(self.broker.orders_today)
-        except Exception:
-            return matched, False
-        final = self._match_order(orders, code, side, price, shares, entrust_no, since_ts) or matched
-        if final is not None and not final.open:
-            return final, True
-        return final, False
+        cancel_sent = self._cancel_last_checked(row, since_ts)
+        deadline = self.clock() + timedelta(seconds=config.LIVE_CANCEL_WAIT)
+        final = matched
+        while True:
+            try:
+                orders = self._read(self.broker.orders_today)
+            except Exception:
+                orders = None
+            if orders is not None:
+                final = self._match_order(orders, code, side, price, shares, entrust_no, since_ts) or final
+                if final is not None and not final.open:
+                    return final, True
+            if not cancel_sent or self.clock() >= deadline:
+                return final, False
+            self.sleep(config.LIVE_POLL)
 
     def _match_order(self, orders, code: str, side: str, price: float, shares: int, entrust_no, since_ts):
         if entrust_no:
@@ -260,15 +272,21 @@ class Executor:
                      and o.shares == shares and o.time >= since]
         return candidates[-1] if candidates else None
 
-    def _cancel_last_checked(self, row: dict) -> bool:
+    def _cancel_last_checked(self, row: dict, since_ts: datetime) -> bool:
         """撤单前核对：最后一笔 open 的委托必须是程序自己这笔——有委托号只认委托号，没有才退回
-        代码/方向/价格/数量四要素；对不上就不撤，自动暂停；读不到也不撤，自动暂停。"""
+        代码/方向/价格/数量四要素；对不上就不撤，自动暂停；读不到也不撤，自动暂停。
+        程序这笔这时已经不 open 了（刚好成交完/被撤/废单）→ 不用撤，也不算异常。返回是否发出了撤单。"""
         try:
             orders = self._read(self.broker.orders_today)
         except Exception:
             self._auto_pause("撤单前核对不上：读不到当日委托")
             return False
-        open_orders = [o for o in orders if o.open]
+        ours = self._match_order(orders, row["code"], row["side"], row["price"], row["shares"],
+                                 row.get("entrust_no"), since_ts)
+        if ours is not None and not ours.open:
+            return False
+        # 网关没保证行顺序：「最后一笔」按委托时间取（同一秒的保持原顺序，取靠后的）
+        open_orders = sorted((o for o in orders if o.open), key=lambda o: o.time)
         last = open_orders[-1] if open_orders else None
         if row.get("entrust_no"):
             matches = last is not None and last.entrust_no == row["entrust_no"]
@@ -299,7 +317,9 @@ class Executor:
     def _reconcile_open_order_row(self, row: dict, orders: list) -> None:
         conn, now = self.conn, self.clock()
         since = datetime.fromisoformat(row["ts"])
-        matched = self._match_order(orders, row["code"], row["side"], row["price"], row["shares"], None, since)
+        # submitted 行已经有委托号就只认委托号：不然可能认成用户后来手动下的一笔四要素相同的单
+        matched = self._match_order(orders, row["code"], row["side"], row["price"], row["shares"],
+                                    row["entrust_no"] or None, since)
         if matched is None:
             live_store.update_order(conn, row["id"], now, status="failed",
                                     note="启动核对：没找到这笔委托")
@@ -366,8 +386,10 @@ class Executor:
         self.notifier.send(f"💰 实盘 {title}", content)
 
     def _auto_pause(self, reason: str) -> None:
-        """已经在自动暂停中就不再重新暂停/重复推送——避免级联失败时反复覆盖更具体的原因、刷屏报警。"""
-        if live_store.paused(self.conn) is not None:
+        """已经在自动暂停中就不再重新暂停/重复推送——避免级联失败时反复覆盖更具体的原因、刷屏报警。
+        手动暂停（到点会自动恢复）中撞上意外 → 升级成自动暂停，只能手动恢复。"""
+        p = live_store.paused(self.conn)
+        if p is not None and p["kind"] == "auto":
             return
         live_store.pause(self.conn, None, reason, "auto")
         self._notify("自动暂停", f"{reason}，需要手动恢复")

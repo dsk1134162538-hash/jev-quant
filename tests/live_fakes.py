@@ -49,6 +49,8 @@ class FakeBroker:
       place_error：设为 BrokerError 实例时，下一次 place() 抛出它，抛出后自动清空（一次性）。
       extra_orders：预置的「用户手动下的单」，追加在 orders_today() 结果末尾；cancel_last() 不碰它们
                    （只撤本假券商自己受理的委托）。
+      cancel_delay_polls：>0 时撤单是异步的——cancel_last() 先把委托改成「已报待撤」（仍算 open），
+                   之后第 cancel_delay_polls 次 orders_today() 才变成「已撤」/「部撤」。
       calls：调用记录，如 ("place", side, code, price, shares)、("cancel_last",)、
              ("balance",)、("positions",)、("orders_today",)。
     """
@@ -63,8 +65,10 @@ class FakeBroker:
         self.fail_reads = 0
         self.place_error: BrokerError | None = None
         self.extra_orders: list[OrderRow] = []
+        self.cancel_delay_polls = 0
         self.calls: list[tuple] = []
         self._orders: list[OrderRow] = []
+        self._cancelling: dict[int, int] = {}   # 委托下标 -> 还要几次 orders_today() 才撤掉
         self._next_no = 1
         self._polls = 0
 
@@ -97,17 +101,29 @@ class FakeBroker:
         self._polls += 1
         for i in range(len(self._orders)):
             self._sync_fill(i)
+        for i in list(self._cancelling):
+            self._cancelling[i] -= 1
+            if self._cancelling[i] <= 0:
+                del self._cancelling[i]
+                self._finish_cancel(i)
         return self._orders + self.extra_orders
 
     def cancel_last(self) -> bool:
         self.calls.append(("cancel_last",))
         for i in range(len(self._orders) - 1, -1, -1):
             o = self._orders[i]
-            if o.open:
-                status = "部撤" if o.filled > 0 else "已撤"
-                self._orders[i] = replace(o, status=status)
+            if o.open and i not in self._cancelling:
+                if self.cancel_delay_polls > 0:
+                    self._orders[i] = replace(o, status="已报待撤")
+                    self._cancelling[i] = self.cancel_delay_polls
+                else:
+                    self._finish_cancel(i)
                 return True
         return False
+
+    def _finish_cancel(self, i: int) -> None:
+        o = self._orders[i]
+        self._orders[i] = replace(o, status="部撤" if o.filled > 0 else "已撤")
 
     def _check_fail(self) -> None:
         if self.fail_reads > 0:

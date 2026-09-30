@@ -543,6 +543,145 @@ def test_buy_price_ignores_non_positive_limit_up():
     assert place_call[3] == 10.05   # 涨停价无效：只用前半（不封顶）
 
 
+# ---- 修复轮 2 ----
+
+def test_async_cancel_polls_until_closed_then_records_cancelled():
+    """真实撤单是异步的：撤完先显示「已报待撤」（仍 open），要轮询到终态，不能一看还 open 就自动暂停。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    broker.cancel_delay_polls = 2
+    notifier = FakeNotifier()
+    make(c, broker, notifier, clock=clock).step()
+
+    assert only_order(c)["status"] == "cancelled"
+    assert live_store.paused(c) is None
+    assert any("没成交，已撤单" in text for _, text in notifier.sent)
+
+
+def test_async_cancel_never_confirmed_keeps_submitted_and_auto_pauses():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    broker.cancel_delay_polls = 999
+    notifier = FakeNotifier()
+    make(c, broker, notifier, clock=clock).step()
+
+    assert only_order(c)["status"] == "submitted"
+    assert not any("没成交" in text for _, text in notifier.sent)
+    p = live_store.paused(c)
+    assert p is not None and p["kind"] == "auto" and "委托状态查不到" in p["reason"]
+
+
+def test_startup_submitted_row_matches_by_stored_entrust_no_not_users_identical_order():
+    """submitted 行已经有委托号：只认委托号。用户随后手动下了一笔四要素完全一样、还挂着的单，
+    不能被当成程序的单去撤。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    order_ts = datetime(2026, 9, 29, 9, 34, 0)
+    broker = FakeBroker(clock, cash=50_000)
+    entrust_no = broker.place("buy", "600001", 10.05, 500)   # 程序这笔：已全部成交
+    oid = live_store.add_order(c, None, order_ts, "buy", "600001", 10.05, 500, "submitted")
+    live_store.update_order(c, oid, order_ts, entrust_no=entrust_no)
+    broker.extra_orders = [OrderRow("USER1", "600001", "buy", 10.05, 500, 0, 0.0, "已报", "09:34:30")]
+    make(c, broker, clock=clock).startup()
+
+    assert ("cancel_last",) not in broker.calls
+    order = only_order(c)
+    assert order["status"] == "filled" and order["entrust_no"] == entrust_no
+    assert live_store.paused(c) is None
+
+
+def test_auto_pause_upgrades_a_timed_manual_pause():
+    """手动暂停到点会自动恢复；这期间撞上意外情况，必须升级成只能手动恢复的自动暂停。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    live_store.pause(c, datetime(2026, 9, 29, 10, 5), "手机暂停", "manual")
+    notifier = FakeNotifier()
+    make(c, FakeBroker(clock), notifier, clock=clock)._auto_pause("撤单前核对不上：最后一笔不是程序的委托")
+
+    p = live_store.paused(c)
+    assert p["kind"] == "auto" and p["until"] is None and "撤单前核对不上" in p["reason"]
+    assert any("自动暂停" in title for title, _ in notifier.sent)
+
+
+def test_cancel_check_takes_latest_open_order_by_time_not_row_position():
+    """网关没保证当日委托的行顺序：「最后一笔」按委托时间取。用户更早的挂单排在列表末尾，不算最后一笔。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    broker.extra_orders = [OrderRow("USER1", "600002", "buy", 9.0, 100, 0, 0.0, "已报", "09:20:00")]
+    make(c, broker, clock=clock).step()
+
+    assert ("cancel_last",) in broker.calls
+    assert only_order(c)["status"] == "cancelled"
+    assert live_store.paused(c) is None
+
+
+def test_wait_fill_is_bounded_by_elapsed_time_not_poll_count():
+    """网关一次读当日委托约 6 秒：等成交按时钟算 LIVE_BUY_WAIT 秒，不是固定读 6 次（那样要等一分多钟）。"""
+    c = conn()
+    start = datetime(2026, 9, 29, 9, 35)
+    clock = FakeClock(start)
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    orig = broker.orders_today
+
+    def slow_read():
+        clock.sleep(6)
+        return orig()
+
+    broker.orders_today = slow_read
+    orig_cancel = broker.cancel_last
+    cancel_at = {}
+
+    def record_cancel():
+        cancel_at["t"] = clock.now()
+        return orig_cancel()
+
+    broker.cancel_last = record_cancel
+    make(c, broker, clock=clock).step()
+
+    assert (cancel_at["t"] - start).total_seconds() < config.LIVE_BUY_WAIT + 20
+    assert only_order(c)["status"] == "cancelled"
+
+
+def test_unclear_place_error_but_order_found_open_waits_for_fill_instead_of_cancelling():
+    """place() 抛了认不出的异常，但当日委托里找到了这笔且还挂着：当作已提交，照常等成交。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "late"
+    broker.late_polls = 2     # 单笔核对那次读还没成交，之后第一次轮询成交
+    orig_place = broker.place
+
+    def place_then_raise(*a):
+        orig_place(*a)
+        raise RuntimeError("adapter blew up after submit")
+
+    broker.place = place_then_raise
+    make(c, broker, clock=clock).step()
+
+    assert ("cancel_last",) not in broker.calls
+    order = only_order(c)
+    assert order["status"] == "filled"
+    assert live_store.positions(c)["600001"].shares == order["shares"]
+    assert live_store.paused(c) is None
+
+
 # ---- 连续读取失败自动暂停 ----
 
 def test_read_auto_pauses_after_consecutive_failures():
