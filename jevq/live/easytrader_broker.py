@@ -41,6 +41,8 @@ class EasytraderBroker:
 
     def place(self, side: str, code: str, price: float, shares: int) -> str | None:
         # 同 GatewayBroker 的边界校验：调用方自己保证 6 位代码、正整数 100 倍数数量、明确价格。
+        if side not in ("buy", "sell"):
+            raise ValueError(f"非法方向：{side}")
         if not _CODE_RE.match(code):
             raise ValueError(f"非法代码：{code}")
         if shares <= 0 or shares % 100 != 0:

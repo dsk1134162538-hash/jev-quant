@@ -132,6 +132,13 @@ def test_place_rejects_invalid_shares_without_calling_user(shares):
     assert user.calls == []
 
 
+def test_place_rejects_unknown_side_without_calling_user():
+    user = FakeUser()
+    with pytest.raises(ValueError):
+        _broker(user).place("Buy", "600001", 9.5, 100)
+    assert user.calls == []
+
+
 # ---- cancel_last ----
 
 def test_cancel_last_picks_latest_time_open_order():

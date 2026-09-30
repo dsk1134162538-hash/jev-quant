@@ -130,6 +130,13 @@ def test_place_rejects_invalid_shares_without_request(shares):
     assert session.calls == []
 
 
+def test_place_rejects_unknown_side_without_request():
+    session = FakeSession()
+    with pytest.raises(ValueError):
+        _broker(session).place("Buy", "600001", 9.5, 100)
+    assert session.calls == []
+
+
 @pytest.mark.parametrize("price", [0, -1.0])
 def test_place_rejects_invalid_price_without_request(price):
     session = FakeSession()
