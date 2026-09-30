@@ -60,11 +60,15 @@ def mode(conn: sqlite3.Connection) -> str:
 
 
 def set_mode(conn: sqlite3.Connection, new: str) -> None:
-    """切模式。dryrun → live 时清掉演练攒下的 live_positions 和减账待确认状态（reduce:*），
-    不然实盘一上来就顶着演练留下的假持仓和假减账记录。"""
+    """切模式。离开 dryrun（切到 off 或 live）时清掉演练攒下的 live_positions 和减账待确认状态（reduce:*），
+    不然之后的实盘会顶着演练留下的假持仓（甚至卖掉用户自己的同名股票）。
+    程序还管着真实持仓时不许进 dryrun：演练的卖出会把真实持仓从账上减掉。"""
     if new not in VALID_MODES:
         raise ValueError(f"未知模式：{new}")
-    if mode(conn) == "dryrun" and new == "live":
+    current = mode(conn)
+    if new == "dryrun" and current != "dryrun" and positions(conn):
+        raise ValueError("程序还管着真实持仓，先在实盘模式下卖完再切演练")
+    if current == "dryrun" and new != "dryrun":
         conn.execute("DELETE FROM live_positions")
         keys = [k for (k,) in conn.execute("SELECT key FROM live_state WHERE key LIKE 'reduce:%'")]
         for k in keys:

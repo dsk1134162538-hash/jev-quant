@@ -599,7 +599,7 @@ def test_close_settle_order_not_found_keeps_submitted_and_auto_pauses():
     order = sell_orders(c)[0]
     assert order["status"] == "submitted" and "收盘结算找不到这笔" in order["note"]
     kind, reason = paused_reason(c)
-    assert kind == "auto" and "收盘结算找不到卖单" in reason
+    assert kind == "auto" and "收盘结算找不到委托" in reason
     assert live_store.positions(c)["600001"].shares == 500
 
 

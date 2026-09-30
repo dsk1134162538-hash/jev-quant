@@ -116,6 +116,8 @@ LIVE_SELL_WINDOWS = ((time(9, 30), time(11, 30)), (time(13, 0), time(15, 0)))
 # 连续竞价：只有这里面能撤单（午休、14:57 后的收盘集合竞价都撤不了）
 LIVE_CANCEL_WINDOWS = ((time(9, 30), time(11, 30)), (time(13, 0), time(14, 57)))
 LIVE_ORDER_MARGIN = 20          # 秒：网关下单/查询/撤单的耗时余量，撤单至少要在连续竞价结束前这么久发出
+LIVE_READ_EST = 10              # 秒：网关读一次当日委托的耗时上估（实测约 6 秒），等成交时据此提前收手去撤单
+LIVE_MATCH_TOLERANCE = 30       # 秒：没有委托号时按委托时间匹配，容忍电脑时钟比券商快这么多
 LIVE_SELL_SETTLE = time(15, 1)  # 收盘后结算挂着的卖单（留 1 分钟等集合竞价成交回显）
 LIVE_PAUSE_CLOSE = time(15, 0)        # 「暂停到收盘」的截止
 LIVE_RESTART_CHECK = time(15, 10)     # 之后若 git rev-parse HEAD 和启动时不同，live.py 自我重启

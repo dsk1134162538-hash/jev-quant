@@ -5,7 +5,7 @@
 真金白银的两条底线：
   1. 委托最终状态只在「成功读到 + broker 判定它不再 open」时才落成 filled/partial/cancelled 这类终态；
      读不到、或读到了但还 open，一律不许瞎猜，维持 submitted 并 _auto_pause，交给人工核对（见 _wait_fill /
-     _cancel_and_confirm）。唯一的例外是收盘后结算（_settle_sells_after_close）：收盘后成交数已定。
+     _cancel_and_confirm）。唯一的例外是收盘后结算（_settle_after_close）：收盘后成交数已定。
   2. 一个意图 / 一次卖出尝试最多只产生一次 place() 调用：add_order(sending) 后立刻 finish_intent（买），
      place() 之后不管抛什么异常都不放它跑出 _buy_live / _place_sell；_buy 顶部另外兜底一次「这个意图是不是
      已经有委托了」，_sell 在今天这只还有 sending 卖单时绝不再下。
@@ -83,7 +83,7 @@ class Executor:
                 self._buy(intent)
         if not self._paused():   # 前面某一步自动暂停了：本轮不再碰券商
             self._scheduled_reconcile(self.clock())
-            self._settle_sells_after_close(self.clock())
+            self._settle_after_close(self.clock())
         self._close_summary(self.clock())
 
     def _paused(self) -> bool:
@@ -152,6 +152,10 @@ class Executor:
         shares = ledger.affordable_shares(budget, price)
         if shares == 0:
             live_store.finish_intent(conn, intent.id, "skipped", "买不起一手", now)
+            return
+        if not self._can_cancel_by(self.clock() + timedelta(seconds=config.LIVE_BUY_WAIT)):
+            # 上面几次读券商要十来秒：下单前按现在的时钟再核一次，等完还能在连续竞价里撤
+            live_store.finish_intent(conn, intent.id, "skipped", "临近休市，来不及等成交和撤单", now)
             return
 
         if live_store.mode(conn) == "dryrun":
@@ -237,6 +241,8 @@ class Executor:
     def _settle_wait_result(self, order_id: int, intent: Intent, matched, confirmed: bool,
                             price: float, shares: int) -> None:
         conn, now = self.conn, self.clock()
+        if matched is not None and matched.entrust_no:
+            live_store.update_order(conn, order_id, now, entrust_no=matched.entrust_no)   # 之后只按号跟踪
         if not confirmed:
             live_store.update_order(conn, order_id, now, note="委托状态查不到，需要人工核对")
             self._auto_pause(f"委托状态查不到：{intent.name} 这笔委托核对不到最终状态，请在 App 里确认")
@@ -269,16 +275,23 @@ class Executor:
         matched, closed = self._poll_fill(code, side, price, shares, entrust_no, since_ts, wait)
         if closed:
             return matched, True
+        entrust_no = entrust_no or (matched.entrust_no if matched is not None else None) or None
         return self._cancel_and_confirm(code, side, price, shares, entrust_no, since_ts, matched)
 
     def _poll_fill(self, code: str, side: str, price: float, shares: int, entrust_no, since_ts: datetime,
-                   wait: float):
+                   wait: float, must_cancel: bool = True):
         """只轮询不撤单：每 LIVE_POLL 秒读一次当日委托，直到确认不再 open 或等够 wait 秒（按时钟算：网关一次读
         要好几秒）。返回 (matched, closed)：closed=True 才是终态（成功读到 + 不再 open）；False 时 matched
-        只是最后一次读到的参考（可能是 None）。"""
+        只是最后一次读到的参考（可能是 None）。
+        must_cancel（买单、上午的卖单）：现在还能撤、但再等一轮（LIVE_POLL + 一次读 LIVE_READ_EST）就撤不了 →
+        提前收手，让调用方趁连续竞价还在去撤。下午的卖单不用：等过 14:57 就留给收盘集合竞价。"""
         deadline = self.clock() + timedelta(seconds=wait)
         matched = None
         while True:
+            t = self.clock()
+            if must_cancel and self._can_cancel_by(t) and \
+                    not self._can_cancel_by(t + timedelta(seconds=config.LIVE_POLL + config.LIVE_READ_EST)):
+                return matched, False
             self.sleep(config.LIVE_POLL)
             try:
                 orders = self._read(self.broker.orders_today)
@@ -286,6 +299,8 @@ class Executor:
                 orders = None
             if orders is not None:
                 matched = self._match_order(orders, code, side, price, shares, entrust_no, since_ts)
+                if matched is not None and matched.entrust_no and not entrust_no:
+                    entrust_no = matched.entrust_no   # 第一次对上以后只按委托号跟踪
                 if matched is not None and not matched.open:
                     return matched, True
             if self.clock() >= deadline:
@@ -318,11 +333,15 @@ class Executor:
             self.sleep(config.LIVE_POLL)
 
     def _match_order(self, orders, code: str, side: str, price: float, shares: int, entrust_no, since_ts):
+        """有委托号只认委托号；没有（网关默认拿不到号）按代码/方向/价格/数量 + 委托时间不早于下单时刻
+        （容忍电脑时钟快 LIVE_MATCH_TOLERANCE 秒）匹配，排除已经记在别的行上的委托号，取委托时间最晚的一条。"""
         if entrust_no:
             return next((o for o in orders if o.entrust_no == entrust_no), None)
-        since = (since_ts - timedelta(seconds=5)).strftime("%H:%M:%S")
-        candidates = [o for o in orders if o.code == code and o.side == side and _price_eq(o.price, price)
-                     and o.shares == shares and o.time >= since]
+        since = (since_ts - timedelta(seconds=config.LIVE_MATCH_TOLERANCE)).strftime("%H:%M:%S")
+        known = {r["entrust_no"] for r in live_store.orders_on(self.conn, since_ts.date()) if r["entrust_no"]}
+        candidates = sorted((o for o in orders if o.code == code and o.side == side and _price_eq(o.price, price)
+                             and o.shares == shares and o.time >= since and o.entrust_no not in known),
+                            key=lambda o: o.time)
         return candidates[-1] if candidates else None
 
     def _cancel_last_checked(self, row: dict, since_ts: datetime) -> bool:
@@ -437,12 +456,26 @@ class Executor:
                 live_store.update_order(self.conn, row["id"], self.clock(), note="当日委托里找不到")
                 self._auto_pause(f"卖单核对不上：{self._name(code)} 当日委托里找不到这笔卖单，请在 App 里确认")
                 return False
+            if m.open and self._should_reprice(row):
+                final, confirmed = self._cancel_and_confirm(code, "sell", row["price"], row["shares"],
+                                                            m.entrust_no or None, datetime.fromisoformat(row["ts"]), m)
+                if not confirmed:
+                    live_store.update_order(self.conn, row["id"], self.clock(), note="委托状态查不到，需要人工核对")
+                    self._auto_pause(f"委托状态查不到：{self._name(code)} 这笔卖单核对不到最终状态，请在 App 里确认")
+                    return False
+                m = final
             if m.open:
                 self._record_sell_fill(row, m)
                 self._retry_later(code)
                 return False
             self._settle_sell(row, m)
         return True
+
+    def _should_reprice(self, row: dict) -> bool:
+        """挂着的卖单（跨了午休、或下单中途重启留下的）该不该撤了重挂：不是跌停排队、已经挂够 LIVE_SELL_WAIT、
+        现在还能撤（收盘集合竞价里的留着）。"""
+        age = (self.clock() - datetime.fromisoformat(row["ts"])).total_seconds()
+        return row["note"] != "跌停排队" and age >= config.LIVE_SELL_WAIT and self._can_cancel_by(self.clock())
 
     def _sell_round(self, code: str) -> bool:
         """一轮卖出（最多一次 place）。返回 True = 撤完立即重挂下一轮；False = 这次尝试结束。"""
@@ -453,9 +486,7 @@ class Executor:
         if not self._in_sell_window(t):
             self._retry_later(code)   # 等待/撤单期间过了收市点：不在时段外重挂
             return False
-        if t.time() < config.LIVE_CANCEL_WINDOWS[0][1] and \
-                not self._can_cancel_by(t + timedelta(seconds=config.LIVE_SELL_WAIT)):
-            # 上午等完再撤会撞上午休（撤不了）：留到下午。下午临近 14:57 照下，没卖完的进收盘集合竞价
+        if self._morning_sell_too_late(t):
             self._retry_later(code)
             return False
         pos = live_store.positions(conn).get(code)
@@ -490,7 +521,8 @@ class Executor:
             qty = cap // 100 * 100   # 下单层只收 100 的倍数
             if qty == 0:
                 if cap > 0:
-                    self._notify("卖出", f"{name} 剩 {cap} 股零股，程序卖不了，请手动卖出", key=f"odd_lot:{code}")
+                    self._notify("卖出", f"{name} 剩 {cap} 股零股，程序卖不了，请手动卖出；卖掉之前程序不会再跟买",
+                                 key=f"odd_lot:{code}")
                 self._retry_later(code)   # 客户端一股都没有：上面的对账已记下减账待确认
                 return False
         queue = q.price <= q.limit_down + 0.005
@@ -504,18 +536,24 @@ class Executor:
             return False
 
         order_ts = self.clock()
+        if self._morning_sell_too_late(order_ts):   # 读持仓、取行情花了时间：下单前按现在的时钟再核一次
+            self._retry_later(code)
+            return False
         order_id = live_store.add_order(conn, None, order_ts, "sell", code, price, qty, "sending")
         entrust_no = self._place_sell(order_id, code, price, qty, order_ts)
         if entrust_no is None:
             return False
         row = {"id": order_id, "code": code, "price": price, "shares": qty, "filled": 0, "avg_price": 0.0}
         if queue:
+            live_store.update_order(conn, order_id, self.clock(), note="跌停排队")   # 之后不撤它重挂
             self._notify("卖出", f"{name} 跌停，挂跌停价排队", key=f"limit_down:{code}")
             self._retry_later(code)
             return False
 
+        morning = order_ts.time() < config.LIVE_CANCEL_WINDOWS[0][1]   # 上午必须在午休前撤掉，下午可以进集合竞价
         matched, closed = self._poll_fill(code, "sell", price, qty, entrust_no or None, order_ts,
-                                          config.LIVE_SELL_WAIT)
+                                          config.LIVE_SELL_WAIT, must_cancel=morning)
+        entrust_no = entrust_no or (matched.entrust_no if matched is not None else "")
         if closed:
             self._settle_sell(row, matched)
         elif not self._can_cancel_by(self.clock()):
@@ -543,6 +581,11 @@ class Executor:
         self._retry_later(code)
         self._notify("卖出", f"{name} 卖出没成功，之后每分钟重试", key=f"sell_retry:{code}")
         return False
+
+    def _morning_sell_too_late(self, t: datetime) -> bool:
+        """上午等完再撤会撞上午休（撤不了）：留到下午。下午临近 14:57 照下，没卖完的进收盘集合竞价。"""
+        return t.time() < config.LIVE_CANCEL_WINDOWS[0][1] and \
+            not self._can_cancel_by(t + timedelta(seconds=config.LIVE_SELL_WAIT))
 
     def _place_sell(self, order_id: int, code: str, price: float, qty: int, order_ts: datetime) -> str | None:
         """下卖单。返回委托号（拿不到号是 ""）；None = 这次没有可继续跟踪的委托（已处理好行状态/暂停/重试）。
@@ -580,6 +623,9 @@ class Executor:
     def _record_sell_fill(self, row: dict, m) -> dict:
         """读到的成交数比行里记的多 → 只入账增量（减仓 + 更新行）。返回更新后的行。
         先记行再减仓：中途崩了宁可账上多（客户端可用余额封顶 + 对账会纠正），不能少。"""
+        if m.entrust_no and not row.get("entrust_no"):
+            live_store.update_order(self.conn, row["id"], self.clock(), entrust_no=m.entrust_no)   # 之后只按号跟踪
+            row = {**row, "entrust_no": m.entrust_no}
         delta = m.filled - row["filled"]
         if delta <= 0:
             return row
@@ -606,14 +652,15 @@ class Executor:
             self._notify("卖出", f"{self._name(row['code'])} {filled}股 @{avg_price}，盈亏 {pnl}")
         return row
 
-    def _settle_sells_after_close(self, now: datetime) -> None:
-        """收盘后（LIVE_SELL_SETTLE，留 1 分钟等集合竞价成交回显）成交数已是最终值：读一次当日委托，把今天还 submitted 的卖单直接落终态（没卖完的部分作废）。"""
+    def _settle_after_close(self, now: datetime) -> None:
+        """收盘后（LIVE_SELL_SETTLE，留 1 分钟等集合竞价成交回显）成交数已是最终值：读一次当日委托，把今天还
+        submitted 的委托直接落终态——卖单（14:57 后留给集合竞价的），和万一挂进集合竞价的买单。"""
         if now.time() < config.LIVE_SELL_SETTLE:
             return
         today = now.date()
         if live_store.get_state(self.conn, "sell_settle_day") == today.isoformat():
             return
-        rows = [r for r in live_store.orders_on(self.conn, today) if r["side"] == "sell" and r["status"] == "submitted"]
+        rows = [r for r in live_store.orders_on(self.conn, today) if r["status"] == "submitted"]
         if not rows:
             return
         try:
@@ -621,13 +668,16 @@ class Executor:
         except Exception:
             return   # 下一秒再试（_read 会计连续失败次数）
         for row in rows:
-            m = self._match_order(orders, row["code"], "sell", row["price"], row["shares"],
+            m = self._match_order(orders, row["code"], row["side"], row["price"], row["shares"],
                                   row["entrust_no"] or None, datetime.fromisoformat(row["ts"]))
             if m is None:   # 不许猜：保持 submitted，交给人工
                 live_store.update_order(self.conn, row["id"], self.clock(), note="收盘结算找不到这笔")
-                self._auto_pause(f"收盘结算找不到卖单：{row['code']} 这笔卖单核对不上，请在 App 里确认")
+                self._auto_pause(f"收盘结算找不到委托：{row['code']} 这笔核对不上，请在 App 里确认")
                 continue
-            self._settle_sell(row, m, closing=True)
+            if row["side"] == "sell":
+                self._settle_sell(row, m, closing=True)
+            else:
+                self._book_buy_row(row, m, closing=True)
         live_store.set_state(self.conn, "sell_settle_day", today.isoformat())
 
     # ---- 暂停 / 恢复 / 立即卖出 ----
@@ -769,7 +819,8 @@ class Executor:
                 live_store.set_state(conn, key, None)   # 程序已经不持有了：旧的待确认不能留给以后的持仓
         busy = {r["code"] for r in live_store.orders_on(conn, now.date()) if r["status"] in ("sending", "submitted")}
         for code, p in held.items():
-            if code in busy:
+            if code in busy or p.buy_date >= now.date():
+                # 有挂着的委托：成交由委托跟踪入账；当天买的：T+1 当天不可能卖出，读到少了只会是客户端口径问题
                 continue
             client = holdings.get(code)
             client_shares = client.shares if client else 0
@@ -800,13 +851,13 @@ class Executor:
 
     def _close_summary(self, now: datetime) -> None:
         """收盘小结：LIVE_CLOSE_SUMMARY 之后、收盘后结算完成才发（结算一直读不到，到 LIVE_CLOSE_SUMMARY_LATEST 也发，
-        注明有卖单没结算）。只看本地库，不读券商。"""
+        注明有委托没结算）。只看本地库，不读券商。"""
         conn, today = self.conn, now.date().isoformat()
         if now.time() < config.LIVE_CLOSE_SUMMARY or live_store.get_state(conn, "close_summary_day") == today:
             return
         orders = live_store.orders_on(conn, now.date())
         unsettled = live_store.get_state(conn, "sell_settle_day") != today and any(
-            r["side"] == "sell" and r["status"] == "submitted" for r in orders)
+            r["status"] == "submitted" for r in orders)
         if unsettled and now.time() < config.LIVE_CLOSE_SUMMARY_LATEST:
             return
         live_store.set_state(conn, "close_summary_day", today)
@@ -821,14 +872,28 @@ class Executor:
                            (config.LIVE_ACCOUNT, today)).fetchone()[0]
         text = (f"模式 {live_store.mode(conn)}；实盘委托 {len(orders)} 笔，成交 {filled} 笔；"
                 f"跳过 {sum(n for _, n in skipped)} 笔" + (f"（{groups}）" if groups else "") +
-                f"；程序持仓 {desc}；模拟成交 {sim} 笔" + ("；有卖单没结算" if unsettled else ""))
+                f"；程序持仓 {desc}；模拟成交 {sim} 笔" + ("；有委托没结算" if unsettled else ""))
         self._notify("收盘小结", text)
 
     # ---- sending / submitted 恢复（启动核对）----
 
     def _reconcile_sending_orders(self) -> None:
-        today = self.clock().date().isoformat()
-        rows = [r for r in live_store.open_orders(self.conn) if r["ts"][:10] == today]
+        """启动/恢复时核对 sending/submitted 委托。前几天遗留的读不到了（当日委托只有今天的）：
+        标成 unknown、自动暂停、报清楚是哪几笔——不能静默丢掉（对账只会减账，丢了的买单补不回来）。"""
+        now = self.clock()
+        today = now.date().isoformat()
+        pending = live_store.open_orders(self.conn)
+        stale = [r for r in pending if r["ts"][:10] < today]
+        if stale:
+            for r in stale:
+                live_store.update_order(self.conn, r["id"], now, status="unknown",
+                                        note="隔日未核对：成交与否以 App 为准")
+            desc = "、".join(f"{r['ts'][:10]} {'买' if r['side'] == 'buy' else '卖'} {self._label(r['code'])}"
+                            for r in stale)
+            self._auto_pause(f"前几天有委托没核对到最终状态：{desc}。买单如果成交了，这只现在算你的持仓，"
+                             f"程序不会卖；卖单以客户端持仓为准。在 App 里处理好后再点恢复")
+            return
+        rows = [r for r in pending if r["ts"][:10] == today]
         if not rows:
             return
         try:
@@ -854,17 +919,18 @@ class Executor:
             self._finish_row_intent(row["intent_id"], "启动核对：没找到这笔委托")
             return
         live_store.update_order(conn, row["id"], now, status="submitted", entrust_no=matched.entrust_no)
+        row = {**row, "entrust_no": matched.entrust_no}
+        closing = now.time() >= config.LIVE_SELL_SETTLE   # 收盘后成交数已定：直接按最终状态落账，不撤单
         if row["side"] == "sell":
-            # 卖单：closed → 增量 + 终态；还 open → 不撤，只入账增量，留 submitted 交给 _sell 跟踪
-            row = {**row, "entrust_no": matched.entrust_no}
-            if matched.open:
+            # 卖单：closed（或已收盘）→ 增量 + 终态；还 open → 不撤，只入账增量，留 submitted 交给 _sell 跟踪
+            if matched.open and not closing:
                 self._record_sell_fill(row, matched)
                 self._finish_row_intent(row["intent_id"], "挂单仍在，继续跟踪")
             else:
-                self._settle_sell(row, matched)
+                self._settle_sell(row, matched, closing=closing)
                 self._finish_row_intent(row["intent_id"], "启动核对：卖单已了结")
             return
-        if not matched.open:
+        if not matched.open or closing:
             final, confirmed = matched, True
         else:
             final, confirmed = self._cancel_and_confirm(row["code"], row["side"], row["price"], row["shares"],
@@ -874,16 +940,25 @@ class Executor:
             self._auto_pause(f"委托状态查不到：{row['code']} 这笔委托核对不到最终状态，请在 App 里确认")
             self._finish_row_intent(row["intent_id"], "结果不明（委托状态查不到）")
             return
+        self._book_buy_row(row, final, closing=closing)
+
+    def _book_buy_row(self, row: dict, final, closing: bool = False) -> None:
+        """买单按最终状态落账（核对补记 / 收盘后结算用）：成交了就记程序持仓，写终态，收尾意图。"""
+        conn, now = self.conn, self.clock()
         filled = final.filled
         avg_price = final.avg_price if final.avg_price else row["price"]
         status = "filled" if filled >= row["shares"] else ("partial" if filled > 0 else "cancelled")
-        live_store.update_order(conn, row["id"], self.clock(), status=status, filled=filled, avg_price=avg_price)
-        if row["side"] == "buy" and filled > 0:
+        note = {"filled": "已成交", "partial": "部分成交，已撤单", "cancelled": "未成交，已撤单"}[status]
+        if closing and status != "filled":
+            note = "收盘未成交部分作废"
+        live_store.update_order(conn, row["id"], now, status=status, filled=filled, avg_price=avg_price, note=note,
+                                entrust_no=final.entrust_no or row.get("entrust_no") or "")
+        if filled > 0:
             cost = filled * avg_price + ledger.buy_fee(filled * avg_price)
             sim_price = self._intent_sim_price(row["intent_id"])
             live_store.put_position(conn, LivePosition(row["code"], filled, cost, avg_price,
-                                                        self.clock().date(), sim_price))
-        note = {"filled": "已成交", "partial": "部分成交，已撤单", "cancelled": "未成交，已撤单"}[status]
+                                                        datetime.fromisoformat(row["ts"]).date(), sim_price))
+            self._notify("买入", f"{self._name(row['code'])} {filled}股 @{avg_price}（核对补记）")
         self._finish_row_intent(row["intent_id"], note)
 
     def _finish_row_intent(self, intent_id, note: str) -> None:

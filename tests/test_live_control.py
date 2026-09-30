@@ -695,7 +695,7 @@ def test_close_summary_goes_out_at_the_latest_time_even_if_settlement_cannot_rea
     clock.t = datetime(2026, 9, 29, 15, 10, 0)
     ex.step()
     [text] = texts(notifier, "收盘小结")
-    assert "有卖单没结算" in text
+    assert "有委托没结算" in text
     assert live_store.orders_on(c, TODAY)[0]["status"] == "submitted"     # 不许猜
 
 
@@ -753,12 +753,15 @@ def test_startup_open_order_check_failure_auto_pauses_and_skips_reconcile():
     assert live_store.paused(c)["kind"] == "auto"
 
 
-def test_startup_leaves_open_orders_from_earlier_days_alone():
+def test_startup_flags_open_orders_from_earlier_days_instead_of_ignoring_them():
+    """终审 I-2：前几天的委托读不到了，不能静默不管——标 unknown、自动暂停、报清楚，不碰券商。"""
     c, clock, broker, notifier, ex = env()
     live_store.add_order(c, None, datetime(2026, 9, 28, 14, 0), "sell", "600001", 9.9, 500, "submitted")
     ex.startup()
-    assert names(broker) == ["positions"]
-    assert live_store.open_orders(c)[0]["status"] == "submitted"
+    assert broker.calls == []
+    assert live_store.open_orders(c) == []
+    assert live_store.orders_on(c, YESTERDAY)[0]["status"] == "unknown"
+    assert live_store.paused(c)["kind"] == "auto"
 
 
 # ---- store.pause / clear_pause ----
