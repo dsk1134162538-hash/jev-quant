@@ -177,8 +177,10 @@ def ensure_live_host() -> None:
 def write_start_bat(gw: Path) -> Path:
     bat = gw / "start_gateway.bat"
     # newline=""：原样写 CRLF（不然 Windows 上 \r\n 会被再转一次）
-    bat.write_text(f'@echo off\r\ncd /d "{gw}"\r\n.venv\\Scripts\\python.exe main.py\r\n', encoding="gbk",
-                   newline="")
+    # XIADAN_CAPTCHA_HARVEST=1：网关把每次提交的验证码连同服务端判定存进 assets/captcha_harvest/
+    # （攒重训样本、监控通过率）。不需要时删掉这一行（图很小，一天几百张）
+    bat.write_text(f'@echo off\r\nset XIADAN_CAPTCHA_HARVEST=1\r\ncd /d "{gw}"\r\n.venv\\Scripts\\python.exe main.py\r\n',
+                   encoding="gbk", newline="")
     return bat
 
 

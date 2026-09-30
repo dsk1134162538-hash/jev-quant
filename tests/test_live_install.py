@@ -137,6 +137,7 @@ def test_start_bat_runs_the_gateway_from_its_own_venv(tmp_path):
     bat = live_install.write_start_bat(tmp_path)
     text = bat.read_bytes().decode("ascii")
     assert ".venv\\Scripts\\python.exe main.py" in text and "\r\n" in text
+    assert "set XIADAN_CAPTCHA_HARVEST=1\r\n" in text     # 演练期间开验证码采集
     assert "scripts" not in text.lower().replace(".venv\\scripts", "")   # 绝不碰网关仓库 scripts/ 下会下单的脚本
 
 
