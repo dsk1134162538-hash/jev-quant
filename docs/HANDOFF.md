@@ -103,3 +103,5 @@ A 股主板（60/00）T+1 模拟盘：规则选股 → Jev（TypeSafe System One
 
 ## 验证面板
 `scripts/panel_preview.py`：只读预览服务（真实数据库，拦截开始运行、保存/停用规则），端口 8765。周末或盘前试跑时，阶梯缩量/放量显示「—」是设计如此（今天没行情不折算）。
+- **家里没有真实库**：`panel_preview.py` 里 `REPO` 写死公司路径 `D:\claude\jev-quant`，家里用不了。家里做视觉验收：起一个临时 HTTP 服务，把 `ui.html` 接到 `jevq.app.home_view.ReadOnlyApi`（先 `build_db(exports/, 临时路径)` 用导出重建库），页面里注入 `window.pywebview = {api: Proxy → fetch('/api/<方法>')}` 并在 load 后派发 `pywebviewready`（写法同 `panel_preview.py`）。内置浏览器的截图只截左上 800 px，宽窗口要用 `javascript_tool` 滚动/位移后多截几张，页面自带的 5 秒刷新会冲掉手动注入的内容（先 `window.renderTab = async () => {}`）。
+- **面板视觉约定（2026-09-30 美化，纯样式，没改行为）**：`ui.html` 顶部 `<style>` 里是令牌（浅色默认、深色跟随系统，文字色都过了 4.5:1 对比度）；涨红跌绿是 A 股习惯，`.up/.down`；卡片只用 1px 细边框不加阴影，弹层（图表提示、规则弹框）只用阴影；不要用超过 1px 的彩色 `border-left`；图标是页面顶部 `<svg>` 里的精灵，用 `ic("x")` 取，不要再往界面里放 ▸ ✕ ❌ ⚠️ 这类字符；表格整列是数字的会自动右对齐（`table()` 里 `NUM_CELL`，「代码」列除外）；所有影子账户的净值线都是虚线（主/影子重合时主账户实线不会被盖住）；顶栏在窗口宽度 ≤ 1100 时不再吸顶。
