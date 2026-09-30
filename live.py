@@ -2,6 +2,7 @@
 同时提供手机页面（jevq.live.web）。照 daemon.py 的 bootstrap()/_real_restart() 写法。
 """
 import os
+import sqlite3
 import subprocess
 import sys
 import time as time_mod
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parent
 from jevq import db  # noqa: E402
 from jevq.config import DB_PATH, LIVE_BROKER, LIVE_EASYTRADER_EXE, LIVE_GATEWAY_URL  # noqa: E402
 from jevq.config import LIVE_HTTP_PORT, LIVE_LOCK_NAME, LIVE_RESTART_CHECK  # noqa: E402
+from jevq.config import LIVE_RESTART_EVERY, LIVE_RESTART_UNTIL  # noqa: E402
 from jevq.data import tencent  # noqa: E402
 from jevq.live.easytrader_broker import EasytraderBroker  # noqa: E402
 from jevq.live.executor import Executor  # noqa: E402
@@ -57,6 +59,12 @@ def make_broker():
     if LIVE_BROKER == "easytrader":
         return EasytraderBroker(LIVE_EASYTRADER_EXE)
     return GatewayBroker(LIVE_GATEWAY_URL, token=_gateway_token())
+
+
+def _page_conn() -> sqlite3.Connection:
+    """手机页每个请求自己的连接（请求处理完由 web.py 关掉）：不和执行器共用连接。
+    库在执行器那边已经建好表、切成 WAL，这里不再跑 SCHEMA；timeout 15 秒和 db.connect 一致。"""
+    return sqlite3.connect(DB_PATH, timeout=15)
 
 
 def _real_git_rev_parse(repo: Path) -> str | None:
@@ -109,22 +117,34 @@ def main(*, repo: Path = ROOT, python_exe: Path | None = None, conn=None, broker
             host = _live_host()
             if host:
                 hosts.append(host)
-            handler_cls = make_handler_fn(lambda: conn, clock=clock, quotes=quotes_fn)
+            # Host 白名单防 DNS rebinding：只认本机和 JEVQ_LIVE_HOST 这几个主机名（不含端口）
+            allowed_hosts = {"127.0.0.1", "localhost"} | set(hosts)
+            handler_cls = make_handler_fn(_page_conn, clock=clock, quotes=quotes_fn,
+                                          close_conn=True, allowed_hosts=allowed_hosts)
             web_serve(hosts, LIVE_HTTP_PORT, handler_cls, log=log)
 
             running_commit = git_rev_parse(repo)
-            restart_checked_on = None
+            last_restart_check = None
             steps = 0
             while max_steps is None or steps < max_steps:
                 try:
                     executor.step()
                 except Exception as e:
                     log(f"执行异常：{e!r}")
+                    # spec「意料之外的情况一律自动暂停」：step 抛异常时可能有已经报出去、没人跟踪的委托，
+                    # 暂停后恢复时会先核对 sending/submitted 的委托。暂停本身失败（比如库被锁）只能记日志。
+                    try:
+                        executor._auto_pause(f"执行异常：{e!r}")
+                    except Exception as e2:
+                        log(f"执行异常后自动暂停失败：{e2!r}")
                 steps += 1
 
+                # 15:10–17:00 之间每 LIVE_RESTART_EVERY 秒查一次：deploy 要先跑测试，rebase 常常晚于 15:10
                 now = clock()
-                if now.time() >= LIVE_RESTART_CHECK and restart_checked_on != now.date():
-                    restart_checked_on = now.date()
+                if (LIVE_RESTART_CHECK <= now.time() <= LIVE_RESTART_UNTIL
+                        and (last_restart_check is None
+                             or (now - last_restart_check).total_seconds() >= LIVE_RESTART_EVERY)):
+                    last_restart_check = now
                     current = git_rev_parse(repo)
                     if current and running_commit and current != running_commit:
                         log(f"检测到新代码 {current}，自我重启")

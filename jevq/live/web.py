@@ -7,6 +7,7 @@
 """
 import json
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -26,6 +27,15 @@ def _origin_matches_host(origin: str, host: str) -> bool:
         return urlparse(origin).netloc == host
     except ValueError:
         return False
+
+
+def _hostname(host_header: str) -> str:
+    """Host 请求头去掉端口后的主机名，小写；[::1]:8766 这种带方括号的 IPv6 也能取对。"""
+    h = (host_header or "").strip().lower()
+    if h.startswith("["):
+        end = h.find("]")
+        return h[1:end] if end != -1 else h
+    return h.rsplit(":", 1)[0] if ":" in h else h
 
 
 def status(conn, now: datetime, quotes) -> dict:
@@ -71,8 +81,27 @@ def _pause_until(payload: dict, now: datetime):
     return None
 
 
-def make_handler(conn_factory, clock=datetime.now, quotes=tencent.fetch_quotes):
-    """conn_factory()：返回 live.py 主循环用的同一个数据库连接（各请求线程共享，check_same_thread=False）。"""
+def make_handler(conn_factory, clock=datetime.now, quotes=tencent.fetch_quotes,
+                 close_conn: bool = False, allowed_hosts=None):
+    """conn_factory()：每个请求调用一次，拿到这个请求自己用的数据库连接。
+    close_conn=True（live.py 用）：conn_factory 每次返回新连接，请求处理完关掉它——页面线程绝不和执行器
+    共用同一个 sqlite 连接（并发写会直接报错，还会把写了一半的状态一起提交）；WAL 下各连接互不阻塞。
+    close_conn=False（默认，测试注入共享内存连接用）：不关，连接归调用方管。
+    allowed_hosts：不为 None 时，请求 Host 头去掉端口后的主机名必须在这个集合里，否则任何方法一律 403，
+    防 DNS rebinding（攻击网页把自己的域名解析到本机或 Tailscale 地址，Origin 和 Host 就一致了）。"""
+    allowed = None if allowed_hosts is None else {h.strip().lower() for h in allowed_hosts}
+
+    @contextmanager
+    def request_conn():
+        conn = conn_factory()
+        try:
+            yield conn
+        finally:
+            if close_conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "JevLiveWeb/1.0"
@@ -81,13 +110,25 @@ def make_handler(conn_factory, clock=datetime.now, quotes=tencent.fetch_quotes):
         def log_message(self, fmt, *args):
             pass   # 不往 stderr 打访问日志：pythonw 下没处可写，也没必要
 
-        def _json_body(self, code: int, payload: dict) -> None:
+        def parse_request(self):
+            """请求行和头都解析完、分发到 do_XXX 之前先验 Host：这样任何方法（含没实现的 PUT/DELETE）都被拒。"""
+            if not super().parse_request():
+                return False
+            if allowed is not None and _hostname(self.headers.get("Host", "")) not in allowed:
+                self._json_body(403, {"error": "Host 不在白名单"}, close=True)
+                return False
+            return True
+
+        def _json_body(self, code: int, payload: dict, close: bool = False) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            if close:
+                self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(body)
+            if self.command != "HEAD":
+                self.wfile.write(body)
 
         def _html_body(self, text: str) -> None:
             body = text.encode("utf-8")
@@ -104,7 +145,8 @@ def make_handler(conn_factory, clock=datetime.now, quotes=tencent.fetch_quotes):
                 self._html_body(_PAGE_HTML)
                 return
             if self.path == "/api/status":
-                data = status(conn_factory(), clock(), quotes)
+                with request_conn() as conn:
+                    data = status(conn, clock(), quotes)
                 data["local"] = _is_local(self.client_address[0])
                 self._json_body(200, data)
                 return
@@ -138,21 +180,28 @@ def make_handler(conn_factory, clock=datetime.now, quotes=tencent.fetch_quotes):
             payload, ok = self._read_json()
             if not ok:
                 return
-            conn = conn_factory()
             now = clock()
+            with request_conn() as conn:
+                self._dispatch_post(conn, now, payload)
+
+        def _dispatch_post(self, conn, now: datetime, payload: dict) -> None:
             if self.path == "/api/pause":
                 until = _pause_until(payload, now)
                 if until is None:
                     self._json_body(400, {"error": "参数错误"})
                     return
-                current = live_store.paused(conn)
-                if current is not None and current["kind"] == "auto":
-                    # 自动暂停只能手动恢复：不许被改成到点自动恢复的手动暂停
+                current = live_store.pause_unless_auto(conn, until, "手机暂停")
+                if current is not None:
+                    # 自动暂停只能手动恢复：不许被改成到点自动恢复的手动暂停（检查和写入在同一个事务里）
                     self._json_body(409, {"error": f"已自动暂停（{current['reason']}），先在 App 里核对，再点恢复"})
                     return
-                live_store.pause(conn, until, "手机暂停", "manual")
                 self._json_body(200, {"ok": True, "until": until.isoformat()})
             elif self.path == "/api/resume":
+                current = live_store.paused(conn)
+                if current is not None and (payload.get("reason") or "") != (current["reason"] or ""):
+                    # 页面上看到的暂停和现在的不是同一个：这是用户没看到的新暂停，不能顺手清掉
+                    self._json_body(409, {"error": f"暂停状态刚变了：{current['reason']}，请看清后再点恢复"})
+                    return
                 live_store.set_state(conn, "resume_requested", "1")
                 self._json_body(200, {"ok": True})
             elif self.path == "/api/sell_all":
@@ -249,6 +298,8 @@ function esc(s){
 }
 function fmtTime(s){ return s ? s.replace('T', ' ').slice(0, 19) : (Number.isInteger(s) ? s : '—'); }
 
+var lastPaused = null;   // 页面上当前显示的暂停（点恢复时把它的原因带给服务端，对不上就拒绝）
+
 async function refresh(){
   var d;
   try {
@@ -259,6 +310,7 @@ async function refresh(){
 }
 
 function render(d){
+  lastPaused = d.paused || null;
   var modeNames = {off: '关闭', dryrun: '演练', live: '实盘'};
   var s = '<div class="row"><span>模式</span><span>' + esc(modeNames[d.mode] || d.mode) + '</span></div>';
   if (d.paused) {
@@ -308,7 +360,7 @@ async function post(path, body){
 }
 function doPause(minutes){ post('/api/pause', {minutes: minutes}); }
 function doPauseClose(){ post('/api/pause', {until: 'close'}); }
-function doResume(){ post('/api/resume', {}); }
+function doResume(){ post('/api/resume', {reason: lastPaused ? lastPaused.reason : null}); }
 function doSellAll(){ if (confirm('确定立即卖出程序全部持仓？')) post('/api/sell_all', {}); }
 function doMode(m){ if (confirm('确定切换模式到 ' + m + '？')) post('/api/mode', {mode: m}); }
 

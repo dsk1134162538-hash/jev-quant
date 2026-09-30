@@ -1,3 +1,6 @@
+import sqlite3
+import threading
+import time
 from datetime import date, datetime
 
 import pytest
@@ -248,3 +251,102 @@ def test_clear_pause_makes_paused_return_none():
 def test_paused_returns_none_when_never_paused():
     c = conn()
     assert live_store.paused(c) is None
+
+
+# ---- pause_unless_auto：页面手动暂停的「检查 + 写入」在同一个 BEGIN IMMEDIATE 事务里 ----
+
+def _file_conns(tmp_path, n=2):
+    path = str(tmp_path / "jevq.sqlite")
+    first = db.connect(path)
+    return [first] + [sqlite3.connect(path, timeout=5, check_same_thread=False) for _ in range(n - 1)]
+
+
+def test_pause_unless_auto_writes_manual_pause_and_returns_none():
+    c = conn()
+    until = datetime(2026, 9, 29, 14, 0)
+    assert live_store.pause_unless_auto(c, until, "手机暂停") is None
+    assert live_store.paused(c) == {"until": until, "reason": "手机暂停", "kind": "manual"}
+    assert not c.in_transaction
+
+
+def test_pause_unless_auto_refuses_when_auto_paused_and_returns_it_untouched():
+    c = conn()
+    live_store.pause(c, None, "撤单前核对不上", "auto")
+    current = live_store.pause_unless_auto(c, datetime(2026, 9, 29, 14, 0), "手机暂停")
+    assert current == {"until": None, "reason": "撤单前核对不上", "kind": "auto"}
+    assert live_store.paused(c) == {"until": None, "reason": "撤单前核对不上", "kind": "auto"}
+    assert not c.in_transaction      # 拒绝时回滚干净，不留开着的事务占着写锁
+
+
+def test_pause_unless_auto_overwrites_an_existing_manual_pause():
+    c = conn()
+    live_store.pause(c, datetime(2026, 9, 29, 10, 30), "手机暂停", "manual")
+    assert live_store.pause_unless_auto(c, None, "手机暂停") is None
+    assert live_store.paused(c) == {"until": None, "reason": "手机暂停", "kind": "manual"}
+
+
+def test_pause_unless_auto_holds_write_lock_between_check_and_write(tmp_path, monkeypatch):
+    """页面检查完「不是 auto」之后、写入之前，执行器（另一个连接）自动暂停：它的写必须等页面提交，
+    而不是插在中间被页面覆盖——检查和写入之间另一个连接写不进去，等页面提交后自动暂停排在后面，最终仍是 auto。"""
+    page, other = _file_conns(tmp_path)
+    check = sqlite3.connect(str(tmp_path / "jevq.sqlite"), timeout=5, check_same_thread=False)
+    seen = {}
+    real_paused = live_store.paused
+
+    def paused_then_executor_tries_to_auto_pause(c):
+        result = real_paused(c)
+        if "thread" not in seen:
+            def executor():
+                live_store.pause(other, None, "执行器自动暂停", "auto")
+            seen["thread"] = threading.Thread(target=executor)
+            seen["thread"].start()
+            time.sleep(0.3)      # 给执行器足够时间撞上写锁
+            seen["during"] = real_paused(check)      # 页面还没提交：执行器的写必须还没落库
+        return result
+
+    monkeypatch.setattr(live_store, "paused", paused_then_executor_tries_to_auto_pause)
+    assert live_store.pause_unless_auto(page, datetime(2026, 9, 29, 14, 0), "手机暂停") is None
+    seen["thread"].join(timeout=10)
+
+    assert seen["during"] is None
+    monkeypatch.undo()
+    final = live_store.paused(check)
+    assert final["kind"] == "auto" and final["reason"] == "执行器自动暂停" and final["until"] is None
+
+
+def test_pause_unless_auto_waits_for_a_concurrent_writer(tmp_path):
+    """别的连接正占着写锁时，BEGIN IMMEDIATE 等它提交（不是立刻报错，也不是读到旧值就写）。"""
+    page, other = _file_conns(tmp_path)
+    other.execute("BEGIN IMMEDIATE")
+    live_store._put_state(other, "paused", "1")
+    live_store._put_state(other, "pause_reason", "执行器自动暂停")
+    live_store._put_state(other, "pause_kind", "auto")
+    result = {}
+
+    def page_request():
+        result["value"] = live_store.pause_unless_auto(page, datetime(2026, 9, 29, 14, 0), "手机暂停")
+
+    t = threading.Thread(target=page_request)
+    t.start()
+    time.sleep(0.3)
+    assert t.is_alive()          # 页面在等写锁
+    other.commit()
+    t.join(timeout=10)
+
+    assert result["value"]["kind"] == "auto"      # 等到了之后读到的是 auto，拒绝，不覆盖
+    assert live_store.paused(page)["reason"] == "执行器自动暂停"
+
+
+def test_pause_unless_auto_rolls_back_and_reraises_on_write_failure(tmp_path, monkeypatch):
+    c = conn()
+    live_store.pause(c, datetime(2026, 9, 29, 10, 30), "手机暂停", "manual")
+
+    def boom(conn_, key, value):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(live_store, "_put_state", boom)
+    with pytest.raises(sqlite3.OperationalError):
+        live_store.pause_unless_auto(c, None, "手机暂停")
+    monkeypatch.undo()
+    assert not c.in_transaction
+    assert live_store.paused(c) == {"until": datetime(2026, 9, 29, 10, 30), "reason": "手机暂停", "kind": "manual"}
