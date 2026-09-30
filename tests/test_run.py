@@ -1440,7 +1440,8 @@ def test_run_minute_add_intents_exception_does_not_block_trading_or_push(monkeyp
         def send(self, title, content):
             self.sent.append((title, content))
 
-    def boom(*a, **kw):
+    def boom(conn_arg, *a, **kw):
+        conn_arg.execute("INSERT INTO live_state(key, value) VALUES ('half', 'written')")
         raise RuntimeError("db locked")
 
     monkeypatch.setattr(run.live_store, "add_intents", boom)
@@ -1450,10 +1451,18 @@ def test_run_minute_add_intents_exception_does_not_block_trading_or_push(monkeyp
     assert result == fills                                      # 成交结果照常返回，不受影响
     assert any("实盘意图写入失败：RuntimeError('db locked')" in line for line in logs)
     assert len(notifier.sent) == 1 and notifier.sent[0][0] == "【超跌·主 卖出】甲 @9.5"   # 推送照常
+    assert conn.execute("SELECT COUNT(*) FROM live_state WHERE key='half'").fetchone()[0] == 0  # 半截写入已回滚
 
 
 def test_run_day_sets_trading_day_state_when_continuing(env):
     env.run(once=True)
     conn = db.connect(env.db)
     assert live_store.get_state(conn, "trading_day") == "2026-09-23"
+
+
+def test_run_day_once_on_non_trading_day_does_not_set_trading_day_state(env):
+    env.clock.t = datetime(2026, 9, 26, 9, 29)   # 周六，不在交易日历里；once=True 也照常跑一轮
+    env.run(once=True)
+    conn = db.connect(env.db)
+    assert live_store.get_state(conn, "trading_day") is None
 

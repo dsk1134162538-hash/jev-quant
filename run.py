@@ -147,7 +147,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if not trading and not once:
         log(f"{today} 非交易日，退出")
         return None
-    live_store.set_state(conn, "trading_day", today.isoformat())
+    if trading:
+        live_store.set_state(conn, "trading_day", today.isoformat())
 
     late = not once and now().time() >= REPORT_AT
     if late and (Path(REPORT_DIR) / f"{today.isoformat()}.md").exists():
@@ -473,6 +474,7 @@ def _run_minute(engine: Engine, board: BoardStrategy | None, customs: list, t: d
         try:
             live_store.add_intents(conn, fills, names)
         except Exception as e:
+            conn.rollback()
             log(f"实盘意图写入失败：{e!r}")
         if log_each:
             _log_fills(fills, log)
