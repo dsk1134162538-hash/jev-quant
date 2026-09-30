@@ -31,7 +31,7 @@ A 股主板（60/00）T+1 模拟盘：规则选股 → Jev（TypeSafe System One
 
 ## 两台机器（2026-09-30 起：后台搬到家里）
 - **公司电脑** `D:\claude\jev-quant`：后台 2026-09-30 09:09 已停，开机启动项改名为 `Jev模拟盘后台.lnk.disabled`（禁用）。不再跑任何东西。
-- **家里电脑**：开发目录 `E:\claude\jev-quant`（写代码、跑测试）；运行目录 `E:\jev-live`（只跑不改），用 `scripts/home_install.py` 一键安装/更新：clone/rebase **master**、建 .venv、放入公司迁来的数据库（已存在绝不覆盖）、检查凭证（只说有没有）、建开机启动项、启动 `daemon.py` 和 `live.py`；交易时段（09:15–15:30，含收盘后同步/上线）拒绝重启，除非 `--force`。步骤见 `docs/live-setup.md` 第 0.5 节。
+- **家里电脑**：开发目录 `E:\claude\jev-quant`（写代码、跑测试）；**一键安装/更新 = 双击开发目录里的 `home_setup.bat`**（拉 master → 开发目录 .venv → easytrader → `scripts/live_install.py` 装 xiadan-gateway 到 `E:\xiadan-gateway`〔固定审查过的提交、token 生成后写网关配置和 HKCU、读 Tailscale 地址设 JEVQ_LIVE_HOST、开机自启「xiadan网关」〕→ `scripts/home_install.py`）。运行目录 `E:\jev-live`（只跑不改），由 `scripts/home_install.py` 安装/更新：clone/rebase **master**、建 .venv、放入公司迁来的数据库（已存在绝不覆盖）、检查凭证（只说有没有）、建开机启动项、启动 `daemon.py` 和 `live.py`；交易时段（09:15–15:30，含收盘后同步/上线）拒绝重启，除非 `--force`。用户操作步骤全在 `docs/live-setup.md`（时间表、同花顺设置、手机、测试、切实盘条件、日常使用）。
 - 数据库快照在 GitHub 临时分支 `migration-data`（7b011c6）。**家里装好后删掉这个分支——删之前先问用户。**
 - GitHub 仓库 `dsk1134162538-hash/jev-quant` 是**私有**的。决策留痕（含 Jev 细节）不导出。
 

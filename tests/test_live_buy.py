@@ -429,6 +429,16 @@ def test_buy_dryrun_never_calls_place_and_records_position_at_sim_price():
     assert only_intent(c) == ("done", "演练")
 
 
+def test_buy_dryrun_notifies_so_the_rehearsal_is_visible():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock, mode="dryrun")
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    notifier = FakeNotifier()
+    make(c, FakeBroker(clock, cash=50_000), notifier, clock=clock).step()
+    assert any("买入（演练）" in title and "甲公司" in text for title, text in notifier.sent)
+
+
 # ---- startup：sending 恢复 ----
 
 def test_startup_sending_matches_fully_filled_updates_order_and_position():

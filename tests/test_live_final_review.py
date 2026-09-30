@@ -301,3 +301,72 @@ def test_late_morning_sell_with_slow_gateway_never_hangs_over_lunch(at):
     assert live_store.paused(c) is None
     assert all(r["status"] != "submitted" for r in rows(c))
     assert all(t < datetime(2026, 9, 29, 11, 30) for t in cancel_at)
+
+
+# ---- 复核的小加固 ----
+
+def test_cancel_is_not_sent_once_the_clock_is_past_the_cancel_cutoff():
+    """撤单前核对自己也要读一次当日委托（慢网关十几秒）：发撤单那一刻再核一次时段，来不及就暂停，不发。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 14, 56, 45))
+    setup_ready(c, clock)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    no = broker.place("buy", "600001", 10.05, 500)
+    ex = make(c, broker, clock=clock)
+    row = {"entrust_no": no, "code": "600001", "side": "buy", "price": 10.05, "shares": 500}
+    assert ex._cancel_last_checked(row, clock.now()) is False
+    assert ("cancel_last",) not in broker.calls
+    assert live_store.paused(c)["kind"] == "auto"
+
+
+def test_pause_tapped_while_reading_before_a_buy_stops_that_buy():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_buy_intent(c, clock.now())
+    broker = FakeBroker(clock, cash=50_000)
+    orig = broker.balance
+
+    def balance_then_phone_pause():
+        live_store.pause(c, datetime(2026, 9, 29, 10, 5), "手机暂停", "manual")
+        return orig()
+
+    broker.balance = balance_then_phone_pause
+    make(c, broker, clock=clock).step()
+    assert all(call[0] != "place" for call in broker.calls)
+    assert c.execute("SELECT status, note FROM live_intents").fetchone() == ("skipped", "暂停中")
+
+
+def test_pause_tapped_while_reading_before_a_sell_stops_that_sell():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 10, 0))
+    setup_ready(c, clock)
+    hold(c)
+    broker = FakeBroker(clock, holdings={"600001": [500, 500]})
+    orig = broker.positions
+
+    def positions_then_phone_pause():
+        live_store.pause(c, datetime(2026, 9, 29, 10, 30), "手机暂停", "manual")
+        return orig()
+
+    broker.positions = positions_then_phone_pause
+    make(c, broker, clock=clock).step()
+    assert all(call[0] != "place" for call in broker.calls)
+    assert rows(c) == []
+
+
+def test_buy_booked_with_no_fill_after_close_is_announced():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 14, 56, 50))
+    setup_ready(c, clock)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    no = broker.place("buy", "600001", 10.05, 500)
+    oid = live_store.add_order(c, None, clock.now(), "buy", "600001", 10.05, 500, "submitted")
+    live_store.update_order(c, oid, clock.now(), entrust_no=no)
+    clock.t = datetime(2026, 9, 29, 15, 1)
+    notifier = FakeNotifier()
+    make(c, broker, notifier, clock=clock).step()
+    assert rows(c)[0]["status"] == "cancelled"
+    assert any("没成交" in text for _, text in notifier.sent)

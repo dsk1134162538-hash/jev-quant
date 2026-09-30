@@ -157,6 +157,9 @@ class Executor:
             # 上面几次读券商要十来秒：下单前按现在的时钟再核一次，等完还能在连续竞价里撤
             live_store.finish_intent(conn, intent.id, "skipped", "临近休市，来不及等成交和撤单", now)
             return
+        if self._paused():   # 读券商那十来秒里手机点了暂停：这一笔也不下
+            live_store.finish_intent(conn, intent.id, "skipped", "暂停中", now)
+            return
 
         if live_store.mode(conn) == "dryrun":
             self._buy_dryrun(intent, now, price, shares)
@@ -184,6 +187,7 @@ class Executor:
         live_store.put_position(conn, LivePosition(intent.code, shares, cost, intent.sim_price, now.date(),
                                                     intent.sim_price))
         live_store.finish_intent(conn, intent.id, "done", "演练", now)
+        self._notify("买入（演练）", f"{intent.name} {shares}股 @{intent.sim_price}（限价 {price}，没下单）")
 
     def _buy_live(self, intent: Intent, now: datetime, price: float, shares: int) -> None:
         conn = self.conn
@@ -369,6 +373,9 @@ class Executor:
         if not matches:
             self._auto_pause("撤单前核对不上：最后一笔不是程序的委托")
             return False
+        if not self._can_cancel_by(self.clock()):   # 上面的核对读取也要好几秒：发撤单那一刻再核一次时段
+            self._auto_pause(f"来不及撤单：{row['code']} 这笔委托还挂着，已到午休或收盘集合竞价，请在 App 里处理")
+            return False
         try:
             return self.broker.cancel_last()
         except Exception:
@@ -536,7 +543,8 @@ class Executor:
             return False
 
         order_ts = self.clock()
-        if self._morning_sell_too_late(order_ts):   # 读持仓、取行情花了时间：下单前按现在的时钟再核一次
+        if self._morning_sell_too_late(order_ts) or self._paused():
+            # 读持仓、取行情花了时间：下单前按现在的时钟再核一次；这期间手机点了暂停也不下
             self._retry_later(code)
             return False
         order_id = live_store.add_order(conn, None, order_ts, "sell", code, price, qty, "sending")
@@ -962,6 +970,8 @@ class Executor:
             live_store.put_position(conn, LivePosition(row["code"], filled, cost, avg_price,
                                                         datetime.fromisoformat(row["ts"]).date(), sim_price))
             self._notify("买入", f"{self._name(row['code'])} {filled}股 @{avg_price}（核对补记）")
+        else:   # 买单落成没成交就没有对账兜底了（对账只减不加）：告诉用户去 App 看一眼
+            self._notify("买入", f"{self._name(row['code'])} 核对为没成交（{note}），请在 App 里确认")
         self._finish_row_intent(row["intent_id"], note)
 
     def _finish_row_intent(self, intent_id, note: str) -> None:

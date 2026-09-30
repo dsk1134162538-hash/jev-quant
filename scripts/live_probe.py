@@ -13,12 +13,13 @@ import argparse
 import os
 import sys
 import time
+import traceback
 from datetime import datetime, time as dtime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from jevq.config import LIVE_EASYTRADER_EXE, LIVE_GATEWAY_URL  # noqa: E402
+from jevq.config import LIVE_EASYTRADER_EXE, LIVE_GATEWAY_URL, LIVE_MATCH_TOLERANCE  # noqa: E402
 from jevq.data.tencent import fetch_quotes  # noqa: E402
 from jevq.live.broker import BrokerError, is_cancel_row, orders_from_rows  # noqa: E402
 from jevq.live.easytrader_broker import EasytraderBroker  # noqa: E402
@@ -28,7 +29,8 @@ from jevq.notify import _windows_env_fallback  # noqa: E402
 TRADING_WINDOWS = ((dtime(9, 30), dtime(11, 30)), (dtime(13, 0), dtime(14, 57)))
 ORDER_TEST_MIN_LEFT = 120     # 秒：order-test 全程约 1 分钟（网关下单/读委托每次约 6 秒），离连续竞价结束不足这么久不跑
 SETTLE_SECONDS = 3            # 下单/撤单之后等多久再读当日委托
-CLOCK_SKEW_WARN = 5           # 秒：执行器按「委托时间 ≥ 下单时刻 − 5 秒」匹配，电脑时钟比券商快过这个数就会匹配失败
+CLOCK_SKEW_WARN = 5           # 秒：时钟偏差超过这个数就提醒校时
+# 执行器没有委托号时按「委托时间 ≥ 下单时刻 − LIVE_MATCH_TOLERANCE 秒」匹配：电脑时钟比券商快过这个数就会匹配失败
 ORDER_SHARES = 100
 
 
@@ -44,6 +46,9 @@ def _require_trading_window(when: str) -> None:
     """不在连续竞价时段、或离结束不足 ORDER_TEST_MIN_LEFT 秒就退出（撤单必须在连续竞价内发出）。
     when：提示里说明是哪一次检查。yes 之前和 yes 之后各查一次——用户可能在提示前停了很久。"""
     now = datetime.now()
+    if now.weekday() >= 5:
+        print(f"{when}：今天是周末，不是交易日，拒绝运行")
+        sys.exit(1)
     if _seconds_left_in_window(now) < ORDER_TEST_MIN_LEFT:
         print(f"{when}：当前 {now.strftime('%H:%M:%S')} 不在连续竞价时段（09:30–11:30、13:00–14:57），"
               f"或离结束不足 {ORDER_TEST_MIN_LEFT} 秒（全程约 1 分钟，撤单必须在连续竞价内发出），拒绝运行")
@@ -185,9 +190,11 @@ def _describe(label, place_no, order, raw_rows, t0: datetime, t1: datetime) -> N
         return
     ahead = (t0 - placed).total_seconds()      # 电脑比券商快多少（委托时间早于下单调用前）
     behind = (placed - t1).total_seconds()     # 电脑比券商慢多少（委托时间晚于下单调用返回后）
-    if ahead > CLOCK_SKEW_WARN:
-        print(f"  警告：电脑时钟比券商快约 {ahead:.0f} 秒（超过 {CLOCK_SKEW_WARN} 秒跟单就会匹配失败），"
-              f"上线前先 w32tm /resync")
+    if ahead > LIVE_MATCH_TOLERANCE:
+        print(f"  警告：电脑时钟比券商快约 {ahead:.0f} 秒（超过 {LIVE_MATCH_TOLERANCE} 秒跟单就会匹配失败），"
+              f"上线前必须先 w32tm /resync")
+    elif ahead > CLOCK_SKEW_WARN:
+        print(f"  提示：电脑时钟比券商快约 {ahead:.0f} 秒，上线前先 w32tm /resync 校一下")
     elif behind > CLOCK_SKEW_WARN:
         print(f"  警告：电脑时钟比券商慢约 {behind:.0f} 秒，上线前先 w32tm /resync")
 
@@ -218,12 +225,15 @@ def cmd_order_test(args) -> None:
         sys.exit(1)
     before_nos = {o.entrust_no for o in before}
     before_open = sum(1 for o in before if o.open)
+    if before_open:
+        # 万一「撤最后一笔」其实按全部撤单执行，会把这些挂单一起撤掉：先清干净再测
+        print(f"当前已有 {before_open} 笔挂单：先在 App 里撤掉或等它们了结，再跑 order-test，拒绝运行")
+        sys.exit(1)
 
     print(f"将真实下两笔买单，各 {ORDER_SHARES} 股 {args.code}（{quote.name}，现价 {quote.price}）：")
     print(f"  A：跌停价 {price_a}")
     print(f"  B：跌停价 +0.01 = {price_b}")
     print("然后调用一次 cancel_last()：应该只撤 B（最后一笔），A 仍挂着；再调用一次撤掉 A。两笔都远低于市价，不会成交。")
-    print(f"当前已有 {before_open} 笔挂单（比 A、B 早，不该被动到）。")
     print("运行前确认：live.py 是「关闭」模式或已停掉，也没有别的程序、手动在下单——「撤最后一笔」会撤到别人的单。")
     answer = input("输入 yes 确认：")
     if answer.strip() != "yes":
@@ -356,6 +366,10 @@ def main() -> None:
         args.func(args)
     except KeyboardInterrupt:
         print("\n已中断。如果已经下了单，去 App 里核对并手动撤单")
+        sys.exit(1)
+    except Exception:
+        traceback.print_exc()
+        print("出错了。如果已经下了单，去 App 里核对并手动撤单；把上面的输出发给 Claude")
         sys.exit(1)
 
 
