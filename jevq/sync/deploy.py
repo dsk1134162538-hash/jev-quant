@@ -112,16 +112,21 @@ def sync_and_deploy(repo: Path, today: date, log, notifier, python_exe: Path,
 def _sync_and_deploy(repo: Path, today: date, log, notifier, python_exe: Path,
                      running_commit: str | None, run_git, run_tests) -> dict:
     # 1. 提交本机数据（只加数据路径，绝不带代码）
-    add = run_git(["add", *DATA_PATHS])
-    if add.returncode != 0:
-        log(f"git add 失败：{add.stderr}")
+    # 逐个只 add 磁盘上存在的路径：DATA_PATHS 混在一起 add 时，只要有一个路径不存在
+    # （如 .superpowers 目录还没建），整条 add 命令都会失败，其余路径也进不了暂存区。
+    existing_data_paths = [p for p in DATA_PATHS if (repo / p).exists()]
+    if existing_data_paths:
+        add = run_git(["add", *existing_data_paths])
+        if add.returncode != 0:
+            log(f"git add 失败：{add.stderr}")
 
     code_dirty = _has_uncommitted_code_changes(run_git)
     if code_dirty:
         log("本机有未提交的代码改动，跳过自动上线（数据仍会正常推送）")
 
     staged = run_git(["diff", "--cached", "--name-only", "--", *DATA_PATHS])
-    if (getattr(staged, "stdout", "") or "").strip():
+    staged_files = [p for p in (getattr(staged, "stdout", "") or "").splitlines() if p.strip()]
+    if staged_files:
         hits = scan_staged(run_git)
         if hits:
             log("密钥扫描命中，中止提交：" + "；".join(hits))
@@ -129,8 +134,10 @@ def _sync_and_deploy(repo: Path, today: date, log, notifier, python_exe: Path,
             run_git(["reset", "--", *DATA_PATHS])
             return {"deploy": False}
         commit_msg = f"chore: daily sync {today.isoformat()}\n\n{_COMMIT_TRAILER}"
-        # 带路径提交：暂存区里别人手上的代码改动（如未完成的 ui.html）不会被捎带进每日同步
-        commit = run_git(["commit", "-m", commit_msg, "--", *DATA_PATHS])
+        # 提交暂存区里实际存在的文件，而不是原始的 DATA_PATHS：像 .superpowers 这种目录下
+        # 没有已跟踪/已暂存内容时，拿它当 commit 的 pathspec 会报 "did not match any
+        # file(s) known to git" 而失败，导致数据一直卡在暂存区、永远推不出去。
+        commit = run_git(["commit", "-m", commit_msg, "--", *staged_files])
         if commit.returncode != 0:
             log(f"git commit 失败：{commit.stderr}")
             return {"deploy": False}
