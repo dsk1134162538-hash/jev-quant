@@ -1,5 +1,6 @@
 """Executor 骨架 + 买入路径 + sending 恢复：tests/live_fakes.py 的 FakeBroker/FakeClock/FakeNotifier
 注入，全程不联网、不真等（时钟靠 FakeClock.sleep 推进）。"""
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 from factories import quote
@@ -192,7 +193,7 @@ def test_buy_no_fill_cancels_and_notifies_no_position():
     c = conn()
     clock = FakeClock(datetime(2026, 9, 29, 9, 35))
     setup_ready(c, clock)
-    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500, name="甲公司")
     broker = FakeBroker(clock, cash=50_000)
     broker.fill_mode = "none"
     notifier = FakeNotifier()
@@ -200,10 +201,11 @@ def test_buy_no_fill_cancels_and_notifies_no_position():
 
     assert only_order(c)["status"] == "cancelled"
     assert live_store.positions(c) == {}
-    assert any(text == "没成交，已撤单" for _, text in notifier.sent)
+    assert any("没成交，已撤单" in text and "甲公司" in text for _, text in notifier.sent)
 
 
 def test_buy_cancel_check_mismatch_does_not_cancel_and_auto_pauses():
+    """repro B：撤单前核对撞上用户手动下的单 —— 不能瞎撤单，也不能因此就断定「没成交」。"""
     c = conn()
     clock = FakeClock(datetime(2026, 9, 29, 9, 35))
     setup_ready(c, clock)
@@ -212,12 +214,74 @@ def test_buy_cancel_check_mismatch_does_not_cancel_and_auto_pauses():
     broker.fill_mode = "none"
     broker.extra_orders = [OrderRow("U1", "600002", "buy", 9.0, 100, 0, 0.0, "已报",
                                     clock.now().strftime("%H:%M:%S"))]
-    make(c, broker, clock=clock).step()
+    notifier = FakeNotifier()
+    make(c, broker, notifier, clock=clock).step()
 
     assert ("cancel_last",) not in broker.calls
+    assert only_order(c)["status"] == "submitted"   # 核对不上：不能瞎猜成 cancelled
+    assert live_store.positions(c) == {}
+    assert not any("没成交" in text for _, text in notifier.sent)
     p = live_store.paused(c)
     assert p is not None and p["kind"] == "auto"
     assert "撤单前核对不上" in p["reason"]
+
+
+# ---- Critical 1 repro：等成交/撤单阶段读失败不能瞎猜成「没成交，已撤单」----
+
+def test_wait_fill_all_reads_after_place_failing_does_not_falsely_cancel():
+    """repro A：place 成功后所有读取都失败——不能因为读不到就断定 0 成交、已撤单。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    orig_place = broker.place
+
+    def place_then_fail_reads(*a):
+        r = orig_place(*a)
+        broker.fail_reads = 8
+        return r
+
+    broker.place = place_then_fail_reads
+    notifier = FakeNotifier()
+    make(c, broker, notifier, clock=clock).step()
+
+    order = only_order(c)
+    assert order["status"] != "cancelled"
+    assert live_store.positions(c) == {}
+    assert not any("没成交" in text for _, text in notifier.sent)
+    p = live_store.paused(c)
+    assert p is not None and p["kind"] == "auto"
+    pause_pushes = [t for t, _ in notifier.sent if "自动暂停" in t]
+    assert len(pause_pushes) == 1   # 达到暂停阈值后不再重复暂停/重复推送
+
+
+def test_wait_fill_tail_read_failures_keep_order_submitted():
+    """repro A2：只有撤单前核对和最终确认这两次读取失败——同样不能断定已撤单。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    orig = broker.orders_today
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] > 6:
+            raise BrokerError("读取失败", "FAKE")
+        return orig()
+
+    broker.orders_today = flaky
+    notifier = FakeNotifier()
+    make(c, broker, notifier, clock=clock).step()
+
+    order = only_order(c)
+    assert order["status"] == "submitted"
+    assert not any("没成交" in text for _, text in notifier.sent)
+    assert live_store.paused(c) is not None
 
 
 # ---- 下单异常 ----
@@ -237,7 +301,8 @@ def test_buy_broker_reject_marks_order_failed_without_pause():
     assert status == "done" and "拒单" in note
 
 
-def test_buy_unknown_place_error_not_found_in_todays_orders_marks_failed():
+def test_buy_unknown_place_error_not_found_in_todays_orders_marks_failed_and_auto_pauses():
+    """Important 3（controller ruling）：单笔核对找不到这笔委托，除了 failed 还要自动暂停。"""
     c = conn()
     clock = FakeClock(datetime(2026, 9, 29, 9, 35))
     setup_ready(c, clock)
@@ -247,7 +312,79 @@ def test_buy_unknown_place_error_not_found_in_todays_orders_marks_failed():
     make(c, broker, clock=clock).step()
 
     assert only_order(c)["status"] == "failed"
-    assert live_store.paused(c) is None
+    p = live_store.paused(c)
+    assert p is not None and p["kind"] == "auto"
+
+
+def test_place_raising_plain_exception_does_not_place_twice():
+    """repro C：place() 抛出的不是 BrokerError（适配器本身炸了），也不能让同一意图重新下单。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    orig_place = broker.place
+    first = {"v": True}
+
+    def place_boom(*a):
+        r = orig_place(*a)
+        if first["v"]:
+            first["v"] = False
+            raise RuntimeError("adapter blew up after submit")
+        return r
+
+    broker.place = place_boom
+    ex = make(c, broker, clock=clock)
+    ex.step()          # 不应该向外抛异常
+    clock.sleep(1)
+    ex.step()
+
+    places = [call for call in broker.calls if call[0] == "place"]
+    assert len(places) == 1
+    assert only_intent(c)[0] == "done"
+
+
+def test_orders_today_raising_plain_exception_during_wait_does_not_place_twice():
+    """repro D：orders_today() 中途抛出非 BrokerError（比如适配器解析报表崩了），同样不能重下。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    orig = broker.orders_today
+    first = {"v": True}
+
+    def ot_boom():
+        if first["v"]:
+            first["v"] = False
+            raise ValueError("could not convert string to float: '--'")
+        return orig()
+
+    broker.orders_today = ot_boom
+    ex = make(c, broker, clock=clock)
+    ex.step()          # 不应该向外抛异常
+    clock.sleep(1)
+    ex.step()
+
+    places = [call for call in broker.calls if call[0] == "place"]
+    assert len(places) == 1
+
+
+def test_buy_skips_intent_that_already_has_an_order_row():
+    """兜底：万一意图还是 new，但已经有 live_orders 行挂在它名下，绝不能再下一次。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    iid = c.execute("SELECT id FROM live_intents").fetchone()[0]
+    live_store.add_order(c, iid, clock.now(), "buy", "600001", 10.05, 500, "sending")
+    broker = FakeBroker(clock, cash=50_000)
+    make(c, broker, clock=clock).step()
+
+    assert all(call[0] != "place" for call in broker.calls)
+    assert only_intent(c)[0] == "done"
 
 
 def test_buy_unknown_place_error_and_read_failure_auto_pauses():
@@ -270,7 +407,8 @@ def test_buy_unknown_place_error_and_read_failure_auto_pauses():
 
 # ---- 演练 ----
 
-def test_buy_dryrun_never_calls_place_but_records_position():
+def test_buy_dryrun_never_calls_place_and_records_position_at_sim_price():
+    """controller ruling：演练持仓按模拟成交价记入 live_positions，不是限价。"""
     c = conn()
     clock = FakeClock(datetime(2026, 9, 29, 9, 35))
     setup_ready(c, clock, mode="dryrun")
@@ -280,10 +418,11 @@ def test_buy_dryrun_never_calls_place_but_records_position():
 
     assert all(call[0] != "place" for call in broker.calls)
     assert only_order(c)["status"] == "dryrun"
-    price = 10.05
-    expected_shares = affordable_shares(BUDGET, price)
+    limit_price = 10.05
+    expected_shares = affordable_shares(BUDGET, limit_price)
     pos = live_store.positions(c)["600001"]
-    assert pos.shares == expected_shares and pos.buy_price == price
+    assert pos.shares == expected_shares
+    assert pos.buy_price == 10.0   # 模拟成交价，不是限价 10.05
     assert only_intent(c) == ("done", "演练")
 
 
@@ -303,7 +442,8 @@ def test_startup_sending_matches_fully_filled_updates_order_and_position():
     assert live_store.positions(c)["600001"].shares == 500
 
 
-def test_startup_sending_no_match_marks_failed():
+def test_startup_sending_no_match_marks_failed_and_auto_pauses():
+    """Important 3（controller ruling）：启动核对没找到，除了 failed 还要自动暂停。"""
     c = conn()
     clock = FakeClock(datetime(2026, 9, 29, 9, 35))
     order_ts = datetime(2026, 9, 29, 9, 34, 0)
@@ -314,6 +454,8 @@ def test_startup_sending_no_match_marks_failed():
     order = only_order(c)
     assert order["status"] == "failed"
     assert "没找到" in order["note"]
+    p = live_store.paused(c)
+    assert p is not None and p["kind"] == "auto"
 
 
 def test_startup_read_failure_auto_pauses():
@@ -327,6 +469,78 @@ def test_startup_read_failure_auto_pauses():
 
     p = live_store.paused(c)
     assert p is not None and p["kind"] == "auto" and "启动核对" in p["reason"]
+
+
+def test_startup_also_reconciles_submitted_rows_not_just_sending():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    order_ts = datetime(2026, 9, 29, 9, 34, 0)
+    live_store.add_order(c, None, order_ts, "buy", "600001", 10.05, 500, "submitted")
+    broker = FakeBroker(clock, cash=50_000)
+    broker.place("buy", "600001", 10.05, 500)   # 客户端里真的有这笔，且已经全部成交
+    make(c, broker, clock=clock).startup()
+
+    order = only_order(c)
+    assert order["status"] == "filled" and order["filled"] == 500
+    assert live_store.positions(c)["600001"].shares == 500
+
+
+def test_startup_reconciles_row_and_finishes_intent_preventing_rebuy():
+    """repro E：进程在 place() 成功之后、finish_intent 之前崩了；重启后 startup 核对这一行，
+    必须顺手把意图标 done，不然下一秒 step() 会对同一个意图再下一次单。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    iid = c.execute("SELECT id FROM live_intents").fetchone()[0]
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    live_store.add_order(c, iid, clock.now(), "buy", "600001", 10.05, 1900, "sending")
+    broker.place("buy", "600001", 10.05, 1900)   # 模拟真实下单已经发生，只是进程写库前先崩了
+    clock.sleep(5)
+
+    ex2 = make(c, broker, clock=clock)
+    ex2.startup()
+    ex2.step()
+
+    places = [call for call in broker.calls if call[0] == "place"]
+    assert len(places) == 1
+    assert only_intent(c)[0] == "done"
+
+
+# ---- Important 4：撤单前核对的身份匹配，有委托号只认委托号 ----
+
+def test_cancel_check_prefers_entrust_no_over_coincidental_field_match():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    # 用户手动下的单：代码/方向/价格/数量和程序这笔完全一样，但委托号不同——不能靠四要素误判成自己的单。
+    broker.extra_orders = [OrderRow("USER1", "600001", "buy", 10.05, 500, 0, 0.0, "已报",
+                                    clock.now().strftime("%H:%M:%S"))]
+    notifier = FakeNotifier()
+    make(c, broker, notifier, clock=clock).step()
+
+    assert ("cancel_last",) not in broker.calls
+    assert only_order(c)["status"] == "submitted"
+    p = live_store.paused(c)
+    assert p is not None and p["kind"] == "auto"
+
+
+# ---- Minor：涨停价读到非正数当无效处理 ----
+
+def test_buy_price_ignores_non_positive_limit_up():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), code="600001", price=10.0, shares=500)
+    broker = FakeBroker(clock, cash=50_000)
+    bad_quote = replace(quote(code="600001", pre_close=10.0), limit_up=0.0)
+    make(c, broker, clock=clock, quotes=lambda codes: {"600001": bad_quote}).step()
+    place_call = next(call for call in broker.calls if call[0] == "place")
+    assert place_call[3] == 10.05   # 涨停价无效：只用前半（不封顶）
 
 
 # ---- 连续读取失败自动暂停 ----

@@ -176,6 +176,14 @@ def test_add_order_returns_id_and_sending_orders_filters_status():
     assert sending[0]["code"] == "600001" and sending[0]["status"] == "sending"
 
 
+def test_open_orders_includes_sending_and_submitted_but_not_terminal_statuses():
+    c = conn()
+    oid1 = live_store.add_order(c, None, datetime(2026, 9, 29, 9, 31), "buy", "600001", 9.5, 500, "sending")
+    oid2 = live_store.add_order(c, None, datetime(2026, 9, 29, 9, 32), "buy", "600002", 8.0, 100, "submitted")
+    live_store.add_order(c, None, datetime(2026, 9, 29, 9, 33), "buy", "600003", 7.0, 100, "filled")
+    assert {o["id"] for o in live_store.open_orders(c)} == {oid1, oid2}
+
+
 def test_update_order_writes_allowed_fields_and_updated_ts():
     c = conn()
     oid = live_store.add_order(c, 7, datetime(2026, 9, 29, 9, 31), "buy", "600001", 9.5, 500, "sending")

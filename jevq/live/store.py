@@ -179,6 +179,11 @@ def sending_orders(conn: sqlite3.Connection) -> list[dict]:
     return _order_rows(conn, "status='sending'", ())
 
 
+def open_orders(conn: sqlite3.Connection) -> list[dict]:
+    """启动核对用：sending（还没确认下没下出去）+ submitted（下出去了但可能没等到最终成交）都要核对。"""
+    return _order_rows(conn, "status IN ('sending', 'submitted')", ())
+
+
 _BUY_COUNTED_STATUSES = ("submitted", "filled", "partial", "cancelled", "dryrun")
 
 
