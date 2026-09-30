@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 from factories import position, quote
 
-from jevq import db
+from jevq import config, db
 from jevq.data.closes import consecutive_board_codes
 from jevq.ledger import Ledger
 from jevq.rules.buy import rank_rebound, rebound_mode
@@ -95,6 +95,29 @@ def test_rank_rebound_bounds_are_inclusive():
     assert [q.code for q in ranked] == ["600002", "600001"]
 
 
+def test_rank_rebound_needs_min_shrink_days_and_puts_four_day_shrink_first():
+    qs = [quote(c, pct=-1.0) for c in ("600001", "600002", "600003", "600004", "600005")]
+    ret5 = {"600001": -5.0, "600002": -18.0, "600003": -8.0, "600004": -12.0, "600005": -9.0}
+    days = {"600001": 4, "600002": 3, "600003": 5, "600004": 2}          # 600005 量能数据不全（None）
+    ranked = rank_rebound(qs, ret5, set(), shrink_days=lambda q: days.get(q.code))
+    # 600004 只缩 2 天、600005 不知道：不入选；≥4 天的（600003、600001）先于 3 天的 600002，
+    # 哪怕 600002 的 5 日跌得更多；同档内 5 日涨幅从低到高
+    assert [q.code for q in ranked] == ["600003", "600001", "600002"]
+
+
+def test_rank_rebound_without_shrink_data_source_keeps_old_behaviour():
+    qs = [quote("600001", pct=-1.0), quote("600002", pct=-1.0)]
+    ranked = rank_rebound(qs, {"600001": -5.0, "600002": -18.0}, set())
+    assert [q.code for q in ranked] == ["600002", "600001"]
+
+
+def test_rank_rebound_min_shrink_days_zero_turns_the_volume_rule_off(monkeypatch):
+    monkeypatch.setattr(config, "REBOUND_MIN_SHRINK_DAYS", 0)
+    qs = [quote("600001", pct=-1.0), quote("600002", pct=-1.0)]
+    ranked = rank_rebound(qs, {"600001": -5.0, "600002": -18.0}, set(), shrink_days=lambda q: None)
+    assert [q.code for q in ranked] == ["600002", "600001"]
+
+
 def test_rebound_mode_only_looks_at_sentiment():
     assert rebound_mode("正常") == "intraday"
     assert rebound_mode("火热") == "intraday"
@@ -117,18 +140,31 @@ class Judge:
 UNIVERSE = {"600001": "甲", "600002": "乙", "600003": "丙"}
 
 
-def make(ret5=None, excluded=(), sentiment="正常", notice=None, enabled=True):
+def _feat(*vols):
+    """成交量历史（手，升序，最后一项是昨天）；行情日 2026-09-24，今天的量按已开盘分钟折算。"""
+    return {"vols": list(vols), "vols_until": PREV_DAY.isoformat()}
+
+
+# 测试行情每只成交 10 手：10:00 折算 10 / 30 × 240 = 80 手；14:50 折算 10 / 230 × 240 ≈ 10.4 手
+SHRINK2 = _feat(100.0, 300.0, 200.0)                  # 80 < 200 < 300，再往前放量：连续缩量 2 天
+SHRINK3 = _feat(250.0, 300.0, 200.0, 150.0)           # 3 天
+SHRINK4 = _feat(100.0, 400.0, 300.0, 200.0, 150.0)    # 4 天
+ALL_SHRINK4 = {c: SHRINK4 for c in UNIVERSE}
+
+
+def make(ret5=None, excluded=(), sentiment="正常", notice=None, enabled=True, features=ALL_SHRINK4):
     conn = db.connect(":memory:")
     ledger = Ledger(conn)
     state = {"sentiment": sentiment}
     strat = ReboundStrategy(conn, ledger, notice or Judge(), Judge(), UNIVERSE,
                             ret5 if ret5 is not None else {"600001": -5.0, "600002": -15.0, "600003": -8.0},
-                            set(excluded), PREV_DAY, lambda: state["sentiment"], enabled=enabled)
+                            set(excluded), PREV_DAY, lambda: state["sentiment"], enabled=enabled,
+                            features=features)
     return strat, conn, ledger, state
 
 
 def _quotes(t, **pcts):
-    return {c: quote(c, pct=p, amount=2e8, ts=t) for c, p in pcts.items()}
+    return {c: quote(c, pct=p, amount=2e8, ts=t, volume=10) for c, p in pcts.items()}
 
 
 def test_intraday_buy_picks_deepest_five_day_drop():
@@ -244,3 +280,97 @@ def test_buy_pressure_needs_two_snapshots():
                             enabled=False, trade_days=[PREV_DAY, TODAY])
     fills = strat.on_minute({"600002": _flow_q(at(10, 30), 10.17, 10.25, 9999, 1)}, at(10, 30))
     assert [(f.side, f.reason) for f in fills] == [("sell", "跟踪止盈")]
+
+
+# ---- 成交量：至少连续缩量 3 天（含今天），4 天的优先 ----
+
+def _bought(fills):
+    return {(f.account, f.code) for f in fills if f.side == "buy"}
+
+
+def test_buy_needs_three_day_shrink_and_four_day_shrink_goes_first():
+    feats = {"600001": SHRINK2, "600002": SHRINK3, "600003": SHRINK4}
+    strat, conn, ledger, _ = make(features=feats)
+    q = {"600001": -1.0, "600002": -1.0, "600003": -1.0}
+    fills = strat.on_minute(_quotes(at(10, 0), **q), at(10, 0))
+    # 600001 只缩 2 天不入选；600002 的 5 日跌得比 600003 多，但 600003 缩了 4 天，先买它（只有一个仓位）
+    assert _bought(fills) == {("rebound_main", "600003"), ("rebound_shadow", "600003")}
+    trace = json.loads(conn.execute("SELECT trace FROM decisions WHERE strategy='rebound'").fetchone()[0])
+    assert trace["candidate"]["shrink_days"] == 4
+
+
+def test_three_day_shrink_is_enough_when_no_four_day_candidate():
+    strat, *_ = make(features={"600002": SHRINK3})
+    fills = strat.on_minute(_quotes(at(10, 0), **{"600002": -1.0}), at(10, 0))
+    assert _bought(fills) == {("rebound_main", "600002"), ("rebound_shadow", "600002")}
+
+
+def test_no_buy_when_volume_history_is_missing_or_today_not_projectable():
+    strat, *_ = make(features={})                                            # 库里没有量能历史
+    assert strat.on_minute(_quotes(at(10, 0), **{"600002": -1.0}), at(10, 0)) == []
+    strat, *_ = make(features={"600002": SHRINK4})
+    assert strat.on_minute(_quotes(at(9, 40), **{"600002": -1.0}), at(9, 40)) == []   # 09:45 前不折算全天量
+
+
+def test_weak_market_tail_buy_uses_almost_full_day_volume():
+    strat, *_ = make(sentiment="偏弱", features={"600002": SHRINK4})
+    fills = strat.on_minute(_quotes(at(14, 50), **{"600002": -1.0}), at(14, 50))
+    assert _bought(fills) == {("rebound_main", "600002"), ("rebound_shadow", "600002")}
+    # 尾盘量已经基本走完：成交 200 手折算 ≈ 209 手 ≥ 昨天 150 手，不算缩量，不买
+    strat, *_ = make(sentiment="偏弱", features={"600002": SHRINK4})
+    heavy = {"600002": quote("600002", pct=-1.0, amount=2e8, ts=at(14, 50), volume=200)}
+    assert strat.on_minute(heavy, at(14, 50)) == []
+
+
+# ---- 卖出后再买：当天卖出的票要比卖出价低 1% 才允许再买 ----
+
+def _hold_both(conn, code="600002", buy_price=10.0, buy_date=PREV_DAY):
+    for account in ("rebound_main", "rebound_shadow"):
+        conn.execute("INSERT INTO positions VALUES (?, ?, ?, ?, ?, ?)",
+                     (account, code, 1000, buy_price * 1000 + 5, buy_price, buy_date.isoformat()))
+    conn.commit()
+
+
+def _bounce_q(t, price_pct):
+    """开盘 -1.8%、最低 -1.9%，现价 price_pct：现价 -1.0% 时从最低拉起 0.9 个点 → 低开反抽卖出。"""
+    return {"600002": quote("600002", pct=price_pct, open_pct=-1.8, low_pct=-1.9, amount=2e8, ts=t, volume=10)}
+
+
+def test_sold_stock_is_not_bought_back_until_one_percent_below_sell_price():
+    strat, conn, ledger, _ = make()
+    _hold_both(conn)
+    fills = strat.on_minute(_bounce_q(at(10, 0), -1.0), at(10, 0))            # 9.90 卖出
+    assert [(f.account, f.side, f.reason, f.price) for f in fills] == [
+        ("rebound_main", "sell", "低开反抽", 9.9), ("rebound_shadow", "sell", "低开反抽", 9.9)]
+    # 同一分钟没有原价买回；之后价格没比卖出价低 1% 以上（9.90 → 9.801）之前也不买
+    assert strat.on_minute(_bounce_q(at(10, 1), -1.0), at(10, 1)) == []
+    assert strat.on_minute(_bounce_q(at(10, 2), -1.5), at(10, 2)) == []       # 9.85
+    # 9.80 ≤ 9.90 × 0.99 四舍五入到分 = 9.80：可以再买
+    fills = strat.on_minute(_bounce_q(at(10, 3), -2.0), at(10, 3))
+    assert _bought(fills) == {("rebound_main", "600002"), ("rebound_shadow", "600002")}
+    assert {f.price for f in fills} == {9.8}
+
+
+def test_rebuy_block_survives_a_restart_and_is_per_account():
+    strat, conn, ledger, _ = make()
+    _hold_both(conn)
+    strat.on_minute(_bounce_q(at(10, 0), -1.0), at(10, 0))
+    strat2 = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {"600002": -15.0}, set(), PREV_DAY,
+                             lambda: "正常", features=ALL_SHRINK4)             # 重启后从成交记录里恢复
+    assert strat2.on_minute(_bounce_q(at(10, 1), -1.0), at(10, 1)) == []
+    # 影子账户当天没卖过这只票（比如主账户卖的是别的仓位）：不受主账户的卖出记录影响
+    conn.execute("DELETE FROM fills WHERE account='rebound_shadow'")
+    conn.commit()
+    fills = strat2.on_minute(_bounce_q(at(10, 2), -1.0), at(10, 2))
+    assert _bought(fills) == {("rebound_shadow", "600002")}
+
+
+def test_stock_sold_on_an_earlier_day_can_be_bought_again():
+    strat, conn, ledger, _ = make()
+    yesterday = datetime(2026, 9, 23, 10, 0)
+    for account in ("rebound_main", "rebound_shadow"):
+        ledger.buy(account, quote("600002", pct=-1.0, ts=yesterday), yesterday, "x")
+        pos = ledger.positions(account)[0]
+        ledger.sell(account, pos, quote("600002", pct=-1.0, ts=yesterday), yesterday, "止损")
+    fills = strat.on_minute(_quotes(at(10, 0), **{"600002": -1.0}), at(10, 0))
+    assert _bought(fills) == {("rebound_main", "600002"), ("rebound_shadow", "600002")}

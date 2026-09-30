@@ -565,10 +565,22 @@ def _load_rebound(conn, ledger: Ledger, today: date, universe: dict, ret5: dict,
         except Exception as e:
             log(f"超跌反弹连板排除计算失败，今日只卖不买：{e!r}")
             excluded, enabled = set(), False
+    features: dict | None = None      # None = 不看成交量（REBOUND_MIN_SHRINK_DAYS = 0）
+    if enabled and config.REBOUND_MIN_SHRINK_DAYS > 0:
+        try:
+            features = history_features(conn, sorted(universe), today)
+            n = config.REBOUND_MIN_SHRINK_DAYS             # 连续缩量 n 天要最近 n 个历史日的量都在（今天的量盘中折算）
+            ok = sum(1 for f in features.values() if len(f.get("vols") or []) >= n and all(f["vols"][-n:]))
+            log(f"超跌反弹：成交量历史齐全 {ok}/{len(universe)} 只（买入要求连续缩量 ≥ {n} 天，"
+                f"≥ {config.REBOUND_PRIORITY_SHRINK_DAYS} 天优先）")
+        except Exception as e:
+            log(f"超跌反弹成交量历史计算失败，今日只卖不买：{e!r}")
+            features, enabled = {}, False
     try:
         strat = ReboundStrategy(conn, ledger, notice_judge, news_judge, dict(universe), ret5, excluded, prev_day,
                                 lambda: engine.sentiment_label, enabled=enabled,
-                                sentiment_trace_provider=lambda: engine.sentiment_trace, trade_days=trade_days)
+                                sentiment_trace_provider=lambda: engine.sentiment_trace, trade_days=trade_days,
+                                features=features)
     except Exception as e:
         conn.rollback()
         log(f"超跌反弹加载失败：{e!r}")

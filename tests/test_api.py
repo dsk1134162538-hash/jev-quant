@@ -356,3 +356,7 @@ def test_rules_list_includes_builtin_readonly_summaries(paths):
     assert any("-20%" in line and "0%" in line for line in rebound_lines)
     assert any("40" in line and "2 连板" in line for line in rebound_lines)
     assert any("从低到高" in line for line in rebound_lines)
+    # 成交量条件与卖出后再买的门槛：面板说明要和代码一致
+    assert any("连续缩量" in line and "至少 3 天" in line and "09:45" in line for line in rebound_lines)
+    assert any("4 天" in line and "优先" in line for line in rebound_lines)
+    assert any("当天卖出" in line and "低 1%" in line and "再买" in line for line in rebound_lines)

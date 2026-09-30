@@ -84,3 +84,38 @@ def vol_step(history: list, today: float | None, n: int | None, down: bool) -> b
         return None
     pairs = zip(seq, seq[1:])
     return all(b < a for a, b in pairs) if down else all(b > a for a, b in pairs)
+
+
+def vol_series(feat: dict, q: Quote, t: time) -> tuple[list, float | None] | None:
+    """阶梯缩量/放量用的成交量序列 (历史, 今天)。
+    行情晚于历史最后一天（盘中/当天收盘后）：今天的量按已过交易分钟折算全天量。
+    行情就是历史最后一天（周末/盘前预览，行情还是上一交易日的）：那天已收盘入库，把它当「今天」、用库里的全天量，
+    历史往前挪一天，不把同一天算两次。没有历史、或行情比历史还旧 → None。"""
+    until = feat.get("vols_until")
+    vols = feat.get("vols") or []
+    q_day = q.ts.date().isoformat()
+    if until is None or q_day < until:
+        return None
+    if q_day == until:
+        return vols[:-1], (vols[-1] if vols else None)
+    return vols, projected_volume(q.volume, t)
+
+
+MAX_SHRINK_DAYS = 5      # 与阶梯缩量字段 N 的上限一致（库里只留 6 天成交量）
+
+
+def shrink_days(feat: dict, q: Quote, t: time) -> int | None:
+    """连续缩量天数（含今天，不看涨跌）：今天比昨天小、昨天比前天小……最多数到 MAX_SHRINK_DAYS；今天没缩量是 0。
+    量能数据不能判断（没有历史、今天的量不能折算，如 09:45 前）→ None；更早的历史有缺口只数到缺口前。"""
+    series = vol_series(feat, q, t)
+    if series is None:
+        return None
+    history, today = series
+    if vol_step(history, today, 1, down=True) is None:
+        return None
+    days = 0
+    for n in range(1, MAX_SHRINK_DAYS + 1):
+        if vol_step(history, today, n, down=True) is not True:
+            break
+        days = n
+    return days

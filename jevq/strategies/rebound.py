@@ -11,11 +11,13 @@ from collections.abc import Callable
 from datetime import date, datetime
 from time import monotonic
 
+from jevq import config
 from jevq.config import (MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE, REBOUND_FLOW_MINUTES,
                          STRATEGIES)
 from jevq.ledger import Ledger, affordable_shares
 from jevq.models import Fill, Quote
 from jevq.rules.buy import buy_window_open, rank_rebound, rebound_mode
+from jevq.rules.metrics import shrink_days
 from jevq.rules.rebound_sell import decide_rebound_sell
 
 SID = "rebound"
@@ -26,8 +28,10 @@ class ReboundStrategy:
                  universe: dict[str, str], ret5: dict[str, float], excluded: set[str], prev_day: date,
                  sentiment_provider: Callable[[], str | None], enabled: bool = True,
                  sentiment_trace_provider: Callable[[], dict | None] | None = None,
-                 trade_days: list[date] | None = None):
+                 trade_days: list[date] | None = None, features: dict[str, dict] | None = None):
         self.conn, self.ledger = conn, ledger
+        # 历史成交量特征（history_features 的 vols/vols_until），成交量条件用；None = 不看成交量（只有测试不传）
+        self.features = features
         self.accounts = STRATEGIES[SID]["accounts"]
         self.notice_judge, self.news_judge = notice_judge, news_judge
         self.universe, self.ret5, self.excluded = universe, ret5, excluded
@@ -64,8 +68,23 @@ class ReboundStrategy:
             return []
         ranked = rank_rebound(
             (q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()),
-            self.ret5, self.excluded)
+            self.ret5, self.excluded,
+            shrink_days=None if self.features is None else (lambda q: self._shrink_days(q, now)))
         return self._buy_shadow(ranked, now) + self._buy_main(ranked, now, mode, sentiment, deadline)
+
+    def _shrink_days(self, q: Quote, now: datetime) -> int | None:
+        """这只票连续缩量几天（含今天）；没有量能历史/今天的量还不能折算 → None。"""
+        if self.features is None:
+            return None
+        return shrink_days(self.features.get(q.code) or {}, q, now.time())
+
+    def _rebuy_blocked(self, account: str, q: Quote, now: datetime) -> bool:
+        """今天在这个账户里卖出过这只票（取最近一次卖出价），现价没比它低 REBOUND_REBUY_DROP% 以上 → 不买回。
+        从成交记录里查，重启不丢；只管当天，隔天卖出的票不受限。"""
+        row = self.conn.execute(
+            "SELECT price FROM fills WHERE account = ? AND code = ? AND side = 'sell' AND substr(ts, 1, 10) = ? "
+            "ORDER BY ts DESC, id DESC LIMIT 1", (account, q.code, now.date().isoformat())).fetchone()
+        return row is not None and q.price > round(row[0] * (1 - config.REBOUND_REBUY_DROP / 100), 2)
 
     def _restore_rejected(self, day: date):
         """重启后恢复当日已否决/出错的票，避免重复问 Jev。"""
@@ -116,6 +135,8 @@ class ReboundStrategy:
         for q in ranked:
             if self.ledger.free_slots(shadow) <= 0:
                 break
+            if self._rebuy_blocked(shadow, q, now):
+                continue
             if f := self.ledger.buy(shadow, q, now, f"影子｜超跌{q.pct}%｜5日{self.ret5[q.code]}%"):
                 fills.append(f)
         return fills
@@ -127,7 +148,7 @@ class ReboundStrategy:
         for rank, q in enumerate(ranked, 1):
             if self.ledger.free_slots(main) <= 0 or checked >= MAX_CHECKS_PER_TICK:
                 break
-            if q.code in self.rejected or self.ledger.holds(main, q.code):
+            if q.code in self.rejected or self.ledger.holds(main, q.code) or self._rebuy_blocked(main, q, now):
                 continue
             if errors >= MAX_ERRORS_PER_TICK:
                 break
@@ -144,7 +165,8 @@ class ReboundStrategy:
                 news_trace = getattr(self.news_judge, "last_trace", None)
             trace = {"strategy": SID,
                      "candidate": {"name": q.name, "price": q.price, "pct": q.pct,
-                                   "ret5": self.ret5[q.code], "rank": rank, "of": len(ranked)},
+                                   "ret5": self.ret5[q.code], "shrink_days": self._shrink_days(q, now),
+                                   "rank": rank, "of": len(ranked)},
                      "notices": notice_trace, "news": news_trace,
                      "market": {"mode": mode, "sentiment": sentiment,
                                 "sentiment_trace": self.sentiment_trace_provider()},

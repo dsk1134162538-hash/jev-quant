@@ -22,12 +22,13 @@ DAYS = [date(2026, 9, 21), date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 2
 CLOSE_DATES = ["2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18", "2026-09-21", "2026-09-22"]
 
 
-def seed_closes(dbp, code, prices=None):
-    """给 code 灌 6 个交易日的收盘价，让 5 日涨幅覆盖率天然是 100%（默认 5.0%，和旧 mock 值保持一致）。"""
+def seed_closes(dbp, code, prices=None, volumes=None):
+    """给 code 灌 6 个交易日的收盘价，让 5 日涨幅覆盖率天然是 100%（默认 5.0%，和旧 mock 值保持一致）。
+    给了 volumes（6 个，手）就一并写成交量。"""
     prices = prices or [10.0, 10.0, 10.0, 10.0, 10.0, 10.5]
     conn = db.connect(dbp)
-    conn.executemany("INSERT OR REPLACE INTO closes(date, code, close) VALUES (?, ?, ?)",
-                     [(d, code, p) for d, p in zip(CLOSE_DATES, prices)])
+    conn.executemany("INSERT OR REPLACE INTO closes(date, code, close, volume) VALUES (?, ?, ?, ?)",
+                     [(d, code, p, v) for d, p, v in zip(CLOSE_DATES, prices, volumes or [None] * len(prices))])
     conn.commit()
     conn.close()
 
@@ -1173,6 +1174,7 @@ def _real_engine(env, monkeypatch, events, clock, step, codes=("600001",)):
     monkeypatch.setattr(run, "NoticeJudge", lambda conn, jev: judge)
     monkeypatch.setattr(run, "NewsJudge", lambda conn, jev: ClockJudge(events, clock, 0.0, ("pass", "ok")))
     monkeypatch.setattr(run.akdata, "load_universe", lambda today, days: {c: c for c in codes})
+    monkeypatch.setattr(config, "REBOUND_MIN_SHRINK_DAYS", 0)     # 这些测试看的是 Jev 预算/卖出顺序，不看成交量条件
     for c in codes:
         seed_closes(env.db, c, REBOUND_CLOSES)
     return judge
@@ -1407,6 +1409,26 @@ def test_rebound_reads_sentiment_from_engine(env, spy_rebound):
     [strat] = spy_rebound.instances
     FakeEngine.instances[0].sentiment_label = "冰点"
     assert strat.sentiment_provider() == "冰点"
+
+
+def test_rebound_gets_volume_history_from_closes(env, spy_rebound):
+    """成交量条件要用库里的历史成交量：盘前用 history_features 算好交给超跌反弹。"""
+    vols = [900.0, 800.0, 700.0, 600.0, 500.0, 400.0]
+    seed_closes(env.db, "600001", volumes=vols)
+    env.run(once=True)
+    [strat] = spy_rebound.instances
+    assert strat.enabled
+    assert strat.features["600001"]["vols"] == vols
+    assert strat.features["600001"]["vols_until"] == "2026-09-22"
+
+
+def test_rebound_sell_only_when_volume_history_fails(env, spy_rebound, monkeypatch):
+    monkeypatch.setattr(run, "history_features",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("db boom")))
+    env.run(once=True)
+    [strat] = spy_rebound.instances
+    assert not strat.enabled
+    assert "超跌反弹成交量历史计算失败，今日只卖不买" in env.log_text()
 
 
 # ---- 实盘跟单：意图写入 / trading_day ----

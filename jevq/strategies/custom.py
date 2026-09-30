@@ -9,8 +9,8 @@ from jevq.ledger import Ledger, affordable_shares
 from jevq.models import Fill, Position, Quote
 from jevq.rules import board as board_rules
 from jevq.rules.custom import FIELDS, eval_cond, eval_group, first_exit, rank_codes
-from jevq.rules.metrics import (avg_pct, body_pct, committee, outer_ratio, projected_volume, seal_amount,
-                                seal_ratio, vol_step)
+from jevq.rules.metrics import (avg_pct, body_pct, committee, outer_ratio, seal_amount, seal_ratio, vol_series,
+                                vol_step)
 
 
 def minute_context(quotes: dict[str, Quote], universe, concept_map: dict[str, list[str]],
@@ -122,19 +122,10 @@ def make_getter(code: str, q: Quote, *, features: dict, amount_ranks: dict[str, 
         if key == "seal_ratio":
             return seal_ratio(q)
         if key in ("vol_step_down", "vol_step_up"):
-            # 行情晚于历史最后一天（盘中/当天收盘后）：今天的量按已过交易分钟折算全天量。
-            # 行情就是历史最后一天（周末/盘前预览，行情还是上一交易日的）：那天已收盘入库，
-            # 把它当「今天」、用库里的全天量，历史往前挪一天，不把同一天算两次。
-            until = feat.get("vols_until")
-            vols = feat.get("vols") or []
-            q_day = q.ts.date().isoformat()
-            if until is None or q_day < until:
+            series = vol_series(feat, q, t)         # 今天的量怎么取见 vol_series
+            if series is None:
                 return None
-            if q_day == until:
-                history, today_vol = vols[:-1], (vols[-1] if vols else None)
-            else:
-                history, today_vol = vols, projected_volume(q.volume, t)
-            return vol_step(history, today_vol, n, down=key == "vol_step_down")
+            return vol_step(*series, n, down=key == "vol_step_down")
 
         # 估值相关
         if key == "float_mcap":

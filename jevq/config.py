@@ -23,7 +23,10 @@ REBOUND_RET5_LOW = -20.0       # 近 5 日涨幅下限（%）
 REBOUND_RET5_HIGH = 0.0        # 近 5 日涨幅上限（%）
 REBOUND_BOARD_LOOKBACK = 40    # 近 N 个交易日出现过连板的排除
 REBOUND_MIN_BOARDS = 2         # 几连板算「连板」
-REBOUND_STOP = -2.0            # 卖出：相对买入价止损（%）
+REBOUND_MIN_SHRINK_DAYS = 3    # 买入：成交量至少连续缩量几天（含今天，不看涨跌，同「阶梯缩量」N）；0 = 不看成交量
+REBOUND_PRIORITY_SHRINK_DAYS = 4   # 买入：连续缩量达到这个天数的候选排在前面
+REBOUND_REBUY_DROP = 1.0       # 买入：当天已卖出的票，现价要比卖出价低这么多（%）才允许再买
+REBOUND_STOP = -2.0           # 卖出：相对买入价止损（%）
 REBOUND_TRAIL_START = 1.5      # 卖出：当天最高相对买入价达到这个盈利（%）后启动跟踪止盈
 REBOUND_TRAIL_PULLBACK = 0.8   # 卖出：从当天最高回落这么多个点（相对买入价）卖
 REBOUND_MAX_HOLD_DAYS = 2      # 卖出：最多拿几个交易日，最后一天 14:55 清仓

@@ -16,6 +16,15 @@ from jevq.rules import custom as rules_custom
 from jevq.strategies import custom as custom_runtime
 
 
+def _rebound_volume_lines() -> list[str]:
+    """超跌反弹的成交量条件说明；REBOUND_MIN_SHRINK_DAYS = 0 表示不看成交量，不写这几行。"""
+    if config.REBOUND_MIN_SHRINK_DAYS <= 0:
+        return []
+    return [f"成交量：连续缩量（含今天、不看涨跌）至少 {config.REBOUND_MIN_SHRINK_DAYS} 天；"
+            f"盘中按已开盘分钟折算全天量，09:45 前不判断，尾盘最准",
+            f"连续缩量 {config.REBOUND_PRIORITY_SHRINK_DAYS} 天及以上的优先"]
+
+
 def builtin_summaries() -> list[dict]:
     """内置策略的只读说明（面板「规则」页左侧列表），数字取自配置常量，改参数时说明跟着变。"""
     from jevq.rules import board as board_rules
@@ -44,10 +53,13 @@ def builtin_summaries() -> list[dict]:
                  f"当前涨幅在 {config.BUY_ZONE_LOW:g}% ~ {config.BUY_ZONE_HIGH:g}% 之间",
                  f"近 5 日涨幅在 {config.REBOUND_RET5_LOW:g}% ~ {config.REBOUND_RET5_HIGH:g}% 之间",
                  f"近 {config.REBOUND_BOARD_LOOKBACK} 个交易日出现过 {config.REBOUND_MIN_BOARDS} 连板的排除",
-                 "按近 5 日涨幅从低到高排序（跌得多的优先）"]},
+                 *_rebound_volume_lines(),
+                 ("同档内" if config.REBOUND_MIN_SHRINK_DAYS > 0 else "")
+                 + "按近 5 日涨幅从低到高排序（跌得多的优先）"]},
              {"title": "买点", "lines": [
                  f"只看情绪：偏弱或冰点时只在尾盘 {hm(config.TAIL_BUY_START)}~{hm(config.BUY_END)} 买，否则盘中可买（不看外围）",
-                 f"主账户经 Jev 公告排雷 + 消息面判断，每分钟最多检查 {config.MAX_CHECKS_PER_TICK} 只"]},
+                 f"主账户经 Jev 公告排雷 + 消息面判断，每分钟最多检查 {config.MAX_CHECKS_PER_TICK} 只",
+                 f"同一只票当天卖出后，现价要比卖出价低 {config.REBOUND_REBUY_DROP:g}% 以上才允许再买（防止卖出后原价买回）"]},
              {"title": "卖出（次日起）", "lines": [
                  f"相对买入价亏到 {config.REBOUND_STOP:g}% 止损",
                  f"开盘 ≤ {config.REBOUND_LOW_OPEN:g}% 时，从当天最低拉起 {config.REBOUND_LOW_OPEN_BOUNCE:g} 个点必须卖",

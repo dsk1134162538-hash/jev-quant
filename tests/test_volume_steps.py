@@ -209,3 +209,46 @@ def test_preview_shows_vol_step_and_down_streak_values():
     assert rows["600001"]["连跌天"] == "3天"
     assert rows["600002"]["阶梯缩量(N=3)"] == "—"
     assert rows["600002"]["连跌天"] == "—"
+
+
+# ---- shrink_days：连续缩量天数（含今天），超跌反弹的成交量条件用 ----
+
+def _shrink(feat, volume, t=time(10, 0), ts=TODAY_TS):
+    from jevq.rules.metrics import shrink_days
+    return shrink_days(feat, quote("600001", volume=volume, ts=ts), t)
+
+
+def test_shrink_days_counts_consecutive_shrinks_including_today():
+    # 10:00 已过 30 分钟：12 / 30 × 240 = 96 手；400 > 300 > 200 > 150 > 96 连续缩了 4 天
+    assert _shrink({"vols": [400.0, 300.0, 200.0, 150.0], "vols_until": YESTERDAY}, volume=12) == 4
+
+
+def test_shrink_days_stops_where_the_chain_breaks():
+    # 96 < 150 < 200 < 300，再往前 300 > 100 是放量：只有 3 天
+    assert _shrink({"vols": [100.0, 300.0, 200.0, 150.0], "vols_until": YESTERDAY}, volume=12) == 3
+    # 今天折算 200 ≥ 昨天 150：今天没缩量，0 天
+    assert _shrink({"vols": [400.0, 300.0, 200.0, 150.0], "vols_until": YESTERDAY}, volume=25) == 0
+
+
+def test_shrink_days_is_capped_at_five():
+    feat = {"vols": [700.0, 600.0, 500.0, 400.0, 300.0, 200.0], "vols_until": YESTERDAY}
+    assert _shrink(feat, volume=12) == 5
+
+
+def test_shrink_days_counts_only_confirmed_steps_when_older_history_has_a_gap():
+    feat = {"vols": [None, 300.0, 200.0, 150.0], "vols_until": YESTERDAY}
+    assert _shrink(feat, volume=12) == 3
+
+
+def test_shrink_days_unknown_is_none():
+    assert _shrink({}, volume=12) is None                                            # 没有历史
+    assert _shrink({"vols": [], "vols_until": YESTERDAY}, volume=12) is None
+    feat = {"vols": [300.0, 200.0, 150.0], "vols_until": YESTERDAY}
+    assert _shrink(feat, volume=12, t=time(9, 44)) is None                           # 09:45 前不折算
+    assert _shrink({"vols": [300.0, 200.0, 150.0], "vols_until": "2026-09-25"}, volume=12) is None   # 行情比历史还旧
+
+
+def test_shrink_days_uses_stored_volume_when_quote_is_last_history_day():
+    # 周末/盘前预览：行情就是历史最后一天，用库里那天的全天量当「今天」，与 vol_step 取值函数同口径
+    feat = {"vols": [400.0, 300.0, 200.0, 150.0], "vols_until": "2026-09-24"}
+    assert _shrink(feat, volume=10) == 3
