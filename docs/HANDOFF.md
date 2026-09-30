@@ -58,8 +58,15 @@ A 股主板（60/00）T+1 模拟盘：规则选股 → Jev（TypeSafe System One
     2. `_copy_table_via_clipboard` 和消息级复制路径的 `max_attempts` 从 `2` 提到 `8`。ddddocr 单次 40-50%，2 次累积 64-75%（不够），8 次累积 96-99.6%。
     3. `task_queue.query_timeout_seconds` 默认 `30 → 60`。8 次外层重试单次 3-5s，最坏 30-40s，30s 会撞 `TASK_TIMEOUT`（--n 10 第一轮实测遇到过 1 次）。
   - **理论天花板**：ddddocr 通用模型的单次准确率就是 ~45%。要更高（99.9%+）得训自定义模型（拿 dj 账户的真实样本 + ddddocr 训练脚本），或换更重的 OCR。当前 96.7% 对模拟盘演练完全够用；实盘上线前若要更稳，让读失败自动暂停 + 微信提醒即可（executor 已有）。
-  - **原 easytrader 那 5 次实测的 `UNKNOWN_HEADER` / "临时 xls 不存在"**：极大概率是网关先跑触发了验证码弹窗（挂住抢焦点），easytrader 后跑的 Ctrl+S 落不到交易窗口。10-08 演练用当前默认（`config.LIVE_BROKER=gateway`）跑通即可，`UNKNOWN_HEADER` 是否真的存在于东亚前海的表头，届时看日志再说。
+  - **easytrader 备选层已实测排除（2026-09-30 15:35，停网关后跑 `read --broker easytrader --n 5`）**：balance 2/5，positions 0/5、orders_today 0/5，报 `[Errno 2] No such file or directory ...tmp*.xls`（Ctrl+S 没导出文件），**不是 `UNKNOWN_HEADER`**，也不是网关抢焦点——网关停着照样失败。下单层定为 gateway，不用补 `_pick` 别名。
   - **case_mode 可选切换**：现在默认 `as_is`（ddddocr 原样输出）已经跑通。若哪天成功率下滑、日志显示大小写方向单一（比如全被打回小写），改 `E:\xiadan-gateway\config\app_config.json` 的 `"ocr": {"case_mode": "upper"}` 或 `"lower"` 试。
+  - **✅ 自训练验证码模型已部署（2026-09-30 晚）**（设计 `docs/specs/2026-09-30-ocr-custom-training-design.md`，补丁里带了加载逻辑）：
+    - **家里实测**：`read --n 30` 三接口 **90/90 成功**，平均耗时 balance 1.8s / positions 5.7s / orders_today 5.2s（通用模型时代 positions ~12.5s、orders ~20s）；单次验证码通过率约 **87%**（132/151，通用模型约 38%）。离线 46 张真实验证图：自训练 95.7%，通用模型 50%。
+    - **部署方式**：模型 `E:\xiadan-gateway\assets\custom_ocr\{model.onnx,charsets.json}`（2.5MB，**本机资产，不入库**）；网关 `ocr.py` 有这两个文件就用它，没有就回退通用模型（删文件+重启网关即回退）。日志出现"ddddocr 主引擎就绪（自训练模型）"即生效。字符集 52 个（数字 2-8，字母去掉 I/O/i/j/l/o/g）——同花顺验证码本来就不出 0/1/9/I/O/l，若哪天出现新字符，模型永远读不对，需重训。
+    - **怎么训的（可复现）**：`E:\ocr-train\`（本机，不入库）：dddd_trainer + CPU torch；真实样本靠网关采集钩子攒（`XIADAN_CAPTCHA_HARVEST=1` 时每次提交的验证码存进 `assets/captcha_harvest/`，`ok_*` = 服务端通过，文件名里就是真值；`bad_*` = 被拒，真值要人标）；真实样本只有 ~600 张，直接训不出来，用 Windows 字体合成 4.8 万张（`tools/gen_synth.py`）+ 真实图增广一起训，图高 32，约 1.4 万步。**dddd_trainer 自带的 onnx 导出（输出 argmax 索引）与网关装的 ddddocr 1.6.1 不兼容**，用 `tools/export_ckpt.py`（输出 logits、归一化烤进图里）导出。
+    - **标注不能全信**：bad 样本的真值是 Claude 目视标的（在已知真值的 24 张上盲标对 22 张，错的是 x/z 大小写），约 9 张看不清跳过；验证集 46 张里的 2 个"错误"都是大小写存疑。
+    - **补丁现在含**：采集钩子、自训练加载、`get_clipboard` 遇 CF_TEXT 字节按 gbk 解码（修 `a bytes-like object is required, not 'str'`，之前 positions 偶发 INTERNAL_ERROR）、历史难样本回归测试在装了自训练模型时只查格式。
+    - **采集钩子继续用**：演练期间网关带 `XIADAN_CAPTCHA_HARVEST=1` 跑，攒的 ok/bad 数即单次通过率监控，也是下一轮重训的数据；开机自启的网关默认不带这个变量（`E:\ocr-train\start_gateway_harvest.bat` 是带变量的启动方式，用 WMI 隐藏窗口起，别用会开黑色 cmd 窗口的方式）。
   - 客户端设置备忘（不受影响）：「查询委托时显示撤单记录」= 否（第 7 步第④项按这个解读）；默认买卖价格「卖一价/买一价」下单前清空；「是否隐藏个人信息」= 是。
   - **后续可选**（不阻塞演练/上线）：问客户经理能否给账户关掉复制数据验证码；开通 QMT/miniQMT 官方程序化接口（最稳，届时换下单层）。程序化交易报备顺带一起问。
 - 分支：全部实盘代码在 `live-trading-6luqxt`（已合入 lowbuy-removal、live-extras、live-web）。**合进 master 必须先问用户**；home_install 装的是 master，所以演练前要合。旧分支 live-trading / lowbuy-removal / live-extras / live-web 已被它包含。
@@ -75,7 +82,9 @@ A 股主板（60/00）T+1 模拟盘：规则选股 → Jev（TypeSafe System One
 ## 待办（按时间）
 1. **约 2026-10-03：公告口径复盘。** 拿这一周被公告否决的主账户候选，对比影子账户对这些票的后续涨跌，决定要不要放宽到 B 口径（只拦 Jev 明显判「高」的）。复盘报告里有「公告风险统计」。
 2. **实盘上线路径**（验证码问题 2026-09-30 已通过 ddddocr 补丁解掉，家里 --n 10 三次实测 97.8%，见上方「✅ 已解」条）：终审发现修完 → 用户同意后合进 master → 家里 `home_install.py` → `live_probe.py` 实测定下单层 → 10-08、10-09、10-12 演练（dryrun）→ 用户报备确认 → 最早 10-13 本机切 live。每个演练日收盘后看复盘报告「实盘跟单（演练）」段和微信小结。
-3. **OCR 自定义模型训练**（`docs/specs/2026-09-30-ocr-custom-training-design.md`，可选、不阻塞实盘）：目前 ddddocr 通用模型单次 ~45%（8 次外层重试兜到 97.8%）。演练三天期间收样本 500+，dj 手工标注 1 小时，训 1-2 小时 → 单次 ≥98%（外层重试变兜底不常触发），平均查询耗时从 13-20s 降到 ≤8s。10-15 前可完成部署；上实盘不必等它，但等到之后实盘更稳。
+3. **自训练验证码模型（2026-09-30 已完成部署，见上方「✅ 自训练验证码模型已部署」）**。后续可选：演练三天攒的 `captcha_harvest` 样本再训一轮，单次通过率 87% → 95%+；训练要点见那条。
+   **家里状态（2026-09-30 晚）**：`home_install.py` 已跑（授权后），`E:\jev-live` 里 daemon.py 和 live.py 在跑、模式 off，开机启动项已建；桌面有完整面板快捷方式「Jev低吸模拟盘」（名字是旧的，指向 `E:\jev-live\desktop.py`，没打开验证过）；PushPlus token 和 Tailscale（电脑 100.72.84.113，手机已连）已配；网关已停（要用双击 `E:\xiadan-gateway\start_gateway.bat`）。**没做**：a–e（交易时段 order-test 等）和 g（杀网关看自动暂停）——都要盘中，等 10-08 演练当天在场做；g 需要 live.py 在 dryrun 且当天 trading_day 标记存在。
+   **发现待修（没改）**：① `jevq/sync/deploy.py` 第 29/36/40 行 `subprocess.run(text=True)` 没指定编码，中文 Windows 上按 gbk 解码 UTF-8 输出会抛 `UnicodeDecodeError`（daemon.log 里见过），加 `encoding="utf-8", errors="replace"`；② `scripts/live_install.py` 的 `stop_old_gateway` 按命令行含网关目录找进程，但开机自启的网关命令行是相对路径 `.venv\Scripts\python.exe main.py`，找不到，重启网关请按端口 5000 的监听 PID 杀（连父进程 uv shim 一起）；③ 可用资金一直读到 0.0，而持仓在（`002655 600 600`），确认是账户里真没有现金还是解析问题；④ 电脑要关屏保/睡眠/自动锁屏，否则模拟点击打不进客户端。
 4. 本机有未提交代码时 `git rebase` 直接失败 → 推送「同步冲突」提醒，和日志「数据仍会正常推送」不符（影响小）。
 5. 卖飞统计（`sell_followups`，报告「卖飞回看」）攒两三周后，用来评估各策略卖出参数。
 6. 新指标可用：连涨天/连跌天（含今天）、阶梯缩量/阶梯放量（N=2～5，含今天，按已开盘分钟折算全天量，09:45 前不算）。按 09-24 收盘算，3 阶缩量命中约 596 只，单用太松，适合组合。
