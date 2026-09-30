@@ -149,6 +149,11 @@ def order_from_row(row: dict) -> OrderRow:
                     time=t, cancelled=int(_num(row[cancelled_key])) if cancelled_key else 0)
 
 
+def orders_from_rows(rows: list[dict]) -> list[OrderRow]:
+    """当日委托原始行 → OrderRow，撤单记录行先排除（不是委托）。两个适配器的 orders_today 和家里实测脚本共用。"""
+    return [order_from_row(r) for r in rows if not is_cancel_row(r)]
+
+
 def cash_from_balance(d: dict) -> float:
     key = _pick(d, "可用金额", "可用资金", "可用余额")
     if key is None:

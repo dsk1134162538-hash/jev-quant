@@ -100,6 +100,15 @@ def test_orders_today_skips_cancel_record_rows():
     assert orders[0].time == "09:31:05"      # 整数读掉了前导 0 的时间也补回来了
 
 
+def test_raw_orders_today_returns_unparsed_rows_including_cancel_records():
+    user = FakeUser()
+    user._today_entrusts = [
+        {"委托时间": 93105, "证券代码": "600001", "操作": "买入", "合同编号": "7"},
+        {"委托时间": 93200, "证券代码": "600001", "操作": "撤买", "合同编号": "8"},
+    ]
+    assert _broker(user).raw_orders_today() == user._today_entrusts
+
+
 # ---- place ----
 
 def test_place_buy_rounds_price_and_returns_entrust_no():

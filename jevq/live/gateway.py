@@ -4,8 +4,7 @@ import uuid
 
 import requests
 
-from jevq.live.broker import (BrokerError, Holding, OrderRow, cash_from_balance, holding_from_row, is_cancel_row,
-                              order_from_row)
+from jevq.live.broker import BrokerError, Holding, OrderRow, cash_from_balance, holding_from_row, orders_from_rows
 
 _CODE_RE = re.compile(r"^(60|00)\d{4}$")
 
@@ -66,9 +65,13 @@ class GatewayBroker:
                              extra_headers={"Idempotency-Key": uuid.uuid4().hex})
         return data.get("entrust_no")
 
+    def raw_orders_today(self) -> list[dict]:
+        """当日委托的原始行：不解析、不过滤撤单记录行。家里实测脚本要看真实的委托时间原文、合同编号、
+        撤单会不会单独成一行。"""
+        return self._request("GET", "/orders/pending")
+
     def orders_today(self) -> list[OrderRow]:
-        rows = self._request("GET", "/orders/pending")
-        return [order_from_row(r) for r in rows if not is_cancel_row(r)]      # 撤单记录行不是委托
+        return orders_from_rows(self.raw_orders_today())      # 撤单记录行不是委托，orders_from_rows 会排除
 
     def cancel_last(self) -> bool:
         data = self._request("POST", "/orders/cancel-all", json={"type": "L"})

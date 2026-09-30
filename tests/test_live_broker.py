@@ -4,7 +4,7 @@ from datetime import datetime
 import pytest
 
 from jevq.live.broker import (BrokerError, Holding, OrderRow, REJECT_CODES, INFLIGHT_CODES,
-                              holding_from_row, is_cancel_row, order_from_row, cash_from_balance)
+                              holding_from_row, is_cancel_row, order_from_row, orders_from_rows, cash_from_balance)
 from live_fakes import FakeBroker, FakeClock, FakeNotifier
 
 
@@ -354,6 +354,16 @@ def test_is_cancel_row_false_for_ordinary_orders(value):
 
 def test_is_cancel_row_false_without_a_side_column():
     assert is_cancel_row({"foo": "撤单"}) is False
+
+
+def test_orders_from_rows_parses_and_drops_cancel_records():
+    rows = [{"委托时间": "93105", "证券代码": "600001", "操作": "买入", "委托价格": "9.5",
+             "委托数量": "100", "合同编号": "1", "备注": "已撤"},
+            {"委托时间": "93200", "证券代码": "600001", "操作": "撤买", "委托价格": "9.5",
+             "委托数量": "100", "合同编号": "2", "备注": "已撤"}]
+    orders = orders_from_rows(rows)
+    assert [(o.entrust_no, o.time) for o in orders] == [("1", "09:31:05")]
+    assert orders_from_rows([]) == []
 
 
 # ---- cash_from_balance ----
