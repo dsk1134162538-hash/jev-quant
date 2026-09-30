@@ -138,3 +138,10 @@ def test_start_bat_runs_the_gateway_from_its_own_venv(tmp_path):
     text = bat.read_bytes().decode("ascii")
     assert ".venv\\Scripts\\python.exe main.py" in text and "\r\n" in text
     assert "scripts" not in text.lower().replace(".venv\\scripts", "")   # 绝不碰网关仓库 scripts/ 下会下单的脚本
+
+
+def test_stop_gateway_script_matches_by_dir_and_by_listening_port_and_only_kills_python(tmp_path):
+    ps = live_install.stop_gateway_script(tmp_path, 5000)
+    assert str(tmp_path) in ps                       # 命令行带绝对路径的旧网关
+    assert "Get-NetTCPConnection -LocalPort 5000 -State Listen" in ps   # 开机自启的网关命令行是相对路径
+    assert ps.count("-like 'python*'") == 3          # 目录匹配、监听者、父进程都只认 python，绝不误杀别的进程

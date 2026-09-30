@@ -1,6 +1,7 @@
 from datetime import date
 from pathlib import Path
 
+from jevq.sync import deploy
 from jevq.sync.deploy import sync_and_deploy
 
 TODAY = date(2026, 9, 23)
@@ -304,3 +305,12 @@ def test_add_skipped_when_no_data_paths_exist(tmp_path):
     sync_and_deploy(tmp_path, TODAY, lambda m: None, FakeNotifier(), Path("python"),
                     "abc1234", run_git=run_git, run_tests=lambda *a: (True, "ok"))
     assert not any(c[0] == "add" for c in run_git.calls)
+
+
+def test_real_runners_decode_utf8_and_never_raise_on_bad_bytes(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *a, **k: seen.append(k) or type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+    deploy._real_run_git(["status"], tmp_path)
+    deploy._real_run_tests(Path("python"), tmp_path, install_requirements=True, log=lambda m: None)
+    assert len(seen) == 3
+    assert all(k["encoding"] == "utf-8" and k["errors"] == "replace" for k in seen)   # 中文 Windows 默认 gbk，解 UTF-8 输出会抛 UnicodeDecodeError

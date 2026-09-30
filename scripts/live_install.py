@@ -194,10 +194,25 @@ def create_shortcut(bat: Path) -> None:
     print(f"已建开机启动项：{SHORTCUT}")
 
 
+def stop_gateway_script(gw: Path, port: int) -> str:
+    """开机自启的网关命令行是相对路径（.venv\\Scripts\\python.exe main.py），光按目录匹配找不到，
+    所以再按监听端口找：只杀 python 进程，连同 python 父进程（uv 的启动壳）一起。"""
+    return (
+        "$ids = New-Object 'System.Collections.Generic.HashSet[int]';"
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'python*' -and $_.CommandLine -and "
+        f"$_.CommandLine.Contains('{gw}') }} | ForEach-Object {{ [void]$ids.Add($_.ProcessId) }};"
+        f"Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ "
+        "$p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue;"
+        "if ($p -and $p.ProcessName -like 'python*') { [void]$ids.Add($p.Id);"
+        "$pp = (Get-CimInstance Win32_Process -Filter \"ProcessId=$($p.Id)\").ParentProcessId;"
+        "$q = Get-Process -Id $pp -ErrorAction SilentlyContinue;"
+        "if ($q -and $q.ProcessName -like 'python*') { [void]$ids.Add($pp) } } };"
+        "foreach ($i in $ids) { Stop-Process -Id $i -Force -ErrorAction SilentlyContinue; $i }"
+    )
+
+
 def stop_old_gateway(gw: Path) -> None:
-    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'python*' -and $_.CommandLine -and "
-          f"$_.CommandLine.Contains('{gw}') }} | ForEach-Object {{ "
-          "Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }")
+    ps = stop_gateway_script(gw, PORT)
     out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True).stdout.split()
     print(f"已结束旧网关进程：{out}" if out else "没有在跑的旧网关")
 

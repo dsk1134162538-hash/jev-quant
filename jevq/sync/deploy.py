@@ -26,18 +26,21 @@ _COMMIT_TRAILER = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 
 def _real_run_git(args: list[str], cwd: Path):
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=120)
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=120)
 
 
 def _real_run_tests(python_exe: Path, cwd: Path, install_requirements: bool, log) -> tuple[bool, str]:
     if install_requirements:
         log("requirements.txt 有变化，先在隔离目录安装依赖")
         r = subprocess.run([str(python_exe), "-m", "pip", "install", "-r", "requirements.txt"],
-                           cwd=cwd, capture_output=True, text=True, timeout=300)
+                           cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=300)
         if r.returncode != 0:
             return False, ("依赖安装失败：" + r.stdout + r.stderr)[-4000:]
     r = subprocess.run([str(python_exe), "-m", "pytest", "-q", "-p", "no:cacheprovider"],
-                       cwd=cwd, capture_output=True, text=True, timeout=900)
+                       cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=900)
     return r.returncode == 0, (r.stdout + r.stderr)[-4000:]
 
 
