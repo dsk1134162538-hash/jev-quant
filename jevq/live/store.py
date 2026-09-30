@@ -180,6 +180,18 @@ def orders_on(conn: sqlite3.Connection, day: date) -> list[dict]:
     return _order_rows(conn, "substr(ts, 1, 10)=?", (day.isoformat(),))
 
 
+_INTENT_COLUMNS = ("id", "ts", "source", "side", "code", "name", "sim_price", "sim_shares", "reason",
+                   "status", "note", "handled_ts")
+
+
+def intents_on(conn: sqlite3.Connection, day: date) -> list[dict]:
+    """当天全部意图（不限 status），供手机页显示「今天被跳过的信号」等只读汇总用。"""
+    rows = conn.execute(
+        f"SELECT {', '.join(_INTENT_COLUMNS)} FROM live_intents "
+        "WHERE substr(ts, 1, 10)=? ORDER BY id", (day.isoformat(),)).fetchall()
+    return [dict(zip(_INTENT_COLUMNS, row)) for row in rows]
+
+
 def sending_orders(conn: sqlite3.Connection) -> list[dict]:
     return _order_rows(conn, "status='sending'", ())
 
