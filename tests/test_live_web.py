@@ -282,7 +282,7 @@ class _TrackedConns:
         self.opened = []
 
     def __call__(self):
-        c = sqlite3.connect(self.path, timeout=5)
+        c = sqlite3.connect(self.path, timeout=5, check_same_thread=False)    # 测试线程要能检查它关没关
         self.opened.append(c)
         return c
 
@@ -290,7 +290,8 @@ class _TrackedConns:
         for c in self.opened:
             try:
                 c.execute("SELECT 1")
-            except sqlite3.ProgrammingError:
+            except sqlite3.ProgrammingError as e:
+                assert "closed" in str(e)
                 continue
             return False
         return True
@@ -319,18 +320,18 @@ def test_close_conn_gives_each_request_its_own_connection_and_closes_it(file_db)
     assert factory.all_closed()
 
 
-def test_close_conn_closes_connection_even_when_status_raises(file_db):
+def test_close_conn_closes_connection_even_when_the_handler_raises(file_db, monkeypatch):
+    from jevq.live import web
+
+    def boom(conn, now, quotes):
+        raise RuntimeError("读库炸了")
+
+    monkeypatch.setattr(web, "status", boom)
     factory = _TrackedConns(file_db)
-
-    def boom(codes):
-        raise RuntimeError("行情炸了")
-
-    with running_server(None, factory=factory, close_conn=True, quotes=boom) as base_url:
-        db_conn = sqlite3.connect(file_db)
-        live_store.put_position(db_conn, LivePosition("600001", 100, 1005.0, 10.0, date(2026, 9, 29), 10.0))
-        db_conn.close()
-        assert requests.get(f"{base_url}/api/status").status_code == 200    # 行情失败被 status() 吞掉
-    assert factory.all_closed()
+    with running_server(None, factory=factory, close_conn=True) as base_url:
+        with pytest.raises(requests.exceptions.ConnectionError):
+            requests.get(f"{base_url}/api/status")      # 处理线程异常，服务端直接断开连接
+    assert len(factory.opened) == 1 and factory.all_closed()
 
 
 def test_shared_connection_is_not_closed_by_default(conn):
