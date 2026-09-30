@@ -4,6 +4,11 @@
 
 两条底线照旧：终态不许猜；一次尝试最多一次 `place()`。另外：**暂停中完全不调 broker**（不下单、不撤单、不查询）。
 
+## 现状（Task 4 之后，HEAD 615e7ee）
+- `step()` 现在是：心跳 → off → 交易日 → `if paused: return` → `_note_sell_intents` → `_align_sells` → 买入意图 → `_settle_sells_after_close`。本任务把 `if paused: return` 换成下面第 4–7 步。
+- 已有：`_to_sell(now)`、`_note_sell_intents(now)`、`_align_sells(now)`（含跨天清零）、`_settle_sells_after_close(now)`（`LIVE_SELL_SETTLE` 15:01 之后，完成后写 `sell_settle_day`）、`_can_cancel_by(t)`、`_reconcile_sending_orders()`（今天的 sending/submitted 行；卖单还 open 不撤）、`_read`、`_notify(title, content, key)`、`_auto_pause`（已是 auto 就不重复；manual 会被升级成 auto）。
+- `_buy` 里读到的 `client_positions`、`_sell_round` 里读到的 `holdings` 可以传给 `_reconcile` 复用（下单前对账）。
+
 ## store.py
 - `pause()` / `clear_pause()` 改成所有键写完只 `commit` 一次（页面线程和执行器共用同一个连接，避免读到写了一半的暂停状态）。行为不变，现有测试保持绿。
 
@@ -21,7 +26,7 @@
 11. remote 意图收尾：有 new 的 remote 意图且 `live_positions` 为空 → 全部 done「已卖完」，`pause(今天 LIVE_PAUSE_CLOSE, "立即卖出", "manual")`。程序持仓还在（含当天买的卖不了）→ 保持 new；当天买的那只通知一次（key `sell_all_t1:<code>`）「X 今天买的，下个交易日开盘卖」。
 12. 定时对账（只在 `LIVE_SELL_WINDOWS` 内）：程序有持仓 → 距上次 ≥ `LIVE_RECONCILE_HOLDING` 分钟做 `_reconcile(now)`；空仓 → 距上次 ≥ `LIVE_RECONCILE_IDLE` 分钟 `_read(broker.balance)` 确认在线（失败只计数）。上次时间放内存（`self._last_reconcile`），启动时为 None（立即做一次）。
 13. Task 4 的收盘后结算。
-14. 收盘小结：`now.time() >= LIVE_CLOSE_SUMMARY` 且 `close_summary_day != today` 且收盘后结算已完成（今天没有 submitted 卖单，或 `sell_settle_day == today`）→ 写 `close_summary_day`，通知「收盘小结」：今天实盘委托笔数、成交笔数、跳过笔数（按 note 分组）、程序持仓（代码、股数、成本价）、模拟 `LIVE_ACCOUNT` 今天成交笔数（`fills` 表）。不读 broker。
+14. 收盘小结：`now.time() >= LIVE_CLOSE_SUMMARY` 且 `close_summary_day != today` 且收盘后结算已完成（今天没有 submitted 卖单，或 `sell_settle_day == today`；结算一直读不到的话到 `LIVE_CLOSE_SUMMARY_LATEST`（新常量 `time(15, 10)`，放 config「实盘跟单」段）也照发，小结里注明「有卖单没结算」）→ 写 `close_summary_day`，通知「收盘小结」：今天实盘委托笔数、成交笔数、跳过笔数（按 note 分组）、程序持仓（代码、股数、成本价）、模拟 `LIVE_ACCOUNT` 今天成交笔数（`fills` 表）。不读 broker。
 
 `_after_resume(now)`：先做 sending/submitted 核对（现有 `_reconcile_sending_orders`，读不到 → 它自己会自动暂停，然后直接返回），再 `_reconcile(now)`；之后本轮继续往下走（卖出对齐等）。
 
