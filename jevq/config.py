@@ -121,7 +121,10 @@ LIVE_READ_FAIL_PAUSE = 3        # 连续读取失败几次自动暂停
 LIVE_REDUCE_CONFIRM = 60        # 秒：客户端股数变少，两次读数至少隔这么久才减账
 LIVE_BUY_WINDOWS = ((time(9, 30), time(11, 30)), (time(13, 0), time(14, 57)))
 LIVE_SELL_WINDOWS = ((time(9, 30), time(11, 30)), (time(13, 0), time(15, 0)))
-LIVE_NO_CANCEL_AFTER = time(14, 57)   # 收盘集合竞价不能撤单
+# 连续竞价：只有这里面能撤单（午休、14:57 后的收盘集合竞价都撤不了）
+LIVE_CANCEL_WINDOWS = ((time(9, 30), time(11, 30)), (time(13, 0), time(14, 57)))
+LIVE_ORDER_MARGIN = 20          # 秒：网关下单/查询/撤单的耗时余量，撤单至少要在连续竞价结束前这么久发出
+LIVE_SELL_SETTLE = time(15, 1)  # 收盘后结算挂着的卖单（留 1 分钟等集合竞价成交回显）
 LIVE_PAUSE_CLOSE = time(15, 0)        # 「暂停到收盘」的截止
 LIVE_SELF_CHECK = time(9, 5)
 LIVE_CLOSE_SUMMARY = time(15, 2)

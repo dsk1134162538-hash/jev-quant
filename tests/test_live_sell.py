@@ -379,21 +379,100 @@ def test_reads_failing_after_place_never_guess_cancelled_or_place_again():
     assert live_store.paused(c) is not None
 
 
-def test_rehang_is_not_placed_outside_sell_window():
+def test_morning_sell_not_placed_when_wait_and_cancel_would_run_into_lunch():
+    """午休撤不了单：上午等 20 秒 + 撤单来不及在 11:30 前做完就不下（也不重挂），留到下午。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 11, 29))
+    setup_ready(c, clock)
+    hold(c, shares=500)
+    broker = FakeBroker(clock, holdings={"600001": [500, 500]})
+    broker.fill_mode = "none"
+    cancel_at = []
+    orig_cancel = broker.cancel_last
+
+    def record_cancel():
+        cancel_at.append(clock.now())
+        return orig_cancel()
+
+    broker.cancel_last = record_cancel
+    ex = make(c, broker, clock=clock)
+    ex.step()
+    assert len(places(broker)) == 1                 # 11:29 下的来得及撤；撤完再挂就会撞上午休：不重挂
+    assert sell_orders(c)[0]["status"] == "cancelled"
+    assert cancel_at and all(t < datetime(2026, 9, 29, 11, 30) for t in cancel_at)
+
+    clock.t = datetime(2026, 9, 29, 11, 29, 45)
+    ex.step()
+    assert len(places(broker)) == 1
+
+    clock.t = datetime(2026, 9, 29, 13, 0)
+    ex.step()
+    assert len(places(broker)) == 1 + (config.LIVE_SELL_ROUNDS - 1)   # 下午开盘接着卖，轮数接着数
+    assert live_store.paused(c) is None
+
+
+def test_morning_sell_at_1129_45_waits_for_afternoon():
     c = conn()
     clock = FakeClock(datetime(2026, 9, 29, 11, 29, 45))
+    setup_ready(c, clock)
+    hold(c, shares=500)
+    broker = FakeBroker(clock, holdings={"600001": [500, 500]})
+    make(c, broker, clock=clock).step()
+    assert places(broker) == []
+
+
+def test_afternoon_sell_whose_wait_ends_near_1457_is_left_for_the_closing_auction():
+    """14:56:30 下单，等完 20 秒是 14:56:50——再撤就赶上 14:57 收盘集合竞价（撤不了），不撤。"""
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 14, 56, 30))
+    setup_ready(c, clock)
+    hold(c, shares=500)
+    broker = FakeBroker(clock, holdings={"600001": [500, 500]})
+    broker.fill_mode = "none"
+    make(c, broker, clock=clock).step()
+
+    assert len(places(broker)) == 1
+    assert ("cancel_last",) not in broker.calls
+    assert sell_orders(c)[0]["status"] == "submitted"
+    assert live_store.paused(c) is None
+
+
+def test_cancel_last_raising_never_escapes_step_and_never_guesses():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 10, 0))
+    setup_ready(c, clock)
+    hold(c, shares=500)
+    broker = FakeBroker(clock, holdings={"600001": [500, 500]})
+    broker.fill_mode = "none"
+
+    def boom():
+        broker.calls.append(("cancel_last",))
+        raise BrokerError("撤单超时", "TASK_TIMEOUT")
+
+    broker.cancel_last = boom
+    make(c, broker, clock=clock).step()   # 不应该向外抛异常
+
+    assert len(places(broker)) == 1
+    assert sell_orders(c)[0]["status"] == "submitted"
+    assert paused_reason(c)[0] == "auto"
+
+
+def test_close_settle_waits_a_minute_after_the_close():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 14, 58))
     setup_ready(c, clock)
     hold(c, shares=500)
     broker = FakeBroker(clock, holdings={"600001": [500, 500]})
     broker.fill_mode = "none"
     ex = make(c, broker, clock=clock)
     ex.step()
-    assert len(places(broker)) == 1                 # 撤完已经过了 11:30：不重挂
+    clock.t = datetime(2026, 9, 29, 15, 0, 30)   # 集合竞价成交可能还没回显
+    ex.step()
+    assert sell_orders(c)[0]["status"] == "submitted"
+    clock.t = datetime(2026, 9, 29, 15, 1)
+    ex.step()
     assert sell_orders(c)[0]["status"] == "cancelled"
 
-    clock.t = datetime(2026, 9, 29, 13, 0)
-    ex.step()
-    assert len(places(broker)) == 1 + (config.LIVE_SELL_ROUNDS - 1)   # 下午开盘接着卖，轮数接着数
 
 
 # ---- 14:57 之后不撤单 / 收盘结算 ----

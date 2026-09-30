@@ -5,7 +5,7 @@
 真金白银的两条底线：
   1. 委托最终状态只在「成功读到 + broker 判定它不再 open」时才落成 filled/partial/cancelled 这类终态；
      读不到、或读到了但还 open，一律不许瞎猜，维持 submitted 并 _auto_pause，交给人工核对（见 _wait_fill /
-     _cancel_and_confirm）。唯一的例外是收盘后结算（_settle_sells_after_close）：15:00 后成交数已定。
+     _cancel_and_confirm）。唯一的例外是收盘后结算（_settle_sells_after_close）：收盘后成交数已定。
   2. 一个意图 / 一次卖出尝试最多只产生一次 place() 调用：add_order(sending) 后立刻 finish_intent（买），
      place() 之后不管抛什么异常都不放它跑出 _buy_live / _place_sell；_buy 顶部另外兜底一次「这个意图是不是
      已经有委托了」，_sell 在今天这只还有 sending 卖单时绝不再下。
@@ -89,6 +89,9 @@ class Executor:
         if not self._in_buy_window(now):
             live_store.finish_intent(conn, intent.id, "skipped", "不在买入时段", now)
             return
+        if not self._can_cancel_by(now + timedelta(seconds=config.LIVE_BUY_WAIT)):
+            live_store.finish_intent(conn, intent.id, "skipped", "临近休市，来不及等成交和撤单", now)
+            return
         if live_store.paused(conn) is not None:
             live_store.finish_intent(conn, intent.id, "skipped", "暂停中", now)
             return
@@ -139,6 +142,11 @@ class Executor:
     def _in_buy_window(self, now: datetime) -> bool:
         t = now.time()
         return any(a <= t < b for a, b in config.LIVE_BUY_WINDOWS)
+
+    def _can_cancel_by(self, t: datetime) -> bool:
+        """到 t 时刻还来得及撤单：t 再往后 LIVE_ORDER_MARGIN 秒仍在连续竞价里（午休、收盘集合竞价撤不了单）。"""
+        start, end = t.time(), (t + timedelta(seconds=config.LIVE_ORDER_MARGIN)).time()
+        return any(a <= start and end < b for a, b in config.LIVE_CANCEL_WINDOWS)
 
     def _buy_dryrun(self, intent: Intent, now: datetime, price: float, shares: int) -> None:
         """spec：演练的持仓按模拟成交价记入 live_positions（不是限价，限价只用来算股数）。"""
@@ -263,7 +271,11 @@ class Executor:
                             since_ts: datetime, matched):
         """等够时间还没等到终态：核对撤单（_cancel_last_checked 会自己在核对不上/读不到时暂停），再确认。
         真实撤单是异步的（「已报待撤」仍算 open）：撤单发出去了就每 LIVE_POLL 秒读一次，最多 LIVE_CANCEL_WAIT 秒；
-        没发出去只读一次。只有读成功且显示不再 open，才算数；否则 (matched, False)。"""
+        没发出去只读一次。只有读成功且显示不再 open，才算数；否则 (matched, False)。
+        已到午休/收盘集合竞价（撤不了）→ 不撤，自动暂停交给人工。"""
+        if not self._can_cancel_by(self.clock()):
+            self._auto_pause(f"来不及撤单：{code} 这笔委托还挂着，已到午休或收盘集合竞价，请在 App 里处理")
+            return matched, False
         row = {"entrust_no": entrust_no, "code": code, "side": side, "price": price, "shares": shares}
         cancel_sent = self._cancel_last_checked(row, since_ts)
         deadline = self.clock() + timedelta(seconds=config.LIVE_CANCEL_WAIT)
@@ -314,7 +326,10 @@ class Executor:
         if not matches:
             self._auto_pause("撤单前核对不上：最后一笔不是程序的委托")
             return False
-        return self.broker.cancel_last()
+        try:
+            return self.broker.cancel_last()
+        except Exception:
+            return True   # 撤单结果不明：当作可能发出去了，交给调用方轮询确认（确认不了会自动暂停）
 
     # ---- 卖出（按状态对齐）----
 
@@ -408,8 +423,14 @@ class Executor:
     def _sell_round(self, code: str) -> bool:
         """一轮卖出（最多一次 place）。返回 True = 撤完立即重挂下一轮；False = 这次尝试结束。"""
         conn = self.conn
-        if not self._in_sell_window(self.clock()):
+        t = self.clock()
+        if not self._in_sell_window(t):
             self._retry_later(code)   # 等待/撤单期间过了收市点：不在时段外重挂
+            return False
+        if t.time() < config.LIVE_CANCEL_WINDOWS[0][1] and \
+                not self._can_cancel_by(t + timedelta(seconds=config.LIVE_SELL_WAIT)):
+            # 上午等完再撤会撞上午休（撤不了）：留到下午。下午临近 14:57 照下，没卖完的进收盘集合竞价
+            self._retry_later(code)
             return False
         pos = live_store.positions(conn).get(code)
         if pos is None or pos.shares <= 0:
@@ -466,8 +487,8 @@ class Executor:
                                           config.LIVE_SELL_WAIT)
         if closed:
             self._settle_sell(row, matched)
-        elif self.clock().time() >= config.LIVE_NO_CANCEL_AFTER:
-            if matched is not None:   # 收盘集合竞价不能撤：留 submitted，之后由第 1 步跟踪、收盘后结算
+        elif not self._can_cancel_by(self.clock()):
+            if matched is not None:   # 收盘集合竞价撤不了：留 submitted，之后由第 1 步跟踪、收盘后结算
                 self._record_sell_fill(row, matched)
             self._retry_later(code)
             return False
@@ -555,8 +576,8 @@ class Executor:
         return row
 
     def _settle_sells_after_close(self, now: datetime) -> None:
-        """15:00 后成交数已是最终值：读一次当日委托，把今天还 submitted 的卖单直接落终态（没卖完的部分作废）。"""
-        if now.time() < config.LIVE_SELL_WINDOWS[-1][1]:
+        """收盘后（LIVE_SELL_SETTLE，留 1 分钟等集合竞价成交回显）成交数已是最终值：读一次当日委托，把今天还 submitted 的卖单直接落终态（没卖完的部分作废）。"""
+        if now.time() < config.LIVE_SELL_SETTLE:
             return
         today = now.date()
         if live_store.get_state(self.conn, "sell_settle_day") == today.isoformat():

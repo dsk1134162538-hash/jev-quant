@@ -682,6 +682,79 @@ def test_unclear_place_error_but_order_found_open_waits_for_fill_instead_of_canc
     assert live_store.paused(c) is None
 
 
+# ---- 午休 / 收盘集合竞价撤不了单 ----
+
+def test_buy_skipped_when_wait_and_cancel_would_run_into_lunch():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 11, 29, 20))
+    setup_ready(c, clock)
+    add_intent(c, clock.now())
+    broker = FakeBroker(clock, cash=50_000)
+    make(c, broker, clock=clock).step()
+    assert only_intent(c) == ("skipped", "临近休市，来不及等成交和撤单")
+    assert all(call[0] != "place" for call in broker.calls)
+
+
+def test_buy_skipped_when_wait_and_cancel_would_run_into_closing_auction():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 14, 56, 20))
+    setup_ready(c, clock)
+    add_intent(c, clock.now())
+    broker = FakeBroker(clock, cash=50_000)
+    make(c, broker, clock=clock).step()
+    assert only_intent(c)[0] == "skipped"
+    assert all(call[0] != "place" for call in broker.calls)
+
+
+def test_buy_at_1129_still_placed_and_cancelled_before_lunch():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 11, 29))
+    setup_ready(c, clock)
+    add_intent(c, clock.now())
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    make(c, broker, clock=clock).step()
+    assert only_order(c)["status"] == "cancelled"
+    assert live_store.paused(c) is None
+
+
+def test_startup_open_buy_during_lunch_is_not_cancelled_and_auto_pauses():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 11, 40))
+    order_ts = datetime(2026, 9, 29, 11, 29, 0)
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+    entrust_no = broker.place("buy", "600001", 10.05, 500)
+    oid = live_store.add_order(c, None, order_ts, "buy", "600001", 10.05, 500, "submitted")
+    live_store.update_order(c, oid, order_ts, entrust_no=entrust_no)
+    make(c, broker, clock=clock).startup()
+
+    assert ("cancel_last",) not in broker.calls
+    assert only_order(c)["status"] == "submitted"
+    p = live_store.paused(c)
+    assert p is not None and p["kind"] == "auto" and "来不及撤单" in p["reason"]
+
+
+def test_buy_cancel_last_raising_never_escapes_step_and_never_guesses():
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now())
+    broker = FakeBroker(clock, cash=50_000)
+    broker.fill_mode = "none"
+
+    def boom():
+        raise BrokerError("撤单超时", "TASK_TIMEOUT")
+
+    broker.cancel_last = boom
+    notifier = FakeNotifier()
+    make(c, broker, notifier, clock=clock).step()   # 不应该向外抛异常
+
+    assert only_order(c)["status"] == "submitted"
+    assert not any("没成交" in text for _, text in notifier.sent)
+    assert live_store.paused(c)["kind"] == "auto"
+
+
 # ---- 连续读取失败自动暂停 ----
 
 def test_read_auto_pauses_after_consecutive_failures():
