@@ -4,7 +4,7 @@ from datetime import datetime
 import pytest
 
 from jevq.live.broker import (BrokerError, Holding, OrderRow, REJECT_CODES, INFLIGHT_CODES,
-                              holding_from_row, order_from_row, cash_from_balance)
+                              holding_from_row, is_cancel_row, order_from_row, cash_from_balance)
 from live_fakes import FakeBroker, FakeClock, FakeNotifier
 
 
@@ -269,6 +269,37 @@ def test_order_from_row_time_already_normalized_passes_through():
     assert order_from_row(row).time == "09:31:05"
 
 
+@pytest.mark.parametrize("raw, expected", [
+    ("093105", "09:31:05"),
+    ("93105", "09:31:05"),        # easytrader 按整数读掉了前导 0
+    (93105, "09:31:05"),          # 直接就是整数
+    ("9:31:05", "09:31:05"),      # 小时不补零
+    ("09:31:05", "09:31:05"),
+    ("145659", "14:56:59"),
+    (" 93105 ", "09:31:05"),
+    ("10:00:00", "10:00:00"),
+])
+def test_order_from_row_time_normalized_to_hh_mm_ss(raw, expected):
+    row = {"委托时间": raw, "证券代码": "600001", "操作": "卖出", "委托价格": "9.5",
+           "委托数量": "100", "合同编号": "7"}
+    assert order_from_row(row).time == expected
+
+
+def test_order_from_row_unrecognized_time_text_kept_as_is():
+    row = {"委托时间": "上午", "证券代码": "600001", "操作": "卖出", "委托价格": "9.5",
+           "委托数量": "100", "合同编号": "7"}
+    assert order_from_row(row).time == "上午"
+
+
+def test_order_from_row_time_sorts_correctly_after_normalization():
+    """「最后一笔」按时间字符串排序：9:35:00 不补零会排到 10:00:00 后面；补零后顺序才对。"""
+    def t(raw):
+        return order_from_row({"委托时间": raw, "证券代码": "600001", "操作": "买入", "委托价格": "9.5",
+                               "委托数量": "100", "合同编号": "7"}).time
+    assert max([t("93500"), t("100000")]) == "10:00:00"
+    assert max([t("9:35:00"), t("10:00:00")]) == "10:00:00"
+
+
 def test_order_from_row_side_from_category_keyword():
     row = {"委托时间": "10:00:00", "证券代码": "600001", "委托类别": "卖出", "委托价格": "9.5",
            "委托数量": "100", "委托编号": "7"}
@@ -302,6 +333,27 @@ def test_order_from_row_unrecognized_side_text_raises_unknown_header():
     with pytest.raises(BrokerError) as exc:
         order_from_row(row)
     assert exc.value.code == "UNKNOWN_HEADER"
+
+
+# ---- is_cancel_row：撤单记录行不是委托 ----
+
+@pytest.mark.parametrize("key, value", [("操作", "撤买"), ("操作", "撤卖"), ("买卖标志", "撤买"),
+                                        ("买卖方向", "撤卖"), ("委托类别", "撤单"), ("操作", "证券撤买")])
+def test_is_cancel_row_true_when_side_column_mentions_cancel(key, value):
+    row = {"委托时间": "10:00:00", "证券代码": "600001", key: value, "委托价格": "9.5",
+           "委托数量": "100", "合同编号": "7"}
+    assert is_cancel_row(row) is True
+
+
+@pytest.mark.parametrize("value", ["买入", "卖出", "证券买入", "证券卖出", "买"])
+def test_is_cancel_row_false_for_ordinary_orders(value):
+    row = {"委托时间": "10:00:00", "证券代码": "600001", "操作": value, "委托价格": "9.5",
+           "委托数量": "100", "合同编号": "7", "备注": "已撤"}      # 备注里的「已撤」是状态，不是撤单行
+    assert is_cancel_row(row) is False
+
+
+def test_is_cancel_row_false_without_a_side_column():
+    assert is_cancel_row({"foo": "撤单"}) is False
 
 
 # ---- cash_from_balance ----

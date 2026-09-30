@@ -2,7 +2,8 @@
 默认连接实现只在真正被调用时才 import easytrader；测试永远走注入的假 connect，不触发这行 import。"""
 import re
 
-from jevq.live.broker import BrokerError, Holding, OrderRow, cash_from_balance, holding_from_row, order_from_row
+from jevq.live.broker import (BrokerError, Holding, OrderRow, cash_from_balance, holding_from_row, is_cancel_row,
+                              order_from_row)
 
 _CODE_RE = re.compile(r"^(60|00)\d{4}$")
 
@@ -55,14 +56,17 @@ class EasytraderBroker:
             return fn(code, price=round(price, 2), amount=shares)
 
         def code_for(e):
-            return "ORDER_SUBMIT_FAILED" if type(e).__name__ == "TradeError" else "UNKNOWN"
+            # easytrader 只要提示框里没有「成功」二字就抛 TradeError（有的券商成功提示是「委托已提交」），
+            # 单子可能已经报出去了：不能映射成 REJECT_CODES 里的码（会被当成明确拒单、不核对）；
+            # TRADE_ERROR 让执行器按「认不出的错误」先核对当日委托。
+            return "TRADE_ERROR" if type(e).__name__ == "TradeError" else "UNKNOWN"
 
         result = self._call(do, code_for)
         return result.get("entrust_no")
 
     def orders_today(self) -> list[OrderRow]:
         rows = self._call(lambda u: u.today_entrusts)
-        return [order_from_row(r) for r in rows]
+        return [order_from_row(r) for r in rows if not is_cancel_row(r)]      # 撤单记录行不是委托
 
     def cancel_last(self) -> bool:
         open_orders = [o for o in self.orders_today() if o.open]

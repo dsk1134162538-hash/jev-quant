@@ -4,7 +4,8 @@ import uuid
 
 import requests
 
-from jevq.live.broker import BrokerError, Holding, OrderRow, cash_from_balance, holding_from_row, order_from_row
+from jevq.live.broker import (BrokerError, Holding, OrderRow, cash_from_balance, holding_from_row, is_cancel_row,
+                              order_from_row)
 
 _CODE_RE = re.compile(r"^(60|00)\d{4}$")
 
@@ -67,7 +68,7 @@ class GatewayBroker:
 
     def orders_today(self) -> list[OrderRow]:
         rows = self._request("GET", "/orders/pending")
-        return [order_from_row(r) for r in rows]
+        return [order_from_row(r) for r in rows if not is_cancel_row(r)]      # 撤单记录行不是委托
 
     def cancel_last(self) -> bool:
         data = self._request("POST", "/orders/cancel-all", json={"type": "L"})
