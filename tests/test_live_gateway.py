@@ -70,6 +70,29 @@ def test_orders_today_parses_rows_into_order_rows():
     assert order.entrust_no == "123" and order.time == "09:31:05" and order.side == "buy"
 
 
+def test_orders_today_skips_cancel_record_rows():
+    """有的客户端把撤单也列成一行（操作是「撤买」「撤卖」）：那不是委托，不能被当成一笔四要素相同的委托。"""
+    buy = {"委托时间": "093105", "证券代码": "600001", "操作": "买入", "委托价格": "9.5",
+           "委托数量": "500", "成交数量": "0", "成交均价": "0", "撤消数量": "500",
+           "合同编号": "123", "备注": "已撤"}
+    cancel_buy = {"委托时间": "093200", "证券代码": "600001", "操作": "撤买", "委托价格": "9.5",
+                  "委托数量": "500", "成交数量": "0", "成交均价": "0", "撤消数量": "500",
+                  "合同编号": "124", "备注": "已撤"}
+    cancel_sell = {**cancel_buy, "操作": "撤卖", "合同编号": "125"}
+    session = FakeSession(_ok([buy, cancel_buy, cancel_sell]))
+    orders = _broker(session).orders_today()
+    assert [o.entrust_no for o in orders] == ["123"]
+
+
+def test_raw_orders_today_returns_unparsed_rows_including_cancel_records():
+    """家里实测脚本要看真实的委托时间原文、合同编号、撤单会不会单独成一行：原样返回，不解析、不过滤。"""
+    rows = [{"委托时间": "93105", "证券代码": "600001", "操作": "买入", "合同编号": "123"},
+            {"委托时间": "93200", "证券代码": "600001", "操作": "撤买", "合同编号": "124"}]
+    session = FakeSession(_ok(rows))
+    assert _broker(session).raw_orders_today() == rows
+    assert session.calls[0]["method"] == "GET" and session.calls[0]["url"].endswith("/orders/pending")
+
+
 # ---- place：JSON 与请求头 ----
 
 def test_place_sends_expected_json_and_headers():

@@ -228,6 +228,31 @@ def pause(conn: sqlite3.Connection, until: datetime | None, reason: str, kind: s
     conn.commit()
 
 
+def pause_unless_auto(conn: sqlite3.Connection, until: datetime | None, reason: str) -> dict | None:
+    """手机页的手动暂停：「当前是不是自动暂停」的检查和写入放在同一个 BEGIN IMMEDIATE 事务里。
+    页面和执行器各用各的连接，不这样的话执行器可能正好在页面检查完、写入前自动暂停，
+    随后被页面覆盖成会到点自动恢复的手动暂停。
+    当前是自动暂停 → 回滚、原样返回它（调用方回 409）；否则写手动暂停（四个键一次提交），返回 None。
+    调用方连接上不该有未提交的事务；有的话先提交掉，否则开不了 IMMEDIATE 事务。"""
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")      # 拿写锁；别的连接正在写就等（连接的 timeout 内）
+    try:
+        current = paused(conn)
+        if current is not None and current["kind"] == "auto":
+            conn.rollback()
+            return current
+        _put_state(conn, "paused", "1")
+        _put_state(conn, "paused_until", until.isoformat() if until else None)
+        _put_state(conn, "pause_reason", reason)
+        _put_state(conn, "pause_kind", "manual")
+        conn.commit()
+        return None
+    except BaseException:
+        conn.rollback()
+        raise
+
+
 def clear_pause(conn: sqlite3.Connection) -> None:
     for key in ("paused", "paused_until", "pause_reason", "pause_kind"):
         _put_state(conn, key, None)

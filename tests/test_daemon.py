@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import daemon
 import desktop
@@ -335,3 +336,136 @@ def test_real_restart_marks_new_process_as_after_deploy(monkeypatch, tmp_path):
     monkeypatch.setattr(daemon.subprocess, "Popen", lambda args, **kw: seen.setdefault("args", args))
     daemon._real_restart(tmp_path, tmp_path / "python.exe")
     assert seen["args"][-1] == "--after-deploy"
+
+
+# ---- 看门狗接线：PID 复用 + 线程不因连库失败而死 ----
+
+def test_live_alive_requires_process_alive_and_live_lock_still_held(monkeypatch, tmp_path):
+    """live.py 退出后 Windows 很快会把它的 PID 分给别的进程：只有进程还占着 live.lock 才算「live.py 还活着」，才杀。"""
+    monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "data" / "jevq.sqlite"))
+    lock_checks = []
+    state = {"pid_alive": True, "held": True}
+    monkeypatch.setattr(daemon, "pid_alive", lambda pid: state["pid_alive"])
+    monkeypatch.setattr(daemon, "is_held", lambda path: lock_checks.append(path) or state["held"])
+
+    assert daemon._live_alive(1234) is True
+    assert lock_checks == [tmp_path / "data" / daemon.LIVE_LOCK_NAME]
+
+    state["held"] = False                  # 进程在（PID 被别人用了），但已经没人占 live.lock
+    assert daemon._live_alive(1234) is False
+
+    state["pid_alive"], state["held"] = False, True
+    assert daemon._live_alive(1234) is False
+
+
+def test_live_alive_with_real_lock_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "jevq.sqlite"))
+    monkeypatch.setattr(daemon, "pid_alive", lambda pid: True)
+    assert daemon._live_alive(1234) is False           # 没有锁文件
+    with hold_run_lock(tmp_path / daemon.LIVE_LOCK_NAME):
+        assert daemon._live_alive(1234) is True
+    assert daemon._live_alive(1234) is False           # 锁已释放（live.py 退出了）
+
+
+def test_watchdog_does_not_kill_a_reused_pid(monkeypatch, tmp_path):
+    from jevq import db as jdb
+    from jevq.live import store as live_store
+    from jevq.live.watchdog import Watchdog
+    from live_fakes import FakeNotifier
+
+    monkeypatch.setattr(daemon, "DB_PATH", str(tmp_path / "jevq.sqlite"))
+    monkeypatch.setattr(daemon, "pid_alive", lambda pid: True)       # 这个 PID 现在属于别的进程
+    c = jdb.connect(":memory:")
+    live_store.set_mode(c, "live")
+    live_store.set_state(c, "heartbeat", "2026-09-29T10:00:00")
+    live_store.set_state(c, "pid", "4321")
+    killed, spawned = [], []
+    wd = Watchdog(c, FakeNotifier(), spawn=lambda: spawned.append(1), kill=killed.append,
+                  alive=daemon._live_alive, clock=lambda: datetime(2026, 9, 29, 10, 10))
+    wd.check()
+    assert killed == []          # live.lock 没人占：live.py 早就退出了，不杀
+    assert spawned == [1]        # 照旧拉起新的 live.py
+
+
+class _WatchdogStop:
+    """threading.Event 替身：wait() 不真的睡，记下每次等待的秒数，等满 trip_after 次之后 is_set() 为真。"""
+
+    def __init__(self, trip_after):
+        self.waits = []
+        self.trip_after = trip_after
+
+    def is_set(self):
+        return len(self.waits) >= self.trip_after
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        return self.is_set()
+
+
+def _run_watchdog_thread(monkeypatch, stop, connect):
+    made, logged = [], []
+
+    class FakeWatchdog:
+        def __init__(self, conn, notifier, spawn, kill, alive, clock=None):
+            made.append({"conn": conn, "alive": alive, "kill": kill, "checks": 0})
+            self.info = made[-1]
+
+        def check(self):
+            self.info["checks"] += 1
+
+    monkeypatch.setattr(daemon, "Watchdog", FakeWatchdog)
+    monkeypatch.setattr(daemon.db, "connect", connect)
+    monkeypatch.setattr(daemon, "file_log", logged.append)
+    t = daemon._real_watchdog_start(stop, object(), Path("repo"), Path("python.exe"))
+    t.join(timeout=5)
+    assert not t.is_alive()
+    return made, logged
+
+
+def test_watchdog_is_wired_with_the_lock_aware_alive_check(monkeypatch):
+    made, logged = _run_watchdog_thread(monkeypatch, _WatchdogStop(1), lambda path: "conn")
+    assert made[0]["alive"] is daemon._live_alive
+    assert made[0]["conn"] == "conn"
+    assert made[0]["checks"] == 1 and logged == []
+
+
+def test_watchdog_thread_survives_db_connect_failure_and_retries_in_60s(monkeypatch):
+    """db.connect 失败（库被占、磁盘暂时不可用）不能让看门狗线程当天静默死掉：记日志，60 秒后重试。"""
+    attempts = []
+
+    def flaky_connect(path):
+        attempts.append(path)
+        if len(attempts) <= 2:
+            raise OSError("unable to open database file")
+        return "conn"
+
+    stop = _WatchdogStop(3)
+    made, logged = _run_watchdog_thread(monkeypatch, stop, flaky_connect)
+
+    assert len(attempts) == 3
+    assert stop.waits == [60, 60, 60]
+    assert len(logged) == 2 and all("unable to open database file" in m for m in logged)
+    assert len(made) == 1 and made[0]["checks"] == 1      # 连上以后照常检查，且只建一个 Watchdog
+
+
+def test_watchdog_thread_keeps_checking_after_a_check_exception(monkeypatch):
+    stop = _WatchdogStop(3)
+    made, logged = [], []
+    calls = []
+
+    class FlakyWatchdog:
+        def __init__(self, *a, **kw):
+            made.append(self)
+
+        def check(self):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("检查炸了")
+
+    monkeypatch.setattr(daemon, "Watchdog", FlakyWatchdog)
+    monkeypatch.setattr(daemon.db, "connect", lambda path: "conn")
+    monkeypatch.setattr(daemon, "file_log", logged.append)
+    t = daemon._real_watchdog_start(stop, object(), Path("repo"), Path("python.exe"))
+    t.join(timeout=5)
+    assert len(calls) == 3 and len(made) == 1
+    assert logged == [f"看门狗检查异常：{RuntimeError('检查炸了')!r}"]

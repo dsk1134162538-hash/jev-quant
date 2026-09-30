@@ -8,9 +8,10 @@
 2. 建 .venv，装 requirements.txt。
 3. data/jevq.sqlite 不存在时放入公司电脑迁来的数据库：给了 --db 就用这个文件，否则从 GitHub 的 migration-data 分支取。
    已存在绝不覆盖。
-4. 检查凭证环境变量有没有设（只说有没有，不打印值）。
+4. 检查凭证环境变量有没有设（只说有没有，不打印值）。TYPESAFE_API_KEY、PUSHPLUS_TOKEN 没设就停下；
+   实盘用的 XIADAN_GATEWAY_TOKEN、JEVQ_LIVE_HOST 没设只提示「实盘需要」，不算失败。
 5. 建开机启动项，结束旧的后台进程，用运行目录的代码启动 daemon.py（有 live.py 也一起启动）。
-   交易时段（周一至周五 09:15–15:05）拒绝重启后台，除非带 --force。
+   交易时段（周一至周五 09:15–15:30，含 daemon 15:05–15:20 的同步/上线）拒绝重启后台，除非带 --force。
 """
 import argparse
 import gzip
@@ -27,7 +28,10 @@ sys.path.insert(0, str(DEV))
 from jevq.notify import _windows_env_fallback  # noqa: E402
 
 REQUIRED = ("TYPESAFE_API_KEY", "PUSHPLUS_TOKEN")
-PASS_THROUGH = REQUIRED + ("XIADAN_GATEWAY_TOKEN", "JEVQ_LIVE_HOST")
+LIVE_ONLY = ("XIADAN_GATEWAY_TOKEN", "JEVQ_LIVE_HOST")      # 只有实盘（live.py）用得上
+PASS_THROUGH = REQUIRED + LIVE_ONLY
+SESSION_START = time(9, 15)
+SESSION_END = time(15, 30)      # daemon 15:05–15:20 还在同步/上线（git fetch/rebase/push），这段也不许装
 DATA_BRANCH = "migration-data"
 DATA_FILE = "jevq.sqlite.gz"
 SCRIPTS = ("daemon.py", "live.py")
@@ -99,11 +103,14 @@ def check_env() -> bool:
         present = bool(os.environ.get(name) or _windows_env_fallback(name))
         print(f"{name}：{'已设置' if present else '没有！后台跑不起来，先 setx 设好再重跑'}")
         ok = ok and present
+    for name in LIVE_ONLY:
+        present = bool(os.environ.get(name) or _windows_env_fallback(name))
+        print(f"{name}：{'已设置' if present else '没设置（实盘需要，先 setx 设好；只跑模拟盘可以先不管）'}")
     return ok
 
 
 def in_session(now: datetime) -> bool:
-    return now.weekday() < 5 and time(9, 15) <= now.time() <= time(15, 5)
+    return now.weekday() < 5 and SESSION_START <= now.time() <= SESSION_END
 
 
 def stop_old() -> None:
@@ -138,7 +145,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if in_session(datetime.now()) and not args.force:
-        sys.exit("交易时段不重启后台（确实要做就加 --force）")
+        sys.exit("交易时段（周一至周五 09:15–15:30，含收盘后的同步/上线）不重启后台（确实要做就加 --force）")
     sync_code(args.run_dir)
     ensure_venv(args.run_dir)
     ensure_db(args.run_dir, args.db)

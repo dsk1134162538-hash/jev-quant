@@ -1,7 +1,7 @@
 """EasytraderBroker 测试：假 user + 注入 connect，永不 import easytrader。"""
 import pytest
 
-from jevq.live.broker import BrokerError, Holding
+from jevq.live.broker import BrokerError, Holding, INFLIGHT_CODES, REJECT_CODES
 from jevq.live.easytrader_broker import EasytraderBroker
 
 
@@ -85,6 +85,30 @@ def test_orders_today_parses_rows():
     assert order.time == "09:31:05" and order.side == "buy" and order.entrust_no == "7"
 
 
+def test_orders_today_skips_cancel_record_rows():
+    user = FakeUser()
+    user._today_entrusts = [
+        {"委托时间": "93105", "证券代码": "600001", "操作": "买入", "委托价格": "9.5",
+         "委托数量": "500", "合同编号": "7", "备注": "已撤"},
+        {"委托时间": "93200", "证券代码": "600001", "操作": "撤买", "委托价格": "9.5",
+         "委托数量": "500", "合同编号": "8", "备注": "已撤"},
+        {"委托时间": "93300", "证券代码": "600001", "操作": "撤卖", "委托价格": "9.5",
+         "委托数量": "500", "合同编号": "9", "备注": "已撤"},
+    ]
+    orders = _broker(user).orders_today()
+    assert [o.entrust_no for o in orders] == ["7"]
+    assert orders[0].time == "09:31:05"      # 整数读掉了前导 0 的时间也补回来了
+
+
+def test_raw_orders_today_returns_unparsed_rows_including_cancel_records():
+    user = FakeUser()
+    user._today_entrusts = [
+        {"委托时间": 93105, "证券代码": "600001", "操作": "买入", "合同编号": "7"},
+        {"委托时间": 93200, "证券代码": "600001", "操作": "撤买", "合同编号": "8"},
+    ]
+    assert _broker(user).raw_orders_today() == user._today_entrusts
+
+
 # ---- place ----
 
 def test_place_buy_rounds_price_and_returns_entrust_no():
@@ -107,13 +131,32 @@ def test_place_no_entrust_no_in_result_returns_none():
     assert _broker(user).place("buy", "600001", 9.5, 100) is None
 
 
-def test_place_trade_error_maps_to_order_submit_failed():
+def test_place_trade_error_maps_to_trade_error_not_a_definite_rejection():
+    """easytrader 只要提示框里没有「成功」二字就抛 TradeError（比如「委托已提交」）：单子可能已经报出去了，
+    不能当券商明确拒单——TRADE_ERROR 不在 REJECT_CODES 里，执行器会按「认不出的错误」先核对当日委托。"""
     user = FakeUser()
-    user.raise_on["buy"] = TradeError("涨跌停限制")
+    user.raise_on["buy"] = TradeError("您的委托已提交")
     with pytest.raises(BrokerError) as exc:
         _broker(user).place("buy", "600001", 9.5, 100)
-    assert exc.value.code == "ORDER_SUBMIT_FAILED"
-    assert "涨跌停限制" in str(exc.value)
+    assert exc.value.code == "TRADE_ERROR"
+    assert exc.value.code not in REJECT_CODES and exc.value.code not in INFLIGHT_CODES
+    assert "您的委托已提交" in str(exc.value)
+
+
+def test_place_sell_trade_error_maps_to_trade_error_too():
+    user = FakeUser()
+    user.raise_on["sell"] = TradeError("委托已提交")
+    with pytest.raises(BrokerError) as exc:
+        _broker(user).place("sell", "600001", 9.5, 100)
+    assert exc.value.code == "TRADE_ERROR"
+
+
+def test_place_other_exceptions_stay_unknown():
+    user = FakeUser()
+    user.raise_on["buy"] = RuntimeError("窗口没找到")
+    with pytest.raises(BrokerError) as exc:
+        _broker(user).place("buy", "600001", 9.5, 100)
+    assert exc.value.code == "UNKNOWN"
 
 
 @pytest.mark.parametrize("code", ["60000", "700001", "1234567"])
@@ -153,6 +196,31 @@ def test_cancel_last_picks_latest_time_open_order():
     ]
     assert _broker(user).cancel_last() is True
     assert user.calls[-1] == ("cancel_entrust", "2")
+
+
+def test_cancel_last_never_targets_a_cancel_record_row():
+    """撤单记录行（撤买）排在最后、状态不是已撤：不能被当成「最后一笔 open 委托」去撤。"""
+    user = FakeUser()
+    user._today_entrusts = [
+        {"委托时间": "09:31:00", "证券代码": "600001", "操作": "买入", "委托价格": "9.5",
+         "委托数量": "100", "合同编号": "1", "备注": "未成交"},
+        {"委托时间": "09:40:00", "证券代码": "600001", "操作": "撤买", "委托价格": "9.5",
+         "委托数量": "100", "合同编号": "2", "备注": "未成交"},
+    ]
+    assert _broker(user).cancel_last() is True
+    assert user.calls[-1] == ("cancel_entrust", "1")
+
+
+def test_cancel_last_orders_unpadded_times_correctly():
+    user = FakeUser()
+    user._today_entrusts = [
+        {"委托时间": "93500", "证券代码": "600001", "操作": "买入", "委托价格": "9.5",
+         "委托数量": "100", "合同编号": "1", "备注": "未成交"},
+        {"委托时间": "100000", "证券代码": "600001", "操作": "买入", "委托价格": "9.5",
+         "委托数量": "100", "合同编号": "2", "备注": "未成交"},
+    ]
+    assert _broker(user).cancel_last() is True
+    assert user.calls[-1] == ("cancel_entrust", "2")     # 按字符串比较，"93500" 会排到 "100000" 后面选错
 
 
 def test_cancel_last_false_when_nothing_open():

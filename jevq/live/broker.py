@@ -1,4 +1,5 @@
 """下单层接口。真实实现在 jevq.live.gateway / jevq.live.easytrader_broker（后续任务），测试用 tests/live_fakes.FakeBroker。"""
+import re
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -90,9 +91,35 @@ def holding_from_row(row: dict) -> Holding:
     return Holding(code=_code(row), shares=int(_num(row[shares_key])), available=int(_num(row[available_key])))
 
 
+_SIDE_KEYS = ("操作", "买卖标志", "买卖方向", "委托类别")
+_TIME_RE = re.compile(r"(\d{1,2}):(\d{2}):(\d{2})")
+
+
+def is_cancel_row(row: dict) -> bool:
+    """当日委托里的撤单记录行（操作/买卖标志列是「撤买」「撤卖」「撤单」之类）：那是一条撤单动作，不是委托。
+    它含「买」「卖」字，不排除的话会被解析成一笔四要素和原委托完全相同的委托，
+    没有委托号时「取最后一条」就可能匹配到它。gateway、easytrader 两个适配器的 orders_today 都要先排除。"""
+    key = _pick(row, *_SIDE_KEYS)
+    return key is not None and "撤" in str(row[key])
+
+
+def _normalize_time(raw) -> str:
+    """委托时间统一成 "HH:MM:SS"（字符串比较才等于时间先后，「取最后一笔」和 ≥ 下单时刻都靠它）：
+    "093105" 和已经规范的照旧；"93105"（easytrader 按整数读掉了前导 0）、"9:31:05"（小时不补零）补零。
+    认不出的原样返回。"""
+    t = str(raw).strip()
+    if t.isdigit() and len(t) in (5, 6):
+        t = t.zfill(6)
+        return f"{t[0:2]}:{t[2:4]}:{t[4:6]}"
+    m = _TIME_RE.fullmatch(t)
+    if m:
+        return f"{int(m.group(1)):02d}:{m.group(2)}:{m.group(3)}"
+    return t
+
+
 def order_from_row(row: dict) -> OrderRow:
     entrust_key = _pick(row, "合同编号", "委托编号")
-    side_key = _pick(row, "操作", "买卖标志", "买卖方向", "委托类别")
+    side_key = _pick(row, *_SIDE_KEYS)
     price_key = _pick(row, "委托价格")
     shares_key = _pick(row, "委托数量")
     time_key = _pick(row, "委托时间")
@@ -112,9 +139,7 @@ def order_from_row(row: dict) -> OrderRow:
     cancelled_key = _pick(row, "撤消数量", "撤单数量")
     status_key = _pick(row, "备注", "委托状态", "状态说明")
 
-    t = str(row[time_key]).strip()
-    if len(t) == 6 and t.isdigit():
-        t = f"{t[0:2]}:{t[2:4]}:{t[4:6]}"
+    t = _normalize_time(row[time_key])
 
     return OrderRow(entrust_no=str(row[entrust_key]).strip(), code=_code(row), side=side,
                     price=_num(row[price_key]), shares=int(_num(row[shares_key])),
@@ -122,6 +147,11 @@ def order_from_row(row: dict) -> OrderRow:
                     avg_price=_num(row[avg_key]) if avg_key else 0.0,
                     status=str(row[status_key]) if status_key else "",
                     time=t, cancelled=int(_num(row[cancelled_key])) if cancelled_key else 0)
+
+
+def orders_from_rows(rows: list[dict]) -> list[OrderRow]:
+    """当日委托原始行 → OrderRow，撤单记录行先排除（不是委托）。两个适配器的 orders_today 和家里实测脚本共用。"""
+    return [order_from_row(r) for r in rows if not is_cancel_row(r)]
 
 
 def cash_from_balance(d: dict) -> float:
