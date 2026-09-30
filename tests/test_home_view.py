@@ -13,13 +13,18 @@ DAY = date(2026, 9, 28)
 def _company_db(path):
     conn = db.connect(str(path))
     Ledger(conn)
-    conn.execute("UPDATE cash SET amount = 20000.0 WHERE account = 'main'")
-    conn.execute("INSERT INTO positions VALUES ('main', '600001', 1000, 10005.0, 10.0, '2026-09-28')")
+    conn.execute("UPDATE cash SET amount = 20000.0 WHERE account = 'rebound_main'")
+    conn.execute("INSERT INTO positions VALUES ('rebound_main', '600001', 1000, 10005.0, 10.0, '2026-09-28')")
     conn.execute("INSERT INTO fills(account, code, side, price, shares, fee, ts, reason) "
-                 "VALUES ('main', '600001', 'buy', 10.0, 1000, 5.0, '2026-09-28T10:00:00', '低吸-1.5%')")
-    conn.execute("INSERT INTO equity VALUES ('2026-09-28', 'main', 30100.0)")
+                 "VALUES ('rebound_main', '600001', 'buy', 10.0, 1000, 5.0, '2026-09-28T10:00:00', '超跌-1.5%')")
+    conn.execute("INSERT INTO equity VALUES ('2026-09-28', 'rebound_main', 30100.0)")
     conn.execute("INSERT INTO decisions(ts, code, verdict, detail, trace, strategy) "
-                 "VALUES ('2026-09-28T10:00:00', '600001', 'pass', '消息面中性', '{\"secret\": 1}', 'lowbuy')")
+                 "VALUES ('2026-09-28T10:00:00', '600001', 'pass', '消息面中性', '{\"secret\": 1}', 'rebound')")
+    # 低吸下线前的历史：公司库里不删，照常导出
+    conn.execute("INSERT INTO cash VALUES ('main', 30500.0)")
+    conn.execute("INSERT INTO fills(account, code, side, price, shares, fee, ts, reason) "
+                 "VALUES ('main', '600002', 'sell', 10.2, 1000, 12.0, '2026-09-25T10:00:00', '高开止盈')")
+    conn.execute("INSERT INTO equity VALUES ('2026-09-25', 'main', 30500.0)")
     conn.execute("INSERT INTO custom_strategies VALUES ('c1', 1, '尾盘弱转强', ?, '2026-09-25', '2026-09-28', 1)",
                  (json.dumps({"name": "尾盘弱转强", "capital": 50000,
                               "select": {"conditions": [{"field": "pct", "op": ">=", "value": 3}]},
@@ -41,12 +46,20 @@ def test_rebuilt_db_shows_same_accounts_fills_and_curve(tmp_path):
     api, as_of = _home(tmp_path)
     assert as_of == "2026-09-28"
     s = api.status()
-    main = next(a for a in s["accounts"] if a["id"] == "main")
+    main = next(a for a in s["accounts"] if a["id"] == "rebound_main")
     assert main["cash"] == 20000.0 and [p["code"] for p in main["positions"]] == ["600001"]
     assert "家里只读：数据截至 2026-09-28" in s["warning"]
     assert [f["code"] for f in api.fills("2026-09-28")] == ["600001"]
-    assert api.equity_curve()["main"] == [["2026-09-28", 30100.0]]
+    assert api.equity_curve()["rebound_main"] == [["2026-09-28", 30100.0]]
     assert [d["code"] for d in api.decisions("2026-09-28")] == ["600001"]
+
+
+def test_retired_lowbuy_history_arrives_home_but_is_not_a_panel_account(tmp_path):
+    api, _ = _home(tmp_path)
+    assert "main" not in [a["id"] for a in api.status()["accounts"]]
+    assert "main" not in api.equity_curve()
+    [f] = api.fills("2026-09-25")
+    assert f["account"] == "低吸·主(已下线)" and f["side"] == "卖"
 
 
 def test_decision_trace_is_not_in_home_db(tmp_path):

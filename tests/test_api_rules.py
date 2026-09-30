@@ -184,6 +184,20 @@ def test_rule_preview_reads_latest_sentiment_when_panel_not_running(tmp_db):
     assert make_api(tmp_db).rule_preview(spec)["total"] == 3
 
 
+def test_rule_preview_reads_sentiment_rows_written_after_lowbuy_retired(tmp_db):
+    """低吸下线后情绪行的 strategy 是 'market'，比旧的 'lowbuy' 行新，试跑读新的。"""
+    conn = db.connect(tmp_db)
+    conn.executemany("INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES (?, '', 'sentiment', ?, ?)", [
+        ("2026-09-24T10:00:00", '{"stats": {}, "label": "冰点", "overseas": "偏弱"}', "lowbuy"),
+        ("2026-09-25T14:50:00", '{"stats": {}, "label": "火热", "overseas": "偏强"}', "market")])
+    conn.commit()
+    conn.close()
+    spec = dict(VALID, select={"mode": "all", "conditions": [
+        {"field": "sentiment", "op": "in", "value": ["火热"]},
+        {"field": "overseas", "op": "in", "value": ["偏强"]}]}, entry={"mode": "all", "conditions": []})
+    assert make_api(tmp_db).rule_preview(spec)["total"] == 3
+
+
 def test_rule_preview_env_empty_without_sentiment_rows(tmp_db):
     spec = dict(VALID, select={"mode": "all", "conditions": [
         {"field": "sentiment", "op": "in", "value": ["火热", "正常"]}]}, entry={"mode": "all", "conditions": []})

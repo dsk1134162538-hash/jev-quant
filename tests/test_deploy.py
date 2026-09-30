@@ -23,9 +23,12 @@ class FakeNotifier:
 
 def make_run_git(*, status="", staged_names="x\n", full_diff="", rebase_ok=True, push_ok=True,
                  fetch_ok=True, rev_parse="new222", changed_files="", commit_ok=True,
-                 worktree_add_ok=True, worktree_remove_ok=True):
+                 worktree_add_ok=True, worktree_remove_ok=True, reject_pathspecs=(".superpowers",),
+                 code_diff_ok=True):
     """假 git runner：按子命令分派固定响应，记录所有调用方便断言（尤其是「绝不出现破坏性
-    操作」这一条）。"""
+    操作」这一条）。commit 默认模拟真实 git 的行为：pathspec 里如果有一个在索引里完全不
+    存在的路径（如 .superpowers 目录下没有任何已跟踪/已暂存内容），commit -- <pathspec...>
+    会整体失败，报 "did not match any file(s) known to git"（这正是线上每天卡住的原因）。"""
     calls = []
 
     def run_git(args):
@@ -40,9 +43,16 @@ def make_run_git(*, status="", staged_names="x\n", full_diff="", rebase_ok=True,
         if cmd == "diff" and "--name-only" in args and "--cached" in args:
             return FakeResult(0, staged_names)
         if cmd == "diff" and args[1] == "--name-only":
+            if not code_diff_ok:
+                return FakeResult(128, stderr="fatal: bad object old111")
             return FakeResult(0, changed_files)
         if cmd == "commit":
-            return FakeResult(0 if commit_ok else 1, stderr="" if commit_ok else "commit failed")
+            if not commit_ok:
+                return FakeResult(1, stderr="commit failed")
+            bad = next((p for p in args if p in reject_pathspecs), None)
+            if bad:
+                return FakeResult(1, stderr=f"error: pathspec '{bad}' did not match any file(s) known to git")
+            return FakeResult(0)
         if cmd == "reset":
             return FakeResult(0)
         if cmd == "fetch":
@@ -100,6 +110,12 @@ def test_code_change_and_tests_pass_deploys(tmp_path):
     assert tests_called[0][2] is False                          # requirements.txt 没变
     assert any(c[0] == "worktree" and c[1] == "add" for c in run_git.calls)
     assert any(c[0] == "worktree" and c[1] == "remove" for c in run_git.calls)
+    assert any(c[0] == "worktree" and c[1] == "add" and c[-1] == "origin/master"
+              for c in run_git.calls)                            # worktree 基于 origin/master，不是本地 HEAD
+    assert any(c[0] == "rebase" for c in run_git.calls)
+    assert ["push", "origin", "HEAD:master"] in run_git.calls
+    cmds = [c[0] for c in run_git.calls]
+    assert cmds.index("worktree") < cmds.index("rebase")         # 先测试，测完才 rebase
     _never_destructive(run_git.calls)
 
 
@@ -111,7 +127,12 @@ def test_tests_fail_deploy_false_and_notifies(tmp_path):
                              run_tests=lambda *a: (False, "1 failed, 4 passed"))
     assert result == {"deploy": False}
     assert any("1 failed" in content for _, content in notifier.sent)
+    assert any("没推送" in content for _, content in notifier.sent)
     assert any(c[0] == "worktree" and c[1] == "remove" for c in run_git.calls)  # 失败也要清理
+    assert any(c[0] == "worktree" and c[1] == "add" and c[-1] == "origin/master"
+              for c in run_git.calls)                                          # 测的是 origin/master
+    assert not any(c[0] == "rebase" for c in run_git.calls)   # 测试没过：磁盘上的旧代码不能动
+    assert not any(c[0] == "push" for c in run_git.calls)     # 今天的数据也不推
     _never_destructive(run_git.calls)
 
 
@@ -126,6 +147,25 @@ def test_requirements_change_triggers_install(tmp_path):
     sync_and_deploy(tmp_path, TODAY, lambda m: None, FakeNotifier(), Path("python"),
                     "old111", run_git=run_git, run_tests=run_tests)
     assert seen == [True]
+
+
+def test_code_diff_failure_counts_as_changed_and_tests_before_rebase(tmp_path):
+    """git diff 失败（比如运行中的提交在本机找不到）不能当成「代码没变」直接 rebase：要先测 origin/master。"""
+    run_git = make_run_git(rev_parse="new222", code_diff_ok=False)
+    tests_called = []
+
+    def run_tests(*a):
+        tests_called.append(a)
+        return False, "1 failed"
+
+    log, notifier = [], FakeNotifier()
+    result = sync_and_deploy(tmp_path, TODAY, log.append, notifier, Path("python"),
+                             "old111", run_git=run_git, run_tests=run_tests)
+    assert result == {"deploy": False}
+    assert len(tests_called) == 1
+    assert not any(c[0] == "rebase" for c in run_git.calls)
+    assert not any(c[0] == "push" for c in run_git.calls)
+    _never_destructive(run_git.calls)
 
 
 def test_rebase_conflict_aborts_and_does_not_push(tmp_path):
@@ -208,11 +248,59 @@ def test_never_calls_reset_hard_clean_or_force_push(tmp_path):
         _never_destructive(run_git.calls)
 
 
+def test_code_paths_includes_live_py():
+    from jevq.sync.deploy import CODE_PATHS
+    assert "live.py" in CODE_PATHS
+
+
 def test_daily_commit_is_limited_to_data_paths(tmp_path):
-    """暂存区里别人未完成的代码（如 ui.html）不能被每日同步捎带提交。"""
-    from jevq.sync.deploy import DATA_PATHS
+    """暂存区里别人未完成的代码（如 ui.html）不能被每日同步捎带提交：commit 只带暂存区里
+    实际存在的文件名，不是原始的 DATA_PATHS 路径列表。"""
     run_git = make_run_git(staged_names="reports/2026-09-23.md\n")
     sync_and_deploy(tmp_path, TODAY, lambda m: None, FakeNotifier(), Path("python"),
                     "abc1234", run_git=run_git, run_tests=lambda *a: (True, "ok"))
     commits = [c for c in run_git.calls if c[0] == "commit"]
-    assert commits and commits[0][-len(DATA_PATHS) - 1:] == ["--", *DATA_PATHS]
+    assert commits and commits[0][-2:] == ["--", "reports/2026-09-23.md"]
+
+
+def test_commit_uses_staged_files_not_raw_data_paths_pathspec(tmp_path):
+    """复现线上每天的失败：.superpowers 目录下没有任何已跟踪/已暂存内容时，如果 commit
+    还是拿 DATA_PATHS 原始路径（包含 .superpowers）当 pathspec，会报 "did not match any
+    file(s) known to git" 而失败、数据永远卡在暂存区。修复后 commit 只带暂存区里真实
+    存在的文件名，不会触发这个 pathspec 错误，上线判断得以继续。"""
+    run_git = make_run_git(staged_names="reports/2026-09-29.csv\nexports/cash.csv\n",
+                           rev_parse="new222")
+    log, notifier = [], FakeNotifier()
+    result = sync_and_deploy(tmp_path, TODAY, log.append, notifier, Path("python"),
+                             "abc1234", run_git=run_git, run_tests=lambda *a: (True, "ok"))
+    commits = [c for c in run_git.calls if c[0] == "commit"]
+    assert commits, "commit 应该被调用"
+    assert commits[0][-3:] == ["--", "reports/2026-09-29.csv", "exports/cash.csv"]
+    assert ".superpowers" not in commits[0]
+    assert not any("git commit 失败" in m for m in log)
+    assert result == {"deploy": False}                    # 代码没变，只推数据，不上线
+    assert ["push", "origin", "HEAD:master"] in run_git.calls  # 数据没卡住，照常推送
+    _never_destructive(run_git.calls)
+
+
+def test_add_only_includes_data_paths_that_exist_on_disk(tmp_path):
+    """git add 同理要健壮：DATA_PATHS 里只要有一个路径在磁盘上不存在（如 .superpowers
+    目录还没建），整条 add 命令就会失败、连带 reports/exports 也加不进暂存区。修复后只
+    add 磁盘上实际存在的路径。"""
+    (tmp_path / "reports").mkdir()
+    (tmp_path / ".gitignore").write_text("x")
+    # 不创建 exports、.superpowers —— 磁盘上不存在
+    run_git = make_run_git(staged_names="reports/2026-09-29.csv\n")
+    sync_and_deploy(tmp_path, TODAY, lambda m: None, FakeNotifier(), Path("python"),
+                    "abc1234", run_git=run_git, run_tests=lambda *a: (True, "ok"))
+    adds = [c for c in run_git.calls if c[0] == "add"]
+    assert adds == [["add", "reports", ".gitignore"]]
+
+
+def test_add_skipped_when_no_data_paths_exist(tmp_path):
+    """DATA_PATHS 一个都不存在时（如刚 clone 的空目录），干脆不调用 git add，不能传空
+    pathspec 让 git add 变成加全部改动。"""
+    run_git = make_run_git()
+    sync_and_deploy(tmp_path, TODAY, lambda m: None, FakeNotifier(), Path("python"),
+                    "abc1234", run_git=run_git, run_tests=lambda *a: (True, "ok"))
+    assert not any(c[0] == "add" for c in run_git.calls)

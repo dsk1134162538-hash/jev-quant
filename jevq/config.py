@@ -18,14 +18,7 @@ BUY_ZONE_HIGH = 0.0
 MAX_CHECKS_PER_TICK = 10
 MAX_ERRORS_PER_TICK = 3
 
-# 卖出
-STOP_LOSS = -3.0
-ZERO_LINE = -0.2
-REBOUND = 1.5
-TAKE_PROFIT = 1.0
-LOW_OPEN = -1.0
-
-# 超跌反弹（当日区间、尾盘时刻、Jev 检查额度与低吸共用）
+# 超跌反弹（当日区间用上面的 BUY_ZONE_*，尾盘时刻、Jev 检查额度与其他策略共用）
 REBOUND_RET5_LOW = -20.0       # 近 5 日涨幅下限（%）
 REBOUND_RET5_HIGH = 0.0        # 近 5 日涨幅上限（%）
 REBOUND_BOARD_LOOKBACK = 40    # 近 N 个交易日出现过连板的排除
@@ -75,13 +68,12 @@ REPORT_DIR = "reports"
 
 # 策略与账户
 STRATEGIES = {
-    "lowbuy": {"name": "低吸", "accounts": ("main", "shadow")},
     "board": {"name": "扫首板", "accounts": ("board_main", "board_shadow")},
     "rebound": {"name": "超跌反弹", "accounts": ("rebound_main", "rebound_shadow")},
 }
 ACCOUNTS = tuple(a for s in STRATEGIES.values() for a in s["accounts"])
 ACCOUNT_NAMES = {
-    "main": "低吸·主(Jev)", "shadow": "低吸·影子",
+    "main": "低吸·主(已下线)", "shadow": "低吸·影子(已下线)",      # 低吸已下线，只给历史成交显示名字
     "board_main": "首板·主(Jev)", "board_shadow": "首板·影子",
     "rebound_main": "超跌·主(Jev)", "rebound_shadow": "超跌·影子",
 }
@@ -89,7 +81,7 @@ ACCOUNT_STRATEGY = {a: sid for sid, s in STRATEGIES.items() for a in s["accounts
 
 
 def builtin_accounts() -> tuple[str, ...]:
-    """内置账户（低吸 main/shadow + 扫首板 board_main/board_shadow + 超跌反弹 rebound_main/rebound_shadow）。"""
+    """内置账户（扫首板 board_main/board_shadow + 超跌反弹 rebound_main/rebound_shadow）。"""
     return ACCOUNTS
 
 
@@ -99,3 +91,45 @@ MAX_CUSTOM_ENABLED = 5
 # 每日 GitHub 同步 + 收盘后自动上线
 SYNC_ENABLED = True
 DEPLOY_ENABLED = True
+
+# 实盘跟单（docs/specs/2026-09-29-live-trading-design.md）
+LIVE_ACCOUNT = "rebound_main"
+LIVE_BUDGET = 20_000.0
+LIVE_MAX_POSITIONS = 1
+LIVE_MAX_BUYS_PER_DAY = 2
+LIVE_INTENT_TTL = 60            # 秒：意图超过这么久没处理就作废（买入）
+LIVE_BUY_SLIP = 0.005           # 买入限价最多比模拟成交价高 0.5%
+LIVE_BUY_WAIT = 30              # 秒：买单挂多久没成交完就撤
+LIVE_SELL_DISCOUNT = 0.01       # 卖出限价 = 最新价 × (1 - 1%)，不低于跌停价
+LIVE_SELL_WAIT = 20             # 秒：卖单每轮等多久
+LIVE_SELL_ROUNDS = 3            # 卖单撤了重挂最多几轮，之后每分钟重试
+LIVE_SELL_RETRY = 60            # 秒：几轮都没卖完后，下次重试间隔
+LIVE_CASH_BUFFER = 0.002        # 算股数时资金留 0.2% 余量
+LIVE_POLL = 5                   # 秒：等成交时查当日委托的间隔
+LIVE_CANCEL_WAIT = 30           # 秒：撤单后等「已报待撤」变成终态最多多久，还没变就自动暂停
+LIVE_RECONCILE_HOLDING = 5      # 分钟：有持仓时对账间隔
+LIVE_RECONCILE_IDLE = 15        # 分钟：空仓时读资金确认在线的间隔
+LIVE_READ_FAIL_PAUSE = 3        # 连续读取失败几次自动暂停
+LIVE_REDUCE_CONFIRM = 60        # 秒：客户端股数变少，两次读数至少隔这么久才减账
+LIVE_BUY_WINDOWS = ((time(9, 30), time(11, 30)), (time(13, 0), time(14, 57)))
+LIVE_SELL_WINDOWS = ((time(9, 30), time(11, 30)), (time(13, 0), time(15, 0)))
+# 连续竞价：只有这里面能撤单（午休、14:57 后的收盘集合竞价都撤不了）
+LIVE_CANCEL_WINDOWS = ((time(9, 30), time(11, 30)), (time(13, 0), time(14, 57)))
+LIVE_ORDER_MARGIN = 20          # 秒：网关下单/查询/撤单的耗时余量，撤单至少要在连续竞价结束前这么久发出
+LIVE_READ_EST = 10              # 秒：网关读一次当日委托的耗时上估（实测约 6 秒），等成交时据此提前收手去撤单
+LIVE_MATCH_TOLERANCE = 30       # 秒：没有委托号时按委托时间匹配，容忍电脑时钟比券商快这么多
+LIVE_SELL_SETTLE = time(15, 1)  # 收盘后结算挂着的卖单（留 1 分钟等集合竞价成交回显）
+LIVE_PAUSE_CLOSE = time(15, 0)        # 「暂停到收盘」的截止
+LIVE_RESTART_CHECK = time(15, 10)     # 之后若 git rev-parse HEAD 和启动时不同，live.py 自我重启
+LIVE_RESTART_UNTIL = time(17, 0)      # 自我重启检查的截止（15:10–17:00 之间反复查）
+LIVE_RESTART_EVERY = 300              # 秒：自我重启检查的间隔（deploy 先跑测试，rebase 常常晚于 15:10）
+LIVE_SELF_CHECK = time(9, 5)
+LIVE_CLOSE_SUMMARY = time(15, 2)
+LIVE_CLOSE_SUMMARY_LATEST = time(15, 10)   # 收盘后结算一直读不到时，小结最晚这个点照发（注明有卖单没结算）
+LIVE_WATCHDOG_STALE = 120       # 秒：心跳多久没更新算断
+LIVE_WATCHDOG_MAX_RESTARTS = 3  # daemon 每天最多替它重启几次
+LIVE_HTTP_PORT = 8766
+LIVE_BROKER = "gateway"         # "gateway" | "easytrader"：家里实测后定
+LIVE_GATEWAY_URL = "http://127.0.0.1:5000"
+LIVE_EASYTRADER_EXE = r"C:\同花顺软件\同花顺\xiadan.exe"   # 实测时按实际安装路径改
+LIVE_LOCK_NAME = "live.lock"

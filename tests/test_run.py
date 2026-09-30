@@ -11,6 +11,7 @@ from factories import quote
 from jevq import config, db
 from jevq.data import board_events as be
 from jevq.ledger import Ledger
+from jevq.live import store as live_store
 from jevq.models import Fill
 from jevq.notify import Notifier
 from jevq.rules.board import SCAN_WINDOWS, Candidate
@@ -59,25 +60,25 @@ class FakeEngine:
     instances: list = []
     behavior = None
 
-    def __init__(self, conn, ledger, notice_judge, news_judge, market, fetch_quotes, fetch_pools,
-                 universe, ret5, prev_day, overseas, overseas_trace=None, accounts_provider=None):
+    def __init__(self, conn, ledger, market, fetch_quotes, fetch_pools, universe, prev_day, overseas,
+                 accounts_provider=None):
         self.conn, self.ledger = conn, ledger
-        self.universe, self.ret5, self.prev_day, self.overseas = universe, ret5, prev_day, overseas
+        self.universe, self.prev_day, self.overseas = universe, prev_day, overseas
         self.fetch_quotes, self.accounts_provider = fetch_quotes, accounts_provider
         self.ticks, self.last_quotes, self.sentiment_label = [], {}, "正常"
-        self.buy_calls: list = []           # (now, deadline)
+        self.buy_calls: list = []
         self.sentiment_trace = None
         FakeEngine.instances.append(self)
 
     def sell_step(self, now):
-        """卖出阶段（run.py 每分钟先调它）；ticks 记的是「这一分钟跑过」。"""
+        """卖出阶段（run.py 每分钟先调它：取行情）；ticks 记的是「这一分钟跑过」。"""
         self.ticks.append(now)
         if FakeEngine.behavior:
             return FakeEngine.behavior(self, now) or []
         return []
 
-    def buy_step(self, now, deadline=None):
-        self.buy_calls.append((now, deadline))
+    def buy_step(self, now):
+        self.buy_calls.append(now)
         return []
 
     def tick(self, now):
@@ -210,9 +211,12 @@ def env(tmp_path, monkeypatch):
     return e
 
 
+HOLD_ACCOUNT = "rebound_main"
+
+
 def hold(env, price=9.9, buy_day=date(2026, 9, 22)):
     conn = db.connect(env.db)
-    Ledger(conn).buy("main", quote("600001", pct=round((price / 10 - 1) * 100, 2)),
+    Ledger(conn).buy(HOLD_ACCOUNT, quote("600001", pct=round((price / 10 - 1) * 100, 2)),
                      datetime.combine(buy_day, datetime.min.time()).replace(hour=10), "x")
     conn.close()
 
@@ -221,9 +225,9 @@ def main_equity_check(env, price):
     conn = db.connect(env.db)
     try:
         ledger = Ledger(conn)
-        shares = ledger.positions("main")[0].shares
-        expected = round(ledger.cash("main") + shares * price, 2)
-        value = conn.execute("SELECT value FROM equity WHERE account='main'").fetchone()[0]
+        shares = ledger.positions(HOLD_ACCOUNT)[0].shares
+        expected = round(ledger.cash(HOLD_ACCOUNT) + shares * price, 2)
+        value = conn.execute("SELECT value FROM equity WHERE account=?", (HOLD_ACCOUNT,)).fetchone()[0]
     finally:
         conn.close()
     assert value == pytest.approx(expected)
@@ -256,20 +260,9 @@ def test_calendar_failure_falls_back_to_weekdays_sell_only(env, monkeypatch):
     env.run()
     eng = FakeEngine.instances[0]
     assert eng.prev_day == date(2026, 9, 22)
-    assert eng.universe == {} and eng.ret5 == {}
+    assert eng.universe == {}
     assert "只卖模式：今日不开新仓" in env.log_text()
     assert len(eng.ticks) == 240
-
-
-def test_calendar_failure_disables_stale_before(env, monkeypatch):
-    def fail():
-        raise TimeoutError("sina 超时")
-
-    monkeypatch.setattr(run.akdata, "trade_days", fail)
-    env.run()
-    eng = FakeEngine.instances[0]
-    assert eng.stale_before is None
-    assert "交易日历不可用：停用「隔夜超期」规则" in env.log_text()
 
 
 def test_calendar_failure_weekend_is_not_a_trading_day(env, monkeypatch):
@@ -295,7 +288,7 @@ def test_universe_failure_runs_sell_only(env, monkeypatch, target):
     monkeypatch.setattr(run.akdata if target == "load_universe" else run.closes, target, fail)
     path = env.run()
     eng = FakeEngine.instances[0]
-    assert eng.universe == {} and eng.ret5 == {}
+    assert eng.universe == {}
     assert "只卖模式：今日不开新仓" in env.log_text()
     assert len(eng.ticks) == 240 and path is not None
 
@@ -462,7 +455,7 @@ def test_insufficient_ret5_coverage_sets_warning_and_skips_buys(env, monkeypatch
     state: dict = {}
     env.run(state=state)
     eng = FakeEngine.instances[0]
-    assert eng.ret5 == {}
+    assert env.boards[0].enabled is False                 # 题材是全的，只因 ret5 不够停买
     assert state.get("warning") == "5 日涨幅数据不足，今日只卖不买"
     assert "5 日涨幅覆盖不足（0/1），今日只卖不买" in env.log_text()
     assert len(eng.ticks) == 240                          # 只卖不买不代表停跑，照常盯盘
@@ -601,7 +594,7 @@ def test_board_on_minute_exception_is_logged_and_day_continues(env):
     SpyBoard.boom_once = True
     path = env.run()
     assert "扫首板本轮出错：RuntimeError('board boom')" in env.log_text()
-    assert len(FakeEngine.instances[0].ticks) == 240   # 低吸 tick 不受影响
+    assert len(FakeEngine.instances[0].ticks) == 240   # 引擎取行情不受影响
     assert path is not None and Path(path).exists()
 
 
@@ -612,6 +605,7 @@ def test_calendar_failure_disables_board_stale_before(env, monkeypatch):
     monkeypatch.setattr(run.akdata, "trade_days", fail)
     env.run()
     assert env.boards[0].stale_before is None
+    assert "交易日历不可用：停用「隔夜超期」规则" in env.log_text()
 
 
 def test_concept_refresh_runs_when_stale_and_failure_is_logged_only(env, monkeypatch):
@@ -748,7 +742,7 @@ def test_once_mode_shares_same_t_for_engine_and_board_tick(env, monkeypatch):
 
 def test_fast_scan_survives_on_fast_latency_no_minute_skipped_or_doubled(env):
     """真实场景里 on_fast 会花点真实时间；固定 deadline 之前的老实现会在这种情况下把
-    deadline 越推越远，导致好几个整分钟的 tick（连带低吸和扫首板的卖出）被跳过。"""
+    deadline 越推越远，导致好几个整分钟的 tick（连带各策略的卖出）被跳过。"""
     seed_concepts(env.db)
     cand = Candidate("600001", "题材A", 3, 1, {"pct": 1, "amount": 1, "ret5": 1})
     SpyBoard.force_watch = {"600001": cand}
@@ -869,7 +863,6 @@ def test_ran_yesterday_disables_board_stale_rule(env):
     seed_turnover(env.db, "2026-09-22 10:00")
     env.run()
     assert env.boards[0].stale_before is None
-    assert not hasattr(FakeEngine.instances[0], "stale_before")   # 低吸的隔夜超期规则不受影响
 
 
 def test_missed_yesterday_keeps_board_stale_rule(env):
@@ -1003,7 +996,7 @@ class FakeCustom:
                  concept_map, env_provider, prev_day, can_buy=True, trade_days=None):
         self.conn, self.sid, self.version, self.can_buy = conn, sid, version, can_buy
         self.calls, self.buy_calls = [], []
-        self.trade_days = trade_days
+        self.trade_days, self.env_provider = trade_days, env_provider
         for account in (f"{sid}_main", f"{sid}_shadow"):          # 与真实 CustomStrategy 一样开户
             ledger.ensure_account(account, spec["capital"])
         FakeCustom.instances.append(self)
@@ -1035,7 +1028,7 @@ def test_custom_strategy_exception_does_not_affect_others_or_builtin(env, fake_c
     env.feed["quotes"] = {"600001": quote("600001", pct=-1, ts=datetime(2026, 9, 23, 10, 0))}
     path = env.run()
     assert path is not None and Path(path).exists(), env.log_text()
-    assert len(FakeEngine.instances[0].ticks) == 240                  # 低吸照常每分钟
+    assert len(FakeEngine.instances[0].ticks) == 240                  # 引擎照常每分钟取行情
     by_sid = {s.sid: s for s in fake_custom.instances}
     assert set(by_sid) == {"c1", "c2"}
     assert by_sid["c2"].trade_days == DAYS                            # 交易日历传给自定义策略（持有天数用）
@@ -1067,7 +1060,7 @@ def test_custom_strategy_not_double_driven_and_can_buy_false_in_sell_only(env, f
     seed_custom(env)
     monkeypatch.delenv("TYPESAFE_API_KEY")
     conn = db.connect(env.db)
-    Ledger(conn).buy("main", quote("600001"), datetime(2026, 9, 22, 10, 0), "x")   # 有持仓才允许无 key 运行
+    Ledger(conn).buy(HOLD_ACCOUNT, quote("600001"), datetime(2026, 9, 22, 10, 0), "x")   # 有持仓才允许无 key 运行
     conn.close()
     env.run(once=True)
     assert [(s.sid, s.can_buy) for s in fake_custom.instances] == [("c1", False)]
@@ -1158,25 +1151,35 @@ class ClockJudge:
         return self.verdict
 
 
+REBOUND_CLOSES = [10.0, 10.0, 10.0, 10.0, 10.0, 9.5]     # 近 5 日 -5%：落在超跌反弹的候选区间
+
+
 def _real_engine(env, monkeypatch, events, clock, step, codes=("600001",)):
+    """真实 Engine + 真实超跌反弹；情绪、公告排雷都记事件，排雷每次把假 monotonic 拨快 step 秒。"""
     from jevq.engine import Engine as RealEngine
-    import jevq.engine as engine_mod
+    import jevq.strategies.rebound as rebound_mod
+
+    class Market(SentimentMarket):
+        def sentiment(self, stats):
+            events.append(("sentiment",))
+            return super().sentiment(stats)
+
     monkeypatch.setattr(run, "Engine", RealEngine)
-    monkeypatch.setattr(run, "MarketJudge", SentimentMarket)
+    monkeypatch.setattr(run, "MarketJudge", Market)
     monkeypatch.setattr(run.akdata, "fetch_pool_stats", lambda d: {})
     monkeypatch.setattr(run, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(engine_mod, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(rebound_mod, "monotonic", lambda: clock[0])
     judge = ClockJudge(events, clock, step)
     monkeypatch.setattr(run, "NoticeJudge", lambda conn, jev: judge)
     monkeypatch.setattr(run, "NewsJudge", lambda conn, jev: ClockJudge(events, clock, 0.0, ("pass", "ok")))
     monkeypatch.setattr(run.akdata, "load_universe", lambda today, days: {c: c for c in codes})
     for c in codes:
-        seed_closes(env.db, c)
+        seed_closes(env.db, c, REBOUND_CLOSES)
     return judge
 
 
-def test_slow_lowbuy_judge_does_not_delay_board_and_custom_sells(env, monkeypatch):
-    """低吸买入阶段的 Jev 再慢，同一分钟里扫首板、自定义策略的卖出也已经做完（卖出发生在任何 Jev 之前）。"""
+def test_slow_jev_in_buy_phase_does_not_delay_board_and_custom_sells(env, monkeypatch):
+    """买入阶段的 Jev（引擎刷新情绪、超跌反弹排雷）再慢，同一分钟里扫首板、自定义策略的卖出也已经做完。"""
     events, clock = [], [0.0]
     judge = _real_engine(env, monkeypatch, events, clock, step=30.0)
     seed_custom(env)                                              # 规则：跌到 -5% 止损
@@ -1200,11 +1203,12 @@ def test_slow_lowbuy_judge_does_not_delay_board_and_custom_sells(env, monkeypatc
                           "600003": quote("600003", pct=-6.0, ts=ts)}
     env.clock.t = ts
     env.run(once=True)
-    assert judge.calls == ["600001"]                              # 低吸确实问了（慢）Jev
-    first_judge = events.index(("judge", "600001"))
+    assert judge.calls == ["600001"]                              # 超跌反弹确实问了（慢）Jev
+    first_jev = events.index(("sentiment",))
+    assert first_jev < events.index(("judge", "600001"))          # 同一分钟先刷情绪，超跌反弹才判
     sold = [i for i, e in enumerate(events) if e[0] == "sell"]
     assert {events[i][1] for i in sold} == {"board_main", "c1_main"}
-    assert all(i < first_judge for i in sold)
+    assert all(i < first_jev for i in sold)
 
 
 def test_every_minute_all_sells_run_before_any_buy_phase(env, fake_custom, monkeypatch):
@@ -1226,8 +1230,7 @@ def test_every_minute_all_sells_run_before_any_buy_phase(env, fake_custom, monke
     FakeEngine.behavior = lambda eng, now: events.append((now, "sell", "engine"))
     orig_buy = FakeEngine.buy_step
     monkeypatch.setattr(FakeEngine, "buy_step",
-                        lambda self, now, deadline=None: events.append((now, "buy", "engine")) or orig_buy(
-                            self, now, deadline))
+                        lambda self, now: events.append((now, "buy", "engine")) or orig_buy(self, now))
     orig_c_sell, orig_c_buy = FakeCustom.sell_step, FakeCustom.buy_step
     monkeypatch.setattr(FakeCustom, "sell_step", lambda self, q, now: events.append(
         (now, "sell", self.sid)) or orig_c_sell(self, q, now))
@@ -1261,7 +1264,8 @@ def test_buy_phases_share_one_deadline_computed_after_sells(env, fake_custom, mo
     eng, custom = FakeEngine.instances[0], fake_custom.instances[0]
     expected = 1007.0 + config.TICK_JEV_BUDGET                    # 从卖完那一刻起算
     assert deadlines == [("board", expected)]
-    assert eng.buy_calls[0][1] == expected and custom.buy_calls[0][1] == expected
+    assert custom.buy_calls[0][1] == expected
+    assert len(eng.buy_calls) == 1                                # 引擎买入阶段只刷新情绪，不吃预算
     assert config.TICK_JEV_BUDGET == 40.0
 
 
@@ -1280,7 +1284,8 @@ def test_sell_phase_error_skips_only_that_strategys_buy_phase(env, fake_custom):
 
 
 def test_tick_jev_budget_exhausted_candidates_checked_next_minute(env, monkeypatch):
-    """预算用完：剩下的候选这一分钟不判（不记否决/错误），下一分钟接着判。"""
+    """预算用完：超跌反弹剩下的候选这一分钟不判（不记否决/错误），下一分钟接着判。
+    09:30 就能判，说明同一分钟引擎先刷好了情绪（没有情绪超跌反弹只在尾盘买）；情绪每 10 分钟刷一次。"""
     events, clock = [], [0.0]
     codes = ("600001", "600002", "600003")
     judge = _real_engine(env, monkeypatch, events, clock, step=30.0, codes=codes)
@@ -1291,12 +1296,15 @@ def test_tick_jev_budget_exhausted_candidates_checked_next_minute(env, monkeypat
     conn = db.connect(env.db)
     try:
         rows = conn.execute("SELECT code, verdict, substr(ts, 12, 5) FROM decisions "
-                            "WHERE strategy='lowbuy' AND code != '' ORDER BY id").fetchall()
+                            "WHERE strategy='rebound' AND code != '' ORDER BY id").fetchall()
+        refreshed = [m for (m,) in conn.execute(
+            "SELECT substr(ts, 12, 5) FROM decisions WHERE verdict='sentiment' AND strategy='market' ORDER BY id")]
     finally:
         conn.close()
     # 09:30：0→30、30→60，第三只时已过 40 秒预算；09:31 新预算里判第三只
     assert [(c, v) for c, v, _ in rows] == [(c, "reject") for c in judge.calls]
     assert [m for _, _, m in rows] == ["09:30", "09:30", "09:31"]
+    assert refreshed[:3] == ["09:30", "09:40", "09:50"] and len(refreshed) == 24 == events.count(("sentiment",))
 
 
 def test_missing_trade_day_in_closes_is_backfilled_before_open(env, monkeypatch):
@@ -1380,7 +1388,7 @@ def test_rebound_driven_every_minute_and_exception_isolated(env, spy_rebound):
     [strat] = spy_rebound.instances
     assert strat.enabled
     assert len(strat.calls) == 240 and all(strat.calls)
-    assert len(FakeEngine.instances[0].ticks) == 240                  # 低吸照常
+    assert len(FakeEngine.instances[0].ticks) == 240                  # 引擎照常每分钟取行情
     assert "超跌反弹本轮出错：RuntimeError('rebound boom')" in env.log_text()
     assert "超跌反弹：近 " in env.log_text()
 
@@ -1394,9 +1402,83 @@ def test_rebound_sell_only_when_board_exclusion_fails(env, spy_rebound, monkeypa
     assert "超跌反弹连板排除计算失败，今日只卖不买" in env.log_text()
 
 
-def test_rebound_reads_sentiment_from_lowbuy_engine(env, spy_rebound):
+def test_rebound_reads_sentiment_from_engine(env, spy_rebound):
     env.run(once=True)
     [strat] = spy_rebound.instances
     FakeEngine.instances[0].sentiment_label = "冰点"
     assert strat.sentiment_provider() == "冰点"
+
+
+# ---- 实盘跟单：意图写入 / trading_day ----
+
+class _FillEngine:
+    """_run_minute 用的最小假引擎：sell_step 返回预设成交，buy_step 恒不成交。"""
+
+    def __init__(self, fills):
+        self._fills = fills
+
+    def sell_step(self, now):
+        return self._fills
+
+    def buy_step(self, now, deadline=None):
+        return []
+
+
+def test_run_minute_writes_live_intent_for_rebound_main_fill_only():
+    conn = db.connect(":memory:")
+    t = datetime(2026, 9, 29, 9, 31)
+    fills = [Fill("rebound_main", "600001", "sell", 9.5, 500, 5.0, t, "止损"),
+             Fill("main", "600002", "sell", 8.0, 100, 5.0, t, "止损")]
+    run._run_minute(_FillEngine(fills), None, [], t, conn, lambda s: None, Notifier(None),
+                    {"600001": "甲", "600002": "乙"}, {})
+    assert [r[0] for r in conn.execute("SELECT code FROM live_intents")] == ["600001"]
+
+
+def test_run_minute_add_intents_exception_does_not_block_trading_or_push(monkeypatch):
+    conn = db.connect(":memory:")
+    t = datetime(2026, 9, 29, 9, 31)
+    fills = [Fill("rebound_main", "600001", "sell", 9.5, 500, 5.0, t, "止损")]
+    logs: list[str] = []
+
+    class BoomNotifier:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, title, content):
+            self.sent.append((title, content))
+
+    def boom(conn_arg, *a, **kw):
+        conn_arg.execute("INSERT INTO live_state(key, value) VALUES ('half', 'written')")
+        raise RuntimeError("db locked")
+
+    monkeypatch.setattr(run.live_store, "add_intents", boom)
+    notifier = BoomNotifier()
+    result = run._run_minute(_FillEngine(fills), None, [], t, conn, logs.append, notifier,
+                             {"600001": "甲"}, {"rebound_main": "超跌·主"})
+    assert result == fills                                      # 成交结果照常返回，不受影响
+    assert any("实盘意图写入失败：RuntimeError('db locked')" in line for line in logs)
+    assert len(notifier.sent) == 1 and notifier.sent[0][0] == "【超跌·主 卖出】甲 @9.5"   # 推送照常
+    assert conn.execute("SELECT COUNT(*) FROM live_state WHERE key='half'").fetchone()[0] == 0  # 半截写入已回滚
+
+
+def test_run_day_sets_trading_day_state_when_continuing(env):
+    env.run(once=True)
+    conn = db.connect(env.db)
+    assert live_store.get_state(conn, "trading_day") == "2026-09-23"
+
+
+def test_run_day_once_on_non_trading_day_does_not_set_trading_day_state(env):
+    env.clock.t = datetime(2026, 9, 26, 9, 29)   # 周六，不在交易日历里；once=True 也照常跑一轮
+    env.run(once=True)
+    conn = db.connect(env.db)
+    assert live_store.get_state(conn, "trading_day") is None
+
+
+def test_custom_strategy_reads_sentiment_from_engine(env, fake_custom):
+    """自定义策略的「市场情绪」条件读的也是引擎在买入阶段刷新的情绪（扫首板不用情绪）。"""
+    seed_custom(env)
+    env.run(once=True)
+    [strat] = fake_custom.instances
+    FakeEngine.instances[0].sentiment_label = "火热"
+    assert strat.env_provider() == {"sentiment": "火热", "overseas": "中性"}
 

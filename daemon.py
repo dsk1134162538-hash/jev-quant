@@ -9,7 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 import run  # noqa: E402
-from jevq.config import DB_PATH, SYNC_ENABLED, DEPLOY_ENABLED  # noqa: E402
+from jevq import db  # noqa: E402
+from jevq.config import DB_PATH, LIVE_LOCK_NAME, SYNC_ENABLED, DEPLOY_ENABLED  # noqa: E402
+from jevq.live.watchdog import Watchdog, kill_pid, pid_alive, spawn_live  # noqa: E402
 from jevq.notify import notifier_from_env  # noqa: E402
 from jevq.runlock import DAEMON_LOCK_NAME, HELD_MSG, hold_run_lock, is_held  # noqa: E402
 from jevq.sync import export as sync_export  # noqa: E402
@@ -82,6 +84,38 @@ def _real_restart(repo: Path, python_exe: Path) -> None:
     subprocess.Popen([str(exe), str(repo / "daemon.py"), AFTER_DEPLOY_ARG], cwd=repo, close_fds=True, **kwargs)
 
 
+def _live_alive(pid: int) -> bool:
+    """看门狗杀进程前的确认：进程还在，并且还占着 live.lock。live.py 退出以后 Windows 很快会把这个 PID
+    分给别的进程，只看 PID 会 taskkill 一个无关进程；live.py 活着就一定占着 live.lock（和 live.py 里同一个路径）。"""
+    return pid_alive(pid) and is_held(Path(DB_PATH).parent / LIVE_LOCK_NAME)
+
+
+def _real_watchdog_start(stop: threading.Event, notifier, repo: Path, python_exe: Path) -> threading.Thread:
+    """真实看门狗：daemon 线程，自己开数据库连接，每 60 秒查一次 live.py 心跳。
+    连库失败、check() 抛异常都只记日志，60 秒后重试，不带崩这个线程、更不能带崩 daemon 主循环；
+    线程标记为 daemon，daemon.py 退出时不用等它。"""
+    def loop() -> None:
+        wd = None
+        while not stop.is_set():
+            if wd is None:
+                try:
+                    conn = db.connect(DB_PATH)
+                    wd = Watchdog(conn, notifier, spawn=lambda: spawn_live(repo, python_exe),
+                                  kill=kill_pid, alive=_live_alive)
+                except Exception as e:
+                    file_log(f"看门狗连库失败，60 秒后重试：{e!r}")
+                    stop.wait(60)
+                    continue
+            try:
+                wd.check()
+            except Exception as e:
+                file_log(f"看门狗检查异常：{e!r}")
+            stop.wait(60)
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    return t
+
+
 def _default_after_close(conn, today) -> None:
     if not SYNC_ENABLED:
         return
@@ -130,7 +164,7 @@ def _after_run(report_path, today: date, repo: Path, python_exe: Path, notifier,
 def main(runner=_default_runner, clock=datetime.now, stop=None, *,
         repo: Path = ROOT, python_exe: Path | None = None, notifier=None,
         git_rev_parse=None, sync_and_deploy=None, restart=None,
-        lock_wait: float = 0, sleep=time_mod.sleep) -> int:
+        lock_wait: float = 0, sleep=time_mod.sleep, watchdog_start=None) -> int:
     stop = stop or threading.Event()
     python_exe = python_exe or Path(sys.executable)
     notifier = notifier if notifier is not None else notifier_from_env()
@@ -145,6 +179,8 @@ def main(runner=_default_runner, clock=datetime.now, stop=None, *,
         waited += 1
     try:
         with hold_run_lock(lock_path):
+            if watchdog_start is not None:
+                watchdog_start(stop, notifier, repo, python_exe)
             last_run = None
             while not stop.is_set():
                 target = plan_next_run(clock(), last_run)
@@ -196,4 +232,5 @@ def _run_with_retry(runner, stop: threading.Event, clock):
 
 if __name__ == "__main__":
     bootstrap()
-    sys.exit(main(lock_wait=AFTER_DEPLOY_LOCK_WAIT if AFTER_DEPLOY_ARG in sys.argv else 0))
+    sys.exit(main(lock_wait=AFTER_DEPLOY_LOCK_WAIT if AFTER_DEPLOY_ARG in sys.argv else 0,
+                  watchdog_start=_real_watchdog_start))

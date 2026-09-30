@@ -2,36 +2,26 @@ import json
 import sqlite3
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
-from time import monotonic
 
-from jevq.config import (ACCOUNTS, MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE,
-                         SENTIMENT_REFRESH_MIN, STRATEGIES)
-from jevq.ledger import Ledger, affordable_shares
+from jevq.config import ACCOUNTS, SENTIMENT_REFRESH_MIN
+from jevq.ledger import Ledger
 from jevq.models import Fill, Quote
-from jevq.rules.buy import buy_mode, buy_window_open, rank_candidates
-from jevq.rules.sell import decide_sell
 
 
 class Engine:
-    def __init__(self, conn: sqlite3.Connection, ledger: Ledger, notice_judge, news_judge,
-                 market_judge, fetch_quotes, fetch_pools, universe: dict[str, str],
-                 ret5: dict[str, float], prev_day: date, overseas: str | None,
-                 overseas_trace: dict | None = None,
-                 accounts: tuple[str, str] = STRATEGIES["lowbuy"]["accounts"],
+    """各策略共用的市场服务（低吸已下线，自己不买不卖）：每分钟取一次行情、记成交额，
+    买入阶段刷新市场情绪（超跌反弹、自定义策略读 sentiment_label），行情连续失败置 halted。"""
+
+    def __init__(self, conn: sqlite3.Connection, ledger: Ledger, market_judge, fetch_quotes, fetch_pools,
+                 universe: dict[str, str], prev_day: date, overseas: str | None,
                  accounts_provider: Callable[[], tuple[str, ...]] | None = None):
         self.conn, self.ledger = conn, ledger
-        self.accounts = accounts
-        # 持仓代码（_fetch 用来决定该拉哪些行情）要看全部账户，不只是本策略自己那两个；
-        # 默认取内置四个账户，保证低吸这条主线的行为不变。自定义策略跑起来后由调用方
-        # 注入一个能看到「今天在跑」账户全集的 provider（见 jevq.accounts.all_accounts）。
+        # 持仓代码（_fetch 用来决定该拉哪些行情）要看全部账户；默认取内置账户，
+        # 自定义策略跑起来后由调用方注入一个能看到「今天在跑」账户全集的 provider（见 jevq.accounts.all_accounts）。
         self.accounts_provider = accounts_provider or (lambda: ACCOUNTS)
-        self.notice_judge, self.news_judge, self.market_judge = notice_judge, news_judge, market_judge
+        self.market_judge = market_judge
         self.fetch_quotes, self.fetch_pools = fetch_quotes, fetch_pools
-        self.universe, self.ret5, self.prev_day, self.overseas = universe, ret5, prev_day, overseas
-        self.overseas_trace = overseas_trace
-        self.stale_before: date | None = prev_day
-        self.rejected: set[str] = set()
-        self._rejected_day: date | None = None
+        self.universe, self.prev_day, self.overseas = universe, prev_day, overseas
         self.fail_streak = 0
         self.halted = False
         self.last_quotes: dict[str, Quote] = {}
@@ -39,57 +29,41 @@ class Engine:
         self.sentiment_label: str | None = None
         self.sentiment_trace: dict | None = None
         self._sentiment_at: datetime | None = None
-        self._sold_minute: tuple[datetime, dict[str, Quote]] | None = None   # 本分钟卖出阶段取到的行情
+        self._restored_day: date | None = None
+        self._fetched_minute: tuple[datetime, dict[str, Quote]] | None = None   # 本分钟卖出阶段取到的行情
 
     def tick(self, now: datetime) -> list[Fill]:
-        """一分钟一轮：先卖后买（= sell_step + 不限时的 buy_step）。"""
+        """一分钟一轮 = sell_step + buy_step。"""
         return self.sell_step(now) + self.buy_step(now)
 
     def sell_step(self, now: datetime) -> list[Fill]:
-        """卖出阶段：取行情 + 按规则卖，不碰 Jev。行情留给同一分钟的 buy_step 用。"""
-        self._sold_minute = None
-        if self._rejected_day != now.date():
-            self._restore_rejected(now.date())
-            if self._sentiment_at is None:
-                self._restore_sentiment(now.date())
+        """卖出阶段：只取行情、记成交额，不碰 Jev；行情留给同一分钟的 buy_step 刷新情绪。自己不卖，返回 []。"""
+        self._fetched_minute = None
+        if self._sentiment_at is None and self._restored_day != now.date():
+            self._restore_sentiment(now.date())
         quotes = self._fetch(now)
-        if quotes is None:
-            return []
-        fills = self._sells(quotes, now)
-        self._sold_minute = (now, quotes)      # 卖出阶段完整走完才允许买（卖出出错 = 这一分钟不买，同旧 tick）
-        return fills
+        if quotes is not None:
+            self._fetched_minute = (now, quotes)
+        return []
 
-    def buy_step(self, now: datetime, deadline: float | None = None) -> list[Fill]:
-        """买入阶段：情绪 → 候选排序 → 影子 → 主账户（Jev）。必须在同一分钟的 sell_step 之后调用。
-        deadline（time.monotonic 时刻）：过了就不再对新候选问 Jev；没问到的这一分钟不算判过，下一分钟照常。"""
-        if self._sold_minute is None or self._sold_minute[0] != now:
+    def buy_step(self, now: datetime) -> list[Fill]:
+        """买入阶段：按 SENTIMENT_REFRESH_MIN 刷新市场情绪。必须在同一分钟的 sell_step 之后调用——
+        所有策略卖完才问 Jev，慢 Jev 永远拖不住卖出；halted 也照常刷新。自己不买，返回 []。"""
+        if self._fetched_minute is None or self._fetched_minute[0] != now:
             return []
-        quotes = self._sold_minute[1]
-        self._sold_minute = None               # 每分钟只买一轮
-        mode = buy_mode(self._sentiment(now, quotes), self.overseas)
-        if self.halted or not buy_window_open(mode, now.time()):
-            return []
-        ranked = rank_candidates(
-            (q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()), self.ret5)
-        fills = self._buy_shadow(ranked, now)
-        fills += self._buy_main(ranked, now, mode, deadline)
-        return fills
-
-    def _restore_rejected(self, day: date):
-        """重启后恢复当日已否决/出错的股票，避免重复问 Jev。"""
-        rows = self.conn.execute(
-            "SELECT DISTINCT code FROM decisions WHERE verdict IN ('reject', 'error') "
-            "AND code != '' AND (strategy IS NULL OR strategy = 'lowbuy') "
-            "AND substr(ts, 1, 10) = ?", (day.isoformat(),)).fetchall()
-        self.rejected = {r[0] for r in rows}
-        self._rejected_day = day
+        quotes = self._fetched_minute[1]
+        self._fetched_minute = None               # 每分钟只刷一轮
+        self._sentiment(now, quotes)
+        return []
 
     def _restore_sentiment(self, day: date):
         """重启后恢复当日最后一次情绪标签，只给卖出阶段（自定义退出条件）一个合理值；
-        _sentiment_at 不动，买入阶段照旧立即重新判断。"""
+        _sentiment_at 不动，买入阶段照旧立即重新判断。低吸下线前写的情绪行 strategy 是 'lowbuy' 或空。"""
+        self._restored_day = day
         try:
             row = self.conn.execute(
-                "SELECT detail FROM decisions WHERE verdict='sentiment' AND (strategy IS NULL OR strategy='lowbuy') "
+                "SELECT detail FROM decisions WHERE verdict='sentiment' "
+                "AND (strategy IN ('lowbuy', 'market') OR strategy IS NULL) "
                 "AND substr(ts, 1, 10) = ? ORDER BY ts DESC, rowid DESC LIMIT 1", (day.isoformat(),)).fetchone()
             label = json.loads(row[0]).get("label") if row else None
         except Exception as e:
@@ -116,25 +90,7 @@ class Engine:
         self.conn.commit()
         return quotes
 
-    def _sells(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
-        fills = []
-        stale_codes = set()
-        for account in self.accounts:
-            for pos in self.ledger.positions(account):
-                q = quotes.get(pos.code)
-                if q is None:
-                    continue
-                if q.ts.date() < now.date():
-                    stale_codes.add(pos.code)
-                    continue
-                d = decide_sell(pos, q, now, self.stale_before)
-                if d.sell and (f := self.ledger.sell(account, pos, q, now, d.reason)):
-                    fills.append(f)
-        if stale_codes:
-            print(f"[engine] {now:%H:%M} 行情非当日，跳过卖出 {len(stale_codes)} 只")
-        return fills
-
-    def _sentiment(self, now: datetime, quotes: dict[str, Quote]) -> str | None:
+    def _sentiment(self, now: datetime, quotes: dict[str, Quote]):
         fresh = self._sentiment_at and now - self._sentiment_at < timedelta(minutes=SENTIMENT_REFRESH_MIN)
         if not fresh:
             stats = self._market_stats(now, quotes)
@@ -151,10 +107,14 @@ class Engine:
                 self.sentiment_trace = None
             self._sentiment_at = now
             # 外围一起记下：面板试跑（后台 daemon 在交易、面板自己没跑时）从这一行读最近的情绪与外围
-            self._log(now, "", "sentiment", json.dumps(
-                {"stats": stats, "label": self.sentiment_label, "overseas": self.overseas}, ensure_ascii=False),
-                trace=self.sentiment_trace)
-        return self.sentiment_label
+            detail = json.dumps({"stats": stats, "label": self.sentiment_label, "overseas": self.overseas},
+                                ensure_ascii=False)
+            trace = None if self.sentiment_trace is None else json.dumps(self.sentiment_trace, ensure_ascii=False)
+            self.conn.execute(
+                "INSERT INTO decisions(ts, code, verdict, detail, trace, strategy) "
+                "VALUES (?, '', 'sentiment', ?, ?, 'market')",
+                (now.isoformat(timespec="seconds"), detail, trace))
+            self.conn.commit()
 
     def _market_stats(self, now: datetime, quotes: dict[str, Quote]) -> dict:
         try:
@@ -171,71 +131,3 @@ class Engine:
             cur = sum(q.amount for q in uni)
             stats["成交额较昨日同期%"] = round((cur / prev[0] - 1) * 100, 1)
         return stats
-
-    def _buy_shadow(self, ranked: list[Quote], now: datetime) -> list[Fill]:
-        shadow = self.accounts[1]
-        fills = []
-        for q in ranked:
-            if self.ledger.free_slots(shadow) <= 0:
-                break
-            if f := self.ledger.buy(shadow, q, now, f"影子｜低吸{q.pct}%｜5日{self.ret5[q.code]}%"):
-                fills.append(f)
-        return fills
-
-    def _buy_main(self, ranked: list[Quote], now: datetime, mode: str,
-                  deadline: float | None = None) -> list[Fill]:
-        main = self.accounts[0]
-        fills, checked, errors = [], 0, 0
-        for rank, q in enumerate(ranked, 1):
-            if self.ledger.free_slots(main) <= 0 or checked >= MAX_CHECKS_PER_TICK:
-                break
-            if q.code in self.rejected or self.ledger.holds(main, q.code):
-                continue
-            if errors >= MAX_ERRORS_PER_TICK:
-                break
-            if affordable_shares(min(self.ledger.cash(main), MAX_PER_TRADE), q.price) == 0:
-                continue
-            if deadline is not None and monotonic() >= deadline:
-                break           # 本分钟 Jev 预算用完：剩下的不算判过（不记否决），下一分钟再问
-            checked += 1
-            verdict, why = self._check(self.notice_judge, q.code, now.date())
-            notice_trace = getattr(self.notice_judge, "last_trace", None)
-            news_trace = None
-            if verdict == "pass":
-                verdict, why = self._check(self.news_judge, q.code, q.name, now)
-                news_trace = getattr(self.news_judge, "last_trace", None)
-            trace = {"strategy": "lowbuy",
-                     "candidate": {"name": q.name, "price": q.price, "pct": q.pct,
-                                   "ret5": self.ret5[q.code], "rank": rank, "of": len(ranked)},
-                     "notices": notice_trace, "news": news_trace,
-                     "market": {"mode": mode, "sentiment": self.sentiment_label,
-                                "sentiment_trace": self.sentiment_trace,
-                                "overseas": self.overseas, "overseas_trace": self.overseas_trace},
-                     "outcome": {"bought": False, "shares": None, "price": None}}
-            if verdict in ("reject", "error"):
-                self._log(now, q.code, verdict, why, trace)
-                self.rejected.add(q.code)
-                if verdict == "error":
-                    # Spec §7: Jev 超时/报错 → 重试一次（JevClient 内部已重试）；仍失败 → 该股当日不买。
-                    errors += 1
-                continue
-            f = self.ledger.buy(main, q, now, f"低吸{q.pct}%｜5日{self.ret5[q.code]}%｜{why}")
-            if f:
-                trace["outcome"] = {"bought": True, "shares": f.shares, "price": f.price}
-                fills.append(f)
-            self._log(now, q.code, verdict, why, trace)
-        return fills
-
-    @staticmethod
-    def _check(judge, *args) -> tuple[str, str]:
-        try:
-            return judge.check(*args)
-        except Exception as e:
-            return "error", f"判断异常：{e!r}"
-
-    def _log(self, now: datetime, code: str, verdict: str, detail: str, trace: dict | None = None):
-        self.conn.execute(
-            "INSERT INTO decisions(ts, code, verdict, detail, trace, strategy) VALUES (?, ?, ?, ?, ?, ?)",
-            (now.isoformat(timespec="seconds"), code, verdict, detail,
-             None if trace is None else json.dumps(trace, ensure_ascii=False), "lowbuy"))
-        self.conn.commit()
