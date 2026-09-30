@@ -64,7 +64,7 @@ class Executor:
             self._skip_new_intents("模式关闭")
             return
         if live_store.get_state(self.conn, "trading_day") != now.date().isoformat():
-            self._skip_new_intents("非交易日")
+            self._skip_new_intents("非交易日", keep_remote=True)   # 立即卖出（T+1 卖不了的）留到下个交易日
             return
 
         self._handle_resume(now)
@@ -89,9 +89,11 @@ class Executor:
     def _paused(self) -> bool:
         return live_store.paused(self.conn) is not None
 
-    def _skip_new_intents(self, reason: str) -> None:
+    def _skip_new_intents(self, reason: str, keep_remote: bool = False) -> None:
         now = self.clock()
         for intent in live_store.new_intents(self.conn):
+            if keep_remote and intent.source == "remote":
+                continue
             live_store.finish_intent(self.conn, intent.id, "skipped", reason, now)
 
     # ---- 买入 ----
@@ -662,7 +664,13 @@ class Executor:
         self._was_paused = p is not None
 
     def _while_paused(self, now: datetime) -> None:
-        """暂停中只动本地意图状态和发通知，绝不碰券商。"""
+        """暂停中只动本地意图状态和发通知，绝不碰券商（自检只报「暂停中」，收盘小结只看本地库）。"""
+        today = now.date().isoformat()
+        if now.time() >= config.LIVE_SELF_CHECK and live_store.get_state(self.conn, "self_check_day") != today:
+            live_store.set_state(self.conn, "self_check_day", today)
+            p = live_store.paused(self.conn)
+            until = f"到 {p['until']:%H:%M}" if p["until"] else "需手动恢复"
+            self._notify("自检", f"暂停中（{until}：{p['reason']}），没读客户端")
         remote = False
         for intent in live_store.new_intents(self.conn):
             if intent.side == "buy":
@@ -675,6 +683,7 @@ class Executor:
             self._notify("立即卖出", "暂停中收到立即卖出，恢复后执行", key="paused_sell_all")
         for code in self._to_sell(now):
             self._notify("待卖", f"暂停中，{self._name(code)} 该卖了，程序没卖", key=f"paused_sell:{code}")
+        self._close_summary(now)
 
     def _finish_remote_sells(self, now: datetime) -> None:
         """手机「立即卖出」收尾：程序清仓 → 意图 done，暂停到收盘（manual）；还有持仓 → 保持 new，
@@ -828,6 +837,8 @@ class Executor:
             self._auto_pause("启动核对读不到当日委托")
             return
         for row in rows:
+            if self._paused():
+                return   # 前一行对不上已经自动暂停：后面的不再碰券商，恢复时再核对
             self._reconcile_open_order_row(row, orders)
 
     def _reconcile_open_order_row(self, row: dict, orders: list) -> None:

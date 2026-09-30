@@ -782,3 +782,47 @@ def test_pause_and_clear_pause_commit_once_each_and_roundtrip():
     assert live_store.paused(c) is None
     assert c.execute("SELECT COUNT(*) FROM live_state WHERE key IN "
                      "('paused','paused_until','pause_reason','pause_kind')").fetchone()[0] == 0
+
+
+# ---- 控制器补充 ----
+
+def test_remote_sell_all_survives_a_non_trading_day():
+    """周五买的票周五点了立即卖出（T+1 卖不了）：周末不能把这条意图作废，下个交易日开盘照卖。"""
+    c, clock, broker, notifier, ex = env(at=datetime(2026, 10, 3, 10, 0))   # 周六
+    live_store.set_state(c, "trading_day", "2026-09-30")
+    live_store.add_remote_sell(c, datetime(2026, 9, 30, 14, 0))
+    ex.step()
+    assert c.execute("SELECT status FROM live_intents").fetchone()[0] == "new"
+    assert broker.calls == []
+
+
+def test_close_summary_is_sent_even_while_paused_without_broker_calls():
+    c, clock, broker, notifier, ex = env(at=datetime(2026, 9, 29, 15, 2))
+    live_store.pause(c, None, "撤单前核对不上：最后一笔不是程序的委托", "auto")
+    ex.step()
+    assert any("收盘小结" in title for title, _ in notifier.sent)
+    assert broker.calls == []
+
+
+def test_morning_self_check_while_paused_says_so_without_reading_the_client():
+    c, clock, broker, notifier, ex = env(at=datetime(2026, 9, 29, 9, 5), checked=False)
+    live_store.pause(c, None, "连续读取失败，客户端可能掉线", "auto")
+    ex.step()
+    ex.step()
+    msgs = [text for title, text in notifier.sent if "自检" in title]
+    assert len(msgs) == 1 and "暂停中" in msgs[0] and "客户端可能掉线" in msgs[0]
+    assert broker.calls == []
+
+
+def test_startup_reconcile_stops_touching_the_client_once_auto_paused():
+    """启动核对第一行就对不上（自动暂停）：后面的行不再撤单、不再查询，留给恢复时再核对。"""
+    c, clock, broker, notifier, ex = env(at=datetime(2026, 9, 29, 10, 0))
+    live_store.add_order(c, None, datetime(2026, 9, 29, 9, 50), "buy", "600009", 9.0, 100, "sending")
+    broker.fill_mode = "none"
+    broker.place("buy", "600001", 10.05, 500)   # 第二行对得上、还挂着：没暂停的话会去撤它
+    live_store.add_order(c, None, datetime(2026, 9, 29, 9, 59, 58), "buy", "600001", 10.05, 500, "sending")
+    ex.startup()
+    assert live_store.paused(c)["kind"] == "auto"
+    assert ("cancel_last",) not in broker.calls
+    rows = {r["code"]: r["status"] for r in live_store.orders_on(c, TODAY)}
+    assert rows == {"600009": "failed", "600001": "sending"}
