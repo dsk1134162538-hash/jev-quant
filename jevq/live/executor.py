@@ -684,10 +684,13 @@ class Executor:
 
     def _handle_resume(self, now: datetime) -> None:
         """手机点了恢复（resume_requested，自动暂停也靠它）或手动暂停到点 → 清暂停，再核对+对账。
+        resume_requested 的值是用户点恢复时的暂停原因：处理时暂停已经换成别的（用户没看到的新暂停）就不清。
         自动暂停 until 为 None、且不是 manual，永远不会自己到点恢复。"""
-        if live_store.get_state(self.conn, "resume_requested") == "1":
+        requested = live_store.get_state(self.conn, "resume_requested")
+        if requested is not None:
             live_store.set_state(self.conn, "resume_requested", None)   # 先删键：中途崩了宁可再点一次，不留旧请求
-            if self._paused():
+            p = live_store.paused(self.conn)
+            if p is not None and (p["reason"] or "") == requested:
                 live_store.clear_pause(self.conn)
                 self._after_resume(now)
         p = live_store.paused(self.conn)

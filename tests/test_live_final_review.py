@@ -135,7 +135,7 @@ def test_resume_after_close_books_open_buy_instead_of_pausing_again():
     live_store.pause(c, None, "来不及撤单：600001 这笔委托还挂着", "auto")
     clock.t = datetime(2026, 9, 29, 15, 30)
     ex = make(c, broker, clock=clock)
-    live_store.set_state(c, "resume_requested", "1")
+    live_store.set_state(c, "resume_requested", live_store.paused(c)["reason"])
     ex.step()
 
     assert live_store.paused(c) is None
@@ -160,7 +160,7 @@ def test_startup_flags_earlier_day_unresolved_orders_loudly_and_pauses_once():
     assert p["kind"] == "auto" and "600001" in p["reason"] and "程序不会卖" in p["reason"]
     assert live_store.orders_on(c, YESTERDAY)[0]["status"] == "unknown"
 
-    live_store.set_state(c, "resume_requested", "1")   # 用户在 App 里处理好了，再点恢复：不会再被同一笔拦住
+    live_store.set_state(c, "resume_requested", p["reason"])   # 用户在 App 里处理好了，再点恢复：不会再被同一笔拦住
     ex.step()
     assert live_store.paused(c) is None
 

@@ -198,11 +198,16 @@ def make_handler(conn_factory, clock=datetime.now, quotes=tencent.fetch_quotes,
                 self._json_body(200, {"ok": True, "until": until.isoformat()})
             elif self.path == "/api/resume":
                 current = live_store.paused(conn)
-                if current is not None and (payload.get("reason") or "") != (current["reason"] or ""):
+                if current is None:
+                    # 没在暂停：不写请求——不然紧接着出现的自动暂停会被这个旧请求清掉
+                    self._json_body(200, {"ok": True, "note": "当前没有暂停"})
+                    return
+                if (payload.get("reason") or "") != (current["reason"] or ""):
                     # 页面上看到的暂停和现在的不是同一个：这是用户没看到的新暂停，不能顺手清掉
                     self._json_body(409, {"error": f"暂停状态刚变了：{current['reason']}，请看清后再点恢复"})
                     return
-                live_store.set_state(conn, "resume_requested", "1")
+                # 请求里记下要恢复的是哪一个暂停：执行器处理时暂停已经换了就不清
+                live_store.set_state(conn, "resume_requested", current["reason"] or "")
                 self._json_body(200, {"ok": True})
             elif self.path == "/api/sell_all":
                 live_store.add_remote_sell(conn, now)

@@ -143,10 +143,11 @@ def test_pause_rejects_bad_payload(server):
     assert r.status_code == 400
 
 
-def test_resume_sets_resume_requested_state(server, conn):
+def test_resume_when_not_paused_writes_nothing(server, conn):
+    """没在暂停就没有可恢复的：不写 resume_requested——不然紧接着出现的自动暂停会被这个旧请求清掉。"""
     r = _post(f"{server}/api/resume", json={})
     assert r.status_code == 200
-    assert live_store.get_state(conn, "resume_requested") == "1"
+    assert live_store.get_state(conn, "resume_requested") is None
 
 
 # ---- 恢复要对得上页面看到的暂停 ----
@@ -155,7 +156,8 @@ def test_resume_with_matching_reason_sets_resume_requested(server, conn):
     live_store.pause(conn, None, "撤单前核对不上：读不到当日委托", "auto")
     r = _post(f"{server}/api/resume", json={"reason": "撤单前核对不上：读不到当日委托"})
     assert r.status_code == 200
-    assert live_store.get_state(conn, "resume_requested") == "1"
+    # 请求里记下要恢复的是哪一个暂停：执行器只在当前暂停还是它时才清
+    assert live_store.get_state(conn, "resume_requested") == "撤单前核对不上：读不到当日委托"
 
 
 def test_resume_with_stale_reason_is_rejected_and_keeps_the_pause(server, conn):
@@ -180,10 +182,10 @@ def test_resume_without_reason_while_paused_is_rejected(server, conn):
     assert live_store.get_state(conn, "resume_requested") is None
 
 
-def test_resume_when_not_paused_still_writes_resume_requested(server, conn):
+def test_resume_after_the_pause_already_ended_writes_nothing(server, conn):
     r = _post(f"{server}/api/resume", json={"reason": "手机暂停"})    # 页面上看到的暂停刚好已经到点恢复了
     assert r.status_code == 200
-    assert live_store.get_state(conn, "resume_requested") == "1"
+    assert live_store.get_state(conn, "resume_requested") is None
 
 
 def test_page_resume_button_sends_the_pause_reason_it_displays():
@@ -425,9 +427,10 @@ def test_host_in_whitelist_is_served(guarded, conn):
         assert requests.get(f"{guarded}/api/status", headers=h).status_code == 200, host
         conn.execute("DELETE FROM live_state WHERE key='resume_requested'")
         conn.commit()
-        r = _post(f"{guarded}/api/resume", json={}, headers={**h, "Origin": f"http://{host}"})
+        live_store.pause(conn, None, "手机暂停", "manual")
+        r = _post(f"{guarded}/api/resume", json={"reason": "手机暂停"}, headers={**h, "Origin": f"http://{host}"})
         assert r.status_code == 200, host
-        assert live_store.get_state(conn, "resume_requested") == "1"
+        assert live_store.get_state(conn, "resume_requested") == "手机暂停"
 
 
 def test_rejected_host_gets_json_403_body(guarded):

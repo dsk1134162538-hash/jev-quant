@@ -204,7 +204,7 @@ def test_resume_requested_clears_auto_pause_and_deletes_the_key():
     ex.step()
     assert live_store.paused(c) is not None and broker.calls == []
 
-    live_store.set_state(c, "resume_requested", "1")
+    live_store.set_state(c, "resume_requested", "撤单前核对不上")
     clock.sleep(1)
     ex.step()
     assert live_store.paused(c) is None
@@ -213,9 +213,20 @@ def test_resume_requested_clears_auto_pause_and_deletes_the_key():
     assert len(texts(notifier, "暂停结束")) == 1
 
 
+def test_resume_request_for_a_different_pause_is_ignored():
+    """恢复请求记着当时要恢复的暂停原因；执行器处理前又换成了用户没看到的自动暂停 → 不清，删掉请求。"""
+    c, clock, broker, notifier, ex = env()
+    live_store.pause(c, None, "卖单核对不上：600001 当日委托里找不到这笔卖单", "auto")
+    live_store.set_state(c, "resume_requested", "手机暂停")
+    ex.step()
+    assert live_store.paused(c)["kind"] == "auto"
+    assert live_store.get_state(c, "resume_requested") is None
+    assert broker.calls == []
+
+
 def test_resume_requested_when_not_paused_only_deletes_the_key():
     c, clock, broker, notifier, ex = env()
-    live_store.set_state(c, "resume_requested", "1")
+    live_store.set_state(c, "resume_requested", "手机暂停")
     ex.step()
     assert live_store.get_state(c, "resume_requested") is None
     assert live_store.paused(c) is None
