@@ -128,6 +128,7 @@ LIVE_SELL_SETTLE = time(15, 1)  # 收盘后结算挂着的卖单（留 1 分钟�
 LIVE_PAUSE_CLOSE = time(15, 0)        # 「暂停到收盘」的截止
 LIVE_SELF_CHECK = time(9, 5)
 LIVE_CLOSE_SUMMARY = time(15, 2)
+LIVE_CLOSE_SUMMARY_LATEST = time(15, 10)   # 收盘后结算一直读不到时，小结最晚这个点照发（注明有卖单没结算）
 LIVE_WATCHDOG_STALE = 120       # 秒：心跳多久没更新算断
 LIVE_WATCHDOG_MAX_RESTARTS = 3  # daemon 每天最多替它重启几次
 LIVE_HTTP_PORT = 8766

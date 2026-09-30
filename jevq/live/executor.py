@@ -1,6 +1,6 @@
 """实盘执行器：live.py 每秒调 Executor.step()。已实现骨架、心跳、模式/交易日门槛、买入全流程（含等成交、
-核对撤单、sending 恢复）、卖出对齐（Task 4：待卖、重挂、跌停排队、14:57 后不撤、收盘结算）；
-暂停/对账/自检（Task 5）接着扩展。
+核对撤单、sending 恢复）、卖出对齐（待卖、重挂、跌停排队、14:57 后不撤、收盘结算）、
+暂停/恢复、立即卖出收尾、对账（客户端股数少了才减账，两次读数确认）、自检、收盘小结。
 
 真金白银的两条底线：
   1. 委托最终状态只在「成功读到 + broker 判定它不再 open」时才落成 filled/partial/cancelled 这类终态；
@@ -9,7 +9,9 @@
   2. 一个意图 / 一次卖出尝试最多只产生一次 place() 调用：add_order(sending) 后立刻 finish_intent（买），
      place() 之后不管抛什么异常都不放它跑出 _buy_live / _place_sell；_buy 顶部另外兜底一次「这个意图是不是
      已经有委托了」，_sell 在今天这只还有 sending 卖单时绝不再下。
+另外：暂停中完全不碰券商（不下单、不撤单、不查询）；自动暂停只有手动恢复才会解除。
 """
+import json
 import os
 import time as time_mod
 from datetime import date, datetime, timedelta
@@ -38,13 +40,20 @@ class Executor:
         self._next_sell_try: dict[str, datetime] = {}   # 内存状态，跨天清零
         self._sell_rounds: dict[str, int] = {}
         self._sell_day: date | None = None
+        self._was_paused = live_store.paused(conn) is not None   # 重启时按当前状态起步，不重复通知
+        self._last_reconcile: datetime | None = None             # 内存状态：启动后第一轮立刻对账一次
 
     # ---- 主循环 ----
 
     def startup(self) -> None:
-        """程序重启后先核对 sending/submitted 委托（防重复下单，spec「防重复下单」）。
-        对账（有持仓/空仓间隔对账）留给 Task 5 接在这后面。"""
+        """程序重启后：暂停中什么都不碰（恢复时会核对）；否则先核对今天的 sending/submitted 委托（防重复下单，
+        spec「防重复下单」，不论模式），再对账（模式不是 off）。更早日期遗留的行不动，它们的成交以对账为准。"""
+        if self._paused():
+            return
         self._reconcile_sending_orders()
+        if self._paused() or live_store.mode(self.conn) == "off":
+            return   # 核对读不到/对不上已经自动暂停：不再碰券商
+        self._reconcile(self.clock())
 
     def step(self) -> None:
         now = self.clock()
@@ -58,15 +67,27 @@ class Executor:
             self._skip_new_intents("非交易日")
             return
 
-        if live_store.paused(self.conn) is not None:
-            return   # 暂停中不碰券商；暂停期间的意图/提醒留给 Task 5
+        self._handle_resume(now)
+        self._note_pause_change()
+        if self._paused():
+            self._while_paused(now)
+            return   # 暂停中零 broker 调用
 
+        self._self_check(now)
         self._note_sell_intents(now)
         self._align_sells(now)
+        # 立即卖出收尾放在买入意图之前：卖光的同一轮里，暂停先落地，同轮的买入意图才会被「暂停中」挡住
+        self._finish_remote_sells(self.clock())
         for intent in live_store.new_intents(self.conn):
             if intent.side == "buy":
                 self._buy(intent)
-        self._settle_sells_after_close(self.clock())
+        if not self._paused():   # 前面某一步自动暂停了：本轮不再碰券商
+            self._scheduled_reconcile(self.clock())
+            self._settle_sells_after_close(self.clock())
+        self._close_summary(self.clock())
+
+    def _paused(self) -> bool:
+        return live_store.paused(self.conn) is not None
 
     def _skip_new_intents(self, reason: str) -> None:
         now = self.clock()
@@ -102,6 +123,7 @@ class Executor:
             client_positions = self._read(self.broker.positions)
         except Exception:
             return   # 读失败：_read 内部按连续失败次数处理，这里保留 new，下一秒重试
+        self._reconcile(now, client_positions)   # 下单前对账，复用刚读到的持仓
         if intent.code in client_positions and intent.code not in live_store.positions(conn):
             live_store.finish_intent(conn, intent.id, "skipped", "你持有这只", now)
             return
@@ -334,7 +356,7 @@ class Executor:
     # ---- 卖出（按状态对齐）----
 
     def _note_sell_intents(self, now: datetime) -> None:
-        """模拟盘的卖出意图只记「这次怎么决定的」，结果看 live_orders；remote 意图保持 new（Task 5 收尾）。"""
+        """模拟盘的卖出意图只记「这次怎么决定的」，结果看 live_orders；remote 意图保持 new（收尾见 _finish_remote_sells）。"""
         held = live_store.positions(self.conn)
         for intent in live_store.new_intents(self.conn):
             if intent.side != "sell" or intent.source != "sim":
@@ -396,7 +418,7 @@ class Executor:
         返回 True = 没有挂着的卖单了，可以继续卖；False = 这次到此为止（已设好下次重试或已暂停）。"""
         rows = [r for r in live_store.orders_on(self.conn, today) if r["side"] == "sell" and r["code"] == code]
         if any(r["status"] == "sending" for r in rows):
-            self._retry_later(code)   # 结果不明的卖单没核对完（Task 5 恢复时核对）：绝不再下一单
+            self._retry_later(code)   # 结果不明的卖单没核对完（启动/恢复时核对）：绝不再下一单
             return False
         rows = [r for r in rows if r["status"] == "submitted"]
         if not rows:
@@ -423,6 +445,8 @@ class Executor:
     def _sell_round(self, code: str) -> bool:
         """一轮卖出（最多一次 place）。返回 True = 撤完立即重挂下一轮；False = 这次尝试结束。"""
         conn = self.conn
+        if live_store.paused(conn) is not None:
+            return False   # 上一轮处理期间暂停了（自动/手机）：当前这轮已经做完，不开新的一轮
         t = self.clock()
         if not self._in_sell_window(t):
             self._retry_later(code)   # 等待/撤单期间过了收市点：不在时段外重挂
@@ -454,13 +478,18 @@ class Executor:
             except Exception:
                 self._retry_later(code)
                 return False
+            self._reconcile(self.clock(), holdings)   # 下单前对账，复用刚读到的持仓
+            pos = live_store.positions(conn).get(code)   # 对账可能已经减账
+            if pos is None or pos.shares <= 0:
+                self._sell_rounds.pop(code, None)
+                return False
             held = holdings.get(code)
             cap = min(pos.shares, held.available if held else 0)
             qty = cap // 100 * 100   # 下单层只收 100 的倍数
             if qty == 0:
                 if cap > 0:
                     self._notify("卖出", f"{name} 剩 {cap} 股零股，程序卖不了，请手动卖出", key=f"odd_lot:{code}")
-                self._retry_later(code)   # 客户端一股都没有的情况留给 Task 5 对账减账
+                self._retry_later(code)   # 客户端一股都没有：上面的对账已记下减账待确认
                 return False
         queue = q.price <= q.limit_down + 0.005
         price = q.limit_down if queue else max(round(q.price * (1 - config.LIVE_SELL_DISCOUNT), 2), q.limit_down)
@@ -598,6 +627,193 @@ class Executor:
                 continue
             self._settle_sell(row, m, closing=True)
         live_store.set_state(self.conn, "sell_settle_day", today.isoformat())
+
+    # ---- 暂停 / 恢复 / 立即卖出 ----
+
+    def _handle_resume(self, now: datetime) -> None:
+        """手机点了恢复（resume_requested，自动暂停也靠它）或手动暂停到点 → 清暂停，再核对+对账。
+        自动暂停 until 为 None、且不是 manual，永远不会自己到点恢复。"""
+        if live_store.get_state(self.conn, "resume_requested") == "1":
+            live_store.set_state(self.conn, "resume_requested", None)   # 先删键：中途崩了宁可再点一次，不留旧请求
+            if self._paused():
+                live_store.clear_pause(self.conn)
+                self._after_resume(now)
+        p = live_store.paused(self.conn)
+        if p is not None and p["kind"] == "manual" and p["until"] is not None and now >= p["until"]:
+            live_store.clear_pause(self.conn)   # 昨天的 until 今天也自然失效：暂停不跨天
+            self._after_resume(now)
+
+    def _after_resume(self, now: datetime) -> None:
+        """恢复：先核对 sending/submitted 委托（读不到/对不上它自己会自动暂停，那就到此为止），再对账；
+        之后本轮照常往下走（卖出对齐等）。"""
+        self._reconcile_sending_orders()
+        if self._paused():
+            return
+        self._reconcile(now)
+
+    def _note_pause_change(self) -> None:
+        """未暂停 → 暂停：手动暂停通知开始（自动暂停 _auto_pause 已经发过）；暂停 → 未暂停：通知结束。"""
+        p = live_store.paused(self.conn)
+        if p is not None and not self._was_paused and p["kind"] == "manual":
+            until = p["until"]
+            self._notify(f"暂停开始（到 {until:%H:%M}）" if until else "暂停开始（需手动恢复）", p["reason"] or "")
+        elif p is None and self._was_paused:
+            self._notify("暂停结束", "已恢复，先对账再处理待卖")
+        self._was_paused = p is not None
+
+    def _while_paused(self, now: datetime) -> None:
+        """暂停中只动本地意图状态和发通知，绝不碰券商。"""
+        remote = False
+        for intent in live_store.new_intents(self.conn):
+            if intent.side == "buy":
+                live_store.finish_intent(self.conn, intent.id, "skipped", "暂停中", now)
+            elif intent.source == "sim":
+                live_store.finish_intent(self.conn, intent.id, "done", "暂停中延后", now)
+            elif intent.source == "remote":
+                remote = True   # 保持 new，恢复后照常卖
+        if remote:
+            self._notify("立即卖出", "暂停中收到立即卖出，恢复后执行", key="paused_sell_all")
+        for code in self._to_sell(now):
+            self._notify("待卖", f"暂停中，{self._name(code)} 该卖了，程序没卖", key=f"paused_sell:{code}")
+
+    def _finish_remote_sells(self, now: datetime) -> None:
+        """手机「立即卖出」收尾：程序清仓 → 意图 done，暂停到收盘（manual）；还有持仓 → 保持 new，
+        当天买的卖不了，提醒一次，下个交易日开盘卖。已经在暂停（比如本轮刚自动暂停）就不动：
+        不能把自动暂停覆盖成会自己恢复的手动暂停。"""
+        if self._paused():
+            return
+        remote = [i for i in live_store.new_intents(self.conn) if i.source == "remote" and i.side == "sell"]
+        if not remote:
+            return
+        held = live_store.positions(self.conn)
+        if not held:
+            for intent in remote:
+                live_store.finish_intent(self.conn, intent.id, "done", "已卖完", now)
+            end = datetime.combine(now.date(), config.LIVE_PAUSE_CLOSE)
+            if now < end:   # 收盘后按下就没有「到收盘」可言：不留一条一出生就过期的暂停
+                live_store.pause(self.conn, end, "立即卖出", "manual")
+            return
+        for code, p in sorted(held.items()):
+            if p.buy_date >= now.date():
+                self._notify("立即卖出", f"{self._name(code)} 今天买的，下个交易日开盘卖", key=f"sell_all_t1:{code}")
+
+    # ---- 自检 / 对账 / 收盘小结 ----
+
+    def _label(self, code: str) -> str:
+        name = self._name(code)
+        return code if name == code else f"{name}({code})"
+
+    def _self_check(self, now: datetime) -> None:
+        """每个交易日 LIVE_SELF_CHECK 之后的第一轮：读资金和客户端持仓确认在线，通过也发通知。
+        先记 self_check_day 再读：成功失败都只发一次。"""
+        today = now.date().isoformat()
+        if now.time() < config.LIVE_SELF_CHECK or live_store.get_state(self.conn, "self_check_day") == today:
+            return
+        live_store.set_state(self.conn, "self_check_day", today)
+        try:
+            balance = self._read(self.broker.balance)
+            self._read(self.broker.positions)
+        except Exception as e:
+            self._notify("自检失败", f"读客户端失败：{e}")
+            return
+        held = live_store.positions(self.conn)
+        desc = "、".join(f"{self._label(code)} {p.shares}股" for code, p in sorted(held.items())) or "空仓"
+        self._notify("自检通过", f"模式 {live_store.mode(self.conn)}，可用资金 {balance:.2f} 元，程序持仓 {desc}")
+
+    def _scheduled_reconcile(self, now: datetime) -> None:
+        """只在卖出时段（午休、收盘后不对账）：有持仓每 LIVE_RECONCILE_HOLDING 分钟对账；空仓每
+        LIVE_RECONCILE_IDLE 分钟读一次资金确认在线（失败只计数）。"""
+        if not self._in_sell_window(now):
+            return
+        holding = bool(live_store.positions(self.conn))
+        gap = timedelta(minutes=config.LIVE_RECONCILE_HOLDING if holding else config.LIVE_RECONCILE_IDLE)
+        if self._last_reconcile is not None and now - self._last_reconcile < gap:
+            return
+        if holding:
+            self._reconcile(now)
+            return
+        self._last_reconcile = now
+        try:
+            self._read(self.broker.balance)
+        except Exception:
+            pass   # 只计数：_read 连续失败到阈值会自动暂停
+
+    def _reconcile(self, now: datetime, holdings: dict | None = None) -> None:
+        """对账（spec「对账」）：客户端股数比程序账少 → 连续两次读到同一个数、间隔 ≥ LIVE_REDUCE_CONFIRM 秒才按客户端
+        减账（记为人工卖出）；不少（多出的是用户的）→ 不动。holdings 为 None 时自己读，读失败不改账。
+        dryrun 只读不改账。今天这只有 sending/submitted 委托的不对账：成交由委托跟踪入账，这里再减就重复了。"""
+        conn = self.conn
+        mode = live_store.mode(conn)
+        if mode == "off":
+            return
+        self._last_reconcile = now
+        if holdings is None:
+            try:
+                holdings = self._read(self.broker.positions)
+            except Exception:
+                return
+        if mode == "dryrun":
+            return
+        held = live_store.positions(conn)
+        for (key,) in conn.execute("SELECT key FROM live_state WHERE key LIKE 'reduce:%'").fetchall():
+            if key[len("reduce:"):] not in held:
+                live_store.set_state(conn, key, None)   # 程序已经不持有了：旧的待确认不能留给以后的持仓
+        busy = {r["code"] for r in live_store.orders_on(conn, now.date()) if r["status"] in ("sending", "submitted")}
+        for code, p in held.items():
+            if code in busy:
+                continue
+            client = holdings.get(code)
+            client_shares = client.shares if client else 0
+            key = f"reduce:{code}"
+            if client_shares >= p.shares:
+                live_store.set_state(conn, key, None)
+                continue
+            seen = self._reduce_pending(key)
+            if seen is not None and seen[0] == client_shares:
+                if (now - seen[1]).total_seconds() >= config.LIVE_REDUCE_CONFIRM:
+                    live_store.reduce_position(conn, code, p.shares - client_shares)
+                    live_store.set_state(conn, key, None)
+                    self._notify("按客户端减账", f"按客户端减账：{self._name(code)} 程序账 {p.shares} 股 → "
+                                                f"{client_shares} 股（记为人工卖出）")
+                continue   # 同一个数但还不到 60 秒：保持原来的计时
+            live_store.set_state(conn, key, json.dumps({"shares": client_shares, "ts": now.isoformat()}))
+
+    def _reduce_pending(self, key: str):
+        """读减账待确认：(客户端股数, 时间)；没有或读不懂当没有。"""
+        raw = live_store.get_state(self.conn, key)
+        if raw is None:
+            return None
+        try:
+            d = json.loads(raw)
+            return int(d["shares"]), datetime.fromisoformat(d["ts"])
+        except (ValueError, KeyError, TypeError):
+            return None
+
+    def _close_summary(self, now: datetime) -> None:
+        """收盘小结：LIVE_CLOSE_SUMMARY 之后、收盘后结算完成才发（结算一直读不到，到 LIVE_CLOSE_SUMMARY_LATEST 也发，
+        注明有卖单没结算）。只看本地库，不读券商。"""
+        conn, today = self.conn, now.date().isoformat()
+        if now.time() < config.LIVE_CLOSE_SUMMARY or live_store.get_state(conn, "close_summary_day") == today:
+            return
+        orders = live_store.orders_on(conn, now.date())
+        unsettled = live_store.get_state(conn, "sell_settle_day") != today and any(
+            r["side"] == "sell" and r["status"] == "submitted" for r in orders)
+        if unsettled and now.time() < config.LIVE_CLOSE_SUMMARY_LATEST:
+            return
+        live_store.set_state(conn, "close_summary_day", today)
+        filled = sum(1 for r in orders if r["filled"] > 0 or r["status"] == "dryrun")
+        skipped = conn.execute(
+            "SELECT note, COUNT(*) FROM live_intents WHERE status IN ('skipped', 'expired') "
+            "AND substr(handled_ts, 1, 10)=? GROUP BY note ORDER BY COUNT(*) DESC, note", (today,)).fetchall()
+        groups = "、".join(f"{note or '未注明'} {n}" for note, n in skipped)
+        held = live_store.positions(conn)
+        desc = "、".join(f"{code} {p.shares}股 成本价 {p.buy_price}" for code, p in sorted(held.items())) or "空仓"
+        sim = conn.execute("SELECT COUNT(*) FROM fills WHERE account=? AND substr(ts, 1, 10)=?",
+                           (config.LIVE_ACCOUNT, today)).fetchone()[0]
+        text = (f"模式 {live_store.mode(conn)}；实盘委托 {len(orders)} 笔，成交 {filled} 笔；"
+                f"跳过 {sum(n for _, n in skipped)} 笔" + (f"（{groups}）" if groups else "") +
+                f"；程序持仓 {desc}；模拟成交 {sim} 笔" + ("；有卖单没结算" if unsettled else ""))
+        self._notify("收盘小结", text)
 
     # ---- sending / submitted 恢复（启动核对）----
 

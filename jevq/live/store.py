@@ -39,11 +39,16 @@ def get_state(conn: sqlite3.Connection, key: str) -> str | None:
     return row[0] if row else None
 
 
-def set_state(conn: sqlite3.Connection, key: str, value: str | None) -> None:
+def _put_state(conn: sqlite3.Connection, key: str, value: str | None) -> None:
+    """写一个键（None = 删），不提交。"""
     if value is None:
         conn.execute("DELETE FROM live_state WHERE key=?", (key,))
     else:
         conn.execute("INSERT OR REPLACE INTO live_state(key, value) VALUES (?, ?)", (key, value))
+
+
+def set_state(conn: sqlite3.Connection, key: str, value: str | None) -> None:
+    _put_state(conn, key, value)
     conn.commit()
 
 
@@ -199,15 +204,18 @@ def buys_today(conn: sqlite3.Connection, day: date) -> int:
 # ---- 暂停 ----
 
 def pause(conn: sqlite3.Connection, until: datetime | None, reason: str, kind: str) -> None:
-    set_state(conn, "paused", "1")
-    set_state(conn, "paused_until", until.isoformat() if until else None)
-    set_state(conn, "pause_reason", reason)
-    set_state(conn, "pause_kind", kind)
+    # 四个键写完只提交一次：页面线程和执行器共用同一个连接，不能让对方读到写了一半的暂停状态
+    _put_state(conn, "paused", "1")
+    _put_state(conn, "paused_until", until.isoformat() if until else None)
+    _put_state(conn, "pause_reason", reason)
+    _put_state(conn, "pause_kind", kind)
+    conn.commit()
 
 
 def clear_pause(conn: sqlite3.Connection) -> None:
     for key in ("paused", "paused_until", "pause_reason", "pause_kind"):
-        set_state(conn, key, None)
+        _put_state(conn, key, None)
+    conn.commit()
 
 
 def paused(conn: sqlite3.Connection) -> dict | None:

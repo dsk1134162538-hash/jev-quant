@@ -25,13 +25,16 @@ def quotes_fn(pct=0.0, pre_close=10.0):
 
 
 def make(c, broker, notifier=None, clock=None, quotes=None):
-    return Executor(c, broker, notifier or FakeNotifier(), clock=clock.now, sleep=clock.sleep,
-                    quotes=quotes or quotes_fn())
+    ex = Executor(c, broker, notifier or FakeNotifier(), clock=clock.now, sleep=clock.sleep,
+                  quotes=quotes or quotes_fn())
+    ex._last_reconcile = clock.now()   # 定时对账不是这里的主题：起步当作刚对过（见 test_live_control.py）
+    return ex
 
 
 def setup_ready(c, clock, mode="live"):
     live_store.set_mode(c, mode)
     live_store.set_state(c, "trading_day", clock.now().date().isoformat())
+    live_store.set_state(c, "self_check_day", clock.now().date().isoformat())   # 自检也不是这里的主题
 
 
 def hold(c, code="600001", shares=500, buy_price=10.0, buy_date=YESTERDAY):
@@ -628,7 +631,7 @@ def test_no_sell_during_lunch_break():
     assert broker.calls == []
 
 
-def test_remote_sell_intent_sells_position_sim_still_holds_and_stays_new():
+def test_remote_sell_intent_sells_position_sim_still_holds_and_is_finished_once_flat():
     c = conn()
     clock = FakeClock(datetime(2026, 9, 29, 9, 35))
     setup_ready(c, clock)
@@ -644,7 +647,7 @@ def test_remote_sell_intent_sells_position_sim_still_holds_and_stays_new():
     ex.step()
     assert len(places(broker)) == 1
     assert live_store.positions(c) == {}
-    assert c.execute("SELECT status FROM live_intents WHERE source='remote'").fetchone() == ("new",)
+    assert c.execute("SELECT status FROM live_intents WHERE source='remote'").fetchone() == ("done",)   # 卖光后收尾（Task 5）
 
 
 # ---- 演练 ----
@@ -785,7 +788,7 @@ def test_unknown_place_error_and_read_failure_auto_pauses_and_keeps_sending():
 
 # ---- 暂停 / 行情 / 读失败 ----
 
-def test_paused_makes_no_broker_calls_and_leaves_intents_untouched():
+def test_paused_makes_no_broker_calls_and_leaves_positions_untouched():
     c = conn()
     clock = FakeClock(datetime(2026, 9, 29, 9, 35))
     setup_ready(c, clock)
@@ -798,7 +801,8 @@ def test_paused_makes_no_broker_calls_and_leaves_intents_untouched():
     make(c, broker, clock=clock).step()
 
     assert broker.calls == []
-    assert {s for (s,) in c.execute("SELECT status FROM live_intents")} == {"new"}
+    assert sorted(c.execute("SELECT side, status, note FROM live_intents").fetchall()) == [
+        ("buy", "skipped", "暂停中"), ("sell", "done", "暂停中延后")]   # 暂停中的意图处理见 test_live_control.py
     assert live_store.positions(c)["600001"].shares == 500
 
 

@@ -21,13 +21,16 @@ def conn():
 
 
 def make(c, broker, notifier=None, clock=None, quotes=None):
-    return Executor(c, broker, notifier or FakeNotifier(), clock=clock.now, sleep=clock.sleep,
-                    quotes=quotes or (lambda codes: {}))
+    ex = Executor(c, broker, notifier or FakeNotifier(), clock=clock.now, sleep=clock.sleep,
+                  quotes=quotes or (lambda codes: {}))
+    ex._last_reconcile = clock.now()   # 定时对账不是这里的主题：起步当作刚对过（见 test_live_control.py）
+    return ex
 
 
 def setup_ready(c, clock, mode="live"):
     live_store.set_mode(c, mode)
     live_store.set_state(c, "trading_day", clock.now().date().isoformat())
+    live_store.set_state(c, "self_check_day", clock.now().date().isoformat())   # 自检也不是这里的主题
 
 
 def add_intent(c, now, code="600001", price=10.0, shares=500, name="甲公司"):
