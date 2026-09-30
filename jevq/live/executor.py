@@ -900,7 +900,9 @@ class Executor:
 
     def _read(self, fn):
         """统一读取：成功重置 read_fail_streak、写 last_read_ok；任何异常都算一次失败，+1，到
-        LIVE_READ_FAIL_PAUSE 自动暂停，然后照样抛出（调用方自己决定这次失败要不要紧急处理）。"""
+        LIVE_READ_FAIL_PAUSE 自动暂停，然后照样抛出（调用方自己决定这次失败要不要紧急处理）。
+        每次读之前顺手写心跳：几轮卖出下来一次 step 能超过看门狗的 LIVE_WATCHDOG_STALE，不能被当成卡死杀掉。"""
+        live_store.set_state(self.conn, "heartbeat", self.clock().isoformat())
         try:
             result = fn()
         except Exception:

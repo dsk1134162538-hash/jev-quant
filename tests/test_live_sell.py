@@ -996,3 +996,34 @@ def test_sell_rounds_and_retry_times_reset_on_a_new_day():
     ex.step()
     assert len(places(broker)) == 2 * config.LIVE_SELL_ROUNDS   # 轮数清零：又是完整的 3 轮
     assert len(texts(notifier, "每分钟重试")) == 2               # 通知按天各发一次
+
+
+def test_heartbeat_keeps_ticking_during_a_long_multi_round_sell():
+    """网关每次读约 6 秒、下单约 7 秒：3 轮卖出一轮 step 能超过看门狗的 LIVE_WATCHDOG_STALE。
+    心跳得在中途也更新，不能被看门狗当成卡死、卖到一半被杀掉。"""
+    c = conn()
+    start = datetime(2026, 9, 29, 10, 0)
+    clock = FakeClock(start)
+    setup_ready(c, clock)
+    hold(c, shares=500)
+    broker = FakeBroker(clock, holdings={"600001": [500, 500]})
+    broker.fill_mode = "none"
+    gaps = []
+
+    def slow(fn, seconds):
+        def call(*a):
+            beat = live_store.get_state(c, "heartbeat")
+            if beat is not None:
+                gaps.append((clock.now() - datetime.fromisoformat(beat)).total_seconds())
+            clock.sleep(seconds)
+            return fn(*a)
+        return call
+
+    broker.orders_today = slow(broker.orders_today, 6)
+    broker.positions = slow(broker.positions, 6)
+    broker.place = slow(broker.place, 7)
+    ex = make(c, broker, clock=clock)
+    ex.step()
+
+    assert (clock.now() - start).total_seconds() > config.LIVE_WATCHDOG_STALE   # 这一轮确实很长
+    assert max(gaps) < config.LIVE_WATCHDOG_STALE / 2
