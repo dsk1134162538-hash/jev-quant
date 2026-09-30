@@ -23,7 +23,8 @@ class FakeNotifier:
 
 def make_run_git(*, status="", staged_names="x\n", full_diff="", rebase_ok=True, push_ok=True,
                  fetch_ok=True, rev_parse="new222", changed_files="", commit_ok=True,
-                 worktree_add_ok=True, worktree_remove_ok=True, reject_pathspecs=(".superpowers",)):
+                 worktree_add_ok=True, worktree_remove_ok=True, reject_pathspecs=(".superpowers",),
+                 code_diff_ok=True):
     """假 git runner：按子命令分派固定响应，记录所有调用方便断言（尤其是「绝不出现破坏性
     操作」这一条）。commit 默认模拟真实 git 的行为：pathspec 里如果有一个在索引里完全不
     存在的路径（如 .superpowers 目录下没有任何已跟踪/已暂存内容），commit -- <pathspec...>
@@ -42,6 +43,8 @@ def make_run_git(*, status="", staged_names="x\n", full_diff="", rebase_ok=True,
         if cmd == "diff" and "--name-only" in args and "--cached" in args:
             return FakeResult(0, staged_names)
         if cmd == "diff" and args[1] == "--name-only":
+            if not code_diff_ok:
+                return FakeResult(128, stderr="fatal: bad object old111")
             return FakeResult(0, changed_files)
         if cmd == "commit":
             if not commit_ok:
@@ -144,6 +147,25 @@ def test_requirements_change_triggers_install(tmp_path):
     sync_and_deploy(tmp_path, TODAY, lambda m: None, FakeNotifier(), Path("python"),
                     "old111", run_git=run_git, run_tests=run_tests)
     assert seen == [True]
+
+
+def test_code_diff_failure_counts_as_changed_and_tests_before_rebase(tmp_path):
+    """git diff 失败（比如运行中的提交在本机找不到）不能当成「代码没变」直接 rebase：要先测 origin/master。"""
+    run_git = make_run_git(rev_parse="new222", code_diff_ok=False)
+    tests_called = []
+
+    def run_tests(*a):
+        tests_called.append(a)
+        return False, "1 failed"
+
+    log, notifier = [], FakeNotifier()
+    result = sync_and_deploy(tmp_path, TODAY, log.append, notifier, Path("python"),
+                             "old111", run_git=run_git, run_tests=run_tests)
+    assert result == {"deploy": False}
+    assert len(tests_called) == 1
+    assert not any(c[0] == "rebase" for c in run_git.calls)
+    assert not any(c[0] == "push" for c in run_git.calls)
+    _never_destructive(run_git.calls)
 
 
 def test_rebase_conflict_aborts_and_does_not_push(tmp_path):

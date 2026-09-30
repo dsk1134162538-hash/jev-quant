@@ -145,6 +145,11 @@ def make_handler(conn_factory, clock=datetime.now, quotes=tencent.fetch_quotes):
                 if until is None:
                     self._json_body(400, {"error": "参数错误"})
                     return
+                current = live_store.paused(conn)
+                if current is not None and current["kind"] == "auto":
+                    # 自动暂停只能手动恢复：不许被改成到点自动恢复的手动暂停
+                    self._json_body(409, {"error": f"已自动暂停（{current['reason']}），先在 App 里核对，再点恢复"})
+                    return
                 live_store.pause(conn, until, "手机暂停", "manual")
                 self._json_body(200, {"ok": True, "until": until.isoformat()})
             elif self.path == "/api/resume":
@@ -297,7 +302,7 @@ async function post(path, body){
   try {
     var r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
                                 body: JSON.stringify(body || {})});
-    if (!r.ok) { alert('操作失败：' + r.status); }
+    if (!r.ok) { var d = await r.json().catch(function(){ return {}; }); alert('操作失败：' + (d.error || r.status)); }
   } catch (e) { alert('网络错误'); }
   refresh();
 }

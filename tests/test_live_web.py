@@ -125,6 +125,16 @@ def test_pause_minutes_capped_at_15_00_close(conn):
     assert p["until"] == datetime.combine(near_close.date(), config.LIVE_PAUSE_CLOSE)
 
 
+def test_pause_never_downgrades_an_auto_pause(server, conn):
+    """自动暂停只能手动恢复；手机点「暂停 30 分钟」不能把它改成到点自动恢复的手动暂停。"""
+    live_store.pause(conn, None, "撤单前核对不上：最后一笔不是程序的委托", "auto")
+    r = _post(f"{server}/api/pause", json={"minutes": 30})
+    assert r.status_code == 409
+    assert "自动暂停" in r.json()["error"]
+    p = live_store.paused(conn)
+    assert p["kind"] == "auto" and p["until"] is None and "撤单前核对不上" in p["reason"]
+
+
 def test_pause_rejects_bad_payload(server):
     r = _post(f"{server}/api/pause", json={"minutes": 45})
     assert r.status_code == 400

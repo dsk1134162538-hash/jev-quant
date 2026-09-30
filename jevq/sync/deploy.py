@@ -156,13 +156,15 @@ def _sync_and_deploy(repo: Path, today: date, log, notifier, python_exe: Path,
 
     # 4. 判断 origin/master 相对正在运行的版本，代码有没有变化——这里用 origin/master 而不是
     #    本地 HEAD，因为还没 rebase，磁盘上跑的仍是 running_commit
+    changed = None  # None = 不知道有没有变化（读不到运行中的提交，或 git diff 失败）→ 总要先测试
     if running_commit is not None:
         diff = run_git(["diff", "--name-only", running_commit, "origin/master", "--", *CODE_PATHS])
-        changed = (diff.stdout or "").splitlines() if diff.returncode == 0 else []
-    else:
-        changed = None  # 读不到当前运行的提交（如 daemon 刚启动）→ 视为总要检查
+        if diff.returncode == 0:
+            changed = (diff.stdout or "").splitlines()
+        else:
+            log(f"比较代码变化失败，按有变化处理：{diff.stderr}")
 
-    if running_commit is not None and not changed:
+    if changed is not None and not changed:
         # 代码没变：不用测试，直接把 origin/master 合过来推送
         _rebase_and_push(run_git, log, notifier)
         return {"deploy": False}
