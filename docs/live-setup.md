@@ -12,7 +12,22 @@ git checkout live-trading
 .venv\Scripts\pip install -r requirements.txt
 ```
 
-这一步只是拿到实测脚本；搬家（拷数据库、开后台）是后面单独的步骤，现在不用做。
+这一步只是拿到实测脚本。
+
+## 0.5 搬家：一键装好家里的后台
+
+公司电脑的后台 2026-09-30 已停，开机启动项已改名禁用（`Jev模拟盘后台.lnk.disabled`）。数据库快照 `jevq.sqlite.gz` 要带回家，两种方式二选一：
+
+- U 盘或网盘拷回来，然后：
+  ```
+  .venv\Scripts\python scripts\home_install.py --db D:\路径\jevq.sqlite.gz
+  ```
+- 或者在公司电脑上自己把它推到私有仓库的临时分支 `migration-data`，家里直接运行（不带 `--db` 就从这个分支取）：
+  ```
+  .venv\Scripts\python scripts\home_install.py
+  ```
+
+脚本会建运行目录 `E:\jev-live`（只跑不改，开发仍在 `E:\claude\jev-quant`）、装依赖、放数据库（已存在绝不覆盖）、检查凭证、建开机启动项并启动后台。可以重复运行：以后代码更新了，再跑一次就是更新（交易时段会拒绝，除非加 `--force`）。装好后 `migration-data` 分支可以删掉。
 
 ## 1. Tailscale（让手机连得上家里电脑）
 
