@@ -27,7 +27,7 @@ A 股主板（60/00）T+1 模拟盘：规则选股 → Jev（TypeSafe System One
 - **成交量**：连续缩量天数 = 今天（盘中按已开盘分钟折算全天量）< 昨天 < 前天 …，口径就是自定义策略的「阶梯缩量」N（`jevq/rules/metrics.py::shrink_days`）。≥ 3 天才入选，≥ 4 天排前面，其余排序不变。**09:45 前折算不了，不买**；量能历史缺失的票不入选；整批算不出来（`history_features` 失败）当日只卖不买。用户的意思：尾盘确定性最高——情绪偏弱/冰点日本来就只在 14:50 尾盘买，此时折算最准。按 09-30 收盘的库里数据估算，约 14%（425/3046）的票 ≥ 3 天、6.6%（200 只）≥ 4 天，再叠加其余条件后每天候选很少。
 - **卖出后再买**：同账户当天卖出过的票（不论哪条卖出规则），现价要 ≤ `round(最近一次卖出价 × 0.99, 2)` 才允许再买；此前低开反抽卖出后会在同一分钟原价买回（无冷却）。
 - 参数都在 `jevq/config.py`：`REBOUND_MIN_SHRINK_DAYS`（3，设 0 = 不看成交量）、`REBOUND_PRIORITY_SHRINK_DAYS`（4）、`REBOUND_REBUY_DROP`（1.0）。决策 trace 的 `candidate.shrink_days` 可以看某笔买入当时缩了几天。
-- **同步清单（用户要求）**：改内置策略规则时，代码常量（`config.py`）→ 面板「规则」页说明（`jevq/app/api.py::builtin_summaries`，数字取自常量，新增的规则要手写一行，并在 `tests/test_api.py` 加断言）→ 本表 → 对应设计文档的变更记录，四处一起改，不能只改代码。
+- **同步清单（用户要求）**：改内置策略规则时，代码常量（`config.py`）→ 面板「规则」页说明（`jevq/app/api.py::builtin_summaries`，数字取自常量，新增的规则要手写一行，并在 `tests/test_api.py` 加断言）→ 本表 → 对应设计文档的变更记录，四处一起改，不能只改代码；改完还要让家里跑上新代码（休市日不会自动上线，见「运行现状」）。
 
 ## Jev 在哪里用
 - **公告排雷**（`jevq/judge/notices.py`，设计 `docs/specs/2026-09-26-notice-risk-design.md`）：两段式——标题关键词/Jev 标题分类挑出十一类疑似 → 抓东方财富正文 → Jev 给高/中/低/无 → 风险分 `高×1+中×0.6+低×0.2`，≥0.5 否决、0.35～0.5「拿不准」也否决。**用户选的 A 口径：Jev 判「中」即否决。** 普通「股票交易异常波动」公告和资金占用汇总表不算疑似；「风险提示」类只看近 10 天。
@@ -44,6 +44,7 @@ A 股主板（60/00）T+1 模拟盘：规则选股 → Jev（TypeSafe System One
 ## 运行现状
 - `daemon.py`（模拟盘，pythonw 常驻）：工作日 08:50 跑 `run.run_day`，15:05 出复盘报告 `reports/YYYY-MM-DD.md`，然后导出数据、同步 GitHub；它还每 60 秒看一次 `live.py` 的心跳（模式不是 off 时），超过 120 秒没更新就重启 live.py，每天最多 3 次。
 - **自动上线已改成先测后合并**（`jevq/sync/deploy.py`）：fetch 后若 origin/master 的代码和运行中的不同（或比较失败），先在临时 worktree 测 origin/master，通过才 rebase + push + 重启；不通过继续跑旧代码、当天数据不推、微信提醒。
+- **自动上线只在交易日收盘后触发**（daemon 写出当天报告后才走同步/上线，休市日 `run_day` 直接返回、什么都不做），所以节假日前后推的代码不会自动到家里。桌面快捷方式「Jev低吸模拟盘」跑的是 `E:\jev-live\desktop.py`，读的是运行目录里的 `ui.html`，运行目录没更新就看不到任何变化；daemon 换新代码只能靠重启（`live.py` 只在 15:10–17:00 检查新提交）。**手动上线** = 非交易时段在开发目录用 cmd 或 Git Bash 跑 `.venv\Scripts\python scripts\home_install.py`（rebase 运行目录、重启 daemon 和 live.py）。别在 PowerShell 工具里跑：它的控制台是 UTF-8，`install_autostart.py` 按 GBK 解码 PowerShell 输出会崩，而且崩在重启之前——代码更新了、后台还是旧进程。2026-09-30 20:56 已手动上线到 59a215c（面板美化 + 超跌反弹缩量/再买规则）；10-08 前再改代码要再上线一次。
 - `live.py`（实盘执行，唯一操作真实账户的进程）：每秒一轮；手机页端口 8766，只监听 127.0.0.1 和 `JEVQ_LIVE_HOST`（家里电脑的 Tailscale 地址）；15:10 后若 git HEAD 变了就自我重启。日志 `data/live.log`。
 - 国庆 10-01～10-07 休市，节后首个交易日 10-08。收盘价历史 `closes` 表截至迁移时 71 个交易日。
 - 推送前做密钥检查：未推送的提交里不能出现真实 key（PowerShell 里把 HKCU 的值和 `git log origin/master..HEAD -p` 做包含比较，只输出 True/False；云端没有 HKCU 时 grep 常见 key 形态）。
