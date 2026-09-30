@@ -45,8 +45,8 @@ def _seed(c, day1: str, day2: str):
     i_buy1 = _add_intent(c, f"{day1}T09:31:00", "buy", "600001", 9.98, "done", "已跟单")
     _add_filled_order(c, i_buy1, f"{day1}T09:31:30", "buy", "600001", 10.0, 500)
 
-    i_sell = _add_intent(c, f"{day2}T09:35:00", "sell", "600001", 10.0, "done", "已跟单")
-    _add_filled_order(c, i_sell, f"{day2}T09:35:30", "sell", "600001", 10.3, 500)
+    _add_intent(c, f"{day2}T09:35:00", "sell", "600001", 10.0, "done", "按持仓对齐卖出")
+    _add_filled_order(c, None, f"{day2}T09:35:30", "sell", "600001", 10.3, 500)   # 卖单按持仓对齐，不挂意图
 
     i_buy2 = _add_intent(c, f"{day2}T09:20:00", "buy", "600002", 8.0, "done", "已跟单")
     _add_filled_order(c, i_buy2, f"{day2}T09:20:30", "buy", "600002", 8.04, 300)
@@ -86,3 +86,40 @@ def test_live_report_counts_slippage_and_return():
     # 只写百分比和笔数，不出现成交股数、金额
     for forbidden in ("500", "300", "10.0", "10.3", "8.04", "8.0", "7.0", "6.0", "100000", "102000"):
         assert forbidden not in text, f"不该出现：{forbidden}"
+
+
+def _add_dryrun_order(c, ts, side, code, price, shares):
+    live_store.add_order(c, None, datetime.fromisoformat(ts), side, code, price, shares, "dryrun")
+
+
+def test_dryrun_orders_count_as_fills_and_give_a_return_but_no_slippage():
+    c = conn()
+    live_store.set_mode(c, "dryrun")
+    _add_intent(c, "2026-10-08T09:31:00", "buy", "600001", 10.0, "done", "演练")
+    _add_dryrun_order(c, "2026-10-08T09:31:00", "buy", "600001", 10.05, 500)
+    _add_dryrun_order(c, "2026-10-09T09:31:00", "sell", "600001", 10.25, 500)
+    c.execute("INSERT INTO equity VALUES ('2026-10-08', ?, 100000.0)", (config.LIVE_ACCOUNT,))
+    c.execute("INSERT INTO equity VALUES ('2026-10-09', ?, 101000.0)", (config.LIVE_ACCOUNT,))
+    c.commit()
+    text = "\n".join(live_report_lines(c, date(2026, 10, 9)))
+
+    assert "## 实盘跟单（演练）" in text
+    assert "实盘成交 1 笔" in text
+    assert "滑点" not in text
+    assert "累计收益率：实盘 +1.99%｜模拟 +1.00%" in text
+
+
+def test_live_mode_ignores_rehearsal_orders():
+    c = conn()
+    live_store.set_mode(c, "dryrun")
+    _add_dryrun_order(c, "2026-10-08T09:31:00", "buy", "600001", 10.05, 500)
+    _add_dryrun_order(c, "2026-10-09T09:31:00", "sell", "600001", 10.25, 500)
+    live_store.set_mode(c, "live")
+    c.execute("INSERT INTO equity VALUES ('2026-10-08', ?, 100000.0)", (config.LIVE_ACCOUNT,))
+    c.execute("INSERT INTO equity VALUES ('2026-10-13', ?, 101000.0)", (config.LIVE_ACCOUNT,))
+    c.commit()
+    text = "\n".join(live_report_lines(c, date(2026, 10, 13)))
+
+    assert "## 实盘跟单" in text and "演练" not in text
+    assert "实盘成交 0 笔" in text
+    assert "累计收益率" not in text

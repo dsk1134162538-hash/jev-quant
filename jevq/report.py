@@ -49,11 +49,17 @@ def notice_risk_stats(conn, day: date) -> dict:
             "by_category": by_cat}
 
 
-def _closed_trade_returns(conn: sqlite3.Connection, upto: str) -> list[float]:
+# 实盘段只统计当前模式的委托：演练的 dryrun 行按委托价、委托数量估算成交；实盘不含演练留下的行
+_DONE = {"dryrun": "status='dryrun'", "live": "status<>'dryrun' AND filled > 0"}
+_FILLED = {"dryrun": "shares", "live": "filled"}
+_AVG = {"dryrun": "price", "live": "avg_price"}
+
+
+def _closed_trade_returns(conn: sqlite3.Connection, upto: str, mode: str) -> list[float]:
     """每只代码从建仓到净持仓归零算一笔：买卖各自按股数加权算均价，平仓时记一笔 (卖出均价/买入均价 - 1)。"""
     rows = conn.execute(
-        "SELECT code, side, avg_price, filled FROM live_orders "
-        "WHERE filled > 0 AND substr(ts, 1, 10) <= ? ORDER BY code, ts, id", (upto,)).fetchall()
+        f"SELECT code, side, {_AVG[mode]}, {_FILLED[mode]} FROM live_orders "
+        f"WHERE {_DONE[mode]} AND substr(ts, 1, 10) <= ? ORDER BY code, ts, id", (upto,)).fetchall()
     returns = []
     cycles: dict[str, dict] = {}
     for code, side, avg_price, filled in rows:
@@ -84,11 +90,12 @@ def live_report_lines(conn: sqlite3.Connection, day: date) -> list[str]:
 
     d = day.isoformat()
     title = "实盘跟单（演练）" if current_mode == "dryrun" else "实盘跟单"
+    mode = "dryrun" if current_mode == "dryrun" else "live"
     lines = ["", f"## {title}", ""]
 
     sim_n = conn.execute("SELECT COUNT(*) FROM fills WHERE account=? AND substr(ts, 1, 10)=?",
                          (LIVE_ACCOUNT, d)).fetchone()[0]
-    live_n = conn.execute("SELECT COUNT(*) FROM live_orders WHERE filled > 0 AND substr(ts, 1, 10)=?",
+    live_n = conn.execute(f"SELECT COUNT(*) FROM live_orders WHERE {_DONE[mode]} AND substr(ts, 1, 10)=?",
                           (d,)).fetchone()[0]
     skip_rows = conn.execute(
         "SELECT note, COUNT(*) FROM live_intents WHERE status='skipped' AND substr(ts, 1, 10)=? "
@@ -98,17 +105,23 @@ def live_report_lines(conn: sqlite3.Connection, day: date) -> list[str]:
     if skip_rows:
         lines.append("跳过原因：" + "、".join(f"{note or '未注明'} {cnt} 笔" for note, cnt in skip_rows))
 
-    slip_rows = conn.execute(
-        "SELECT o.side, o.code, o.avg_price, i.sim_price FROM live_orders o "
-        "JOIN live_intents i ON o.intent_id = i.id "
-        "WHERE o.filled > 0 AND substr(o.ts, 1, 10)=? ORDER BY o.id", (d,)).fetchall()
-    for side, label in (("buy", "买入滑点"), ("sell", "卖出滑点")):
-        items = [(code, (avg / sim - 1) * 100) for s, code, avg, sim in slip_rows if s == side and sim]
-        if items:
-            lines.append(f"{label}：" + "、".join(f"{code} {pct:+.2f}%" for code, pct in items))
+    if mode == "live":   # 演练的委托价是算出来的，滑点没有意义
+        # 买单挂着意图（模拟成交价）；卖单按持仓对齐、不挂意图 → 对照这一轮持仓期间模拟盘最近的卖出意图
+        slip_rows = conn.execute(
+            "SELECT o.side, o.code, o.avg_price, CASE WHEN o.side='buy' THEN "
+            "  (SELECT i.sim_price FROM live_intents i WHERE i.id=o.intent_id) ELSE "
+            "  (SELECT i.sim_price FROM live_intents i WHERE i.source='sim' AND i.side='sell' AND i.code=o.code "
+            "     AND i.ts<=o.ts AND i.ts>=COALESCE((SELECT MAX(b.ts) FROM live_orders b WHERE b.side='buy' "
+            "       AND b.code=o.code AND b.filled>0 AND b.ts<=o.ts), '') ORDER BY i.id DESC LIMIT 1) END "
+            "FROM live_orders o WHERE o.status<>'dryrun' AND o.filled > 0 AND substr(o.ts, 1, 10)=? "
+            "ORDER BY o.id", (d,)).fetchall()
+        for side, label in (("buy", "买入滑点"), ("sell", "卖出滑点")):
+            items = [(code, (avg / sim - 1) * 100) for s, code, avg, sim in slip_rows if s == side and sim]
+            if items:
+                lines.append(f"{label}：" + "、".join(f"{code} {pct:+.2f}%" for code, pct in items))
 
     base_day = conn.execute(
-        "SELECT MIN(substr(ts, 1, 10)) FROM live_orders WHERE filled > 0 AND substr(ts, 1, 10) <= ?",
+        f"SELECT MIN(substr(ts, 1, 10)) FROM live_orders WHERE {_DONE[mode]} AND substr(ts, 1, 10) <= ?",
         (d,)).fetchone()[0]
     if base_day:
         base_equity = conn.execute("SELECT value FROM equity WHERE date=? AND account=?",
@@ -117,7 +130,7 @@ def live_report_lines(conn: sqlite3.Connection, day: date) -> list[str]:
                                   (d, LIVE_ACCOUNT)).fetchone()
         if base_equity and now_equity and base_equity[0]:
             sim_pct = (now_equity[0] / base_equity[0] - 1) * 100
-            trades = _closed_trade_returns(conn, d)
+            trades = _closed_trade_returns(conn, d, mode)
             if trades:
                 prod = 1.0
                 for r in trades:
