@@ -109,3 +109,5 @@ Base: 4338052 (docs commit on live-trading; master 26e5dec)
 - Ruling: new live_orders status `unknown` (earlier-day order we can no longer read) — spec list extended — cost if wrong: none (not counted anywhere).
 - Final fixes, peripheral part: sonnet in worktree scratchpad/wt-periph, branch final-fixes-periph (I-1, I-3, I-6, Minor 1/2/3/4/6/8/9, broker time/cancel-row parsing, probe two-order cancel test, setup doc).
 - Minor 7 (daemon down → live.py silently idle) deferred: no local trading calendar; HANDOFF tells the user to expect the 09:05 self-check push every trading day.
+- Final fixes, peripheral part: sonnet DONE 776699f..9aa73f5 on final-fixes-periph (1063 passed); controller review clean; merged. Extras accepted: probe refuses with <120 s left in the session or if B would sit within 2% of the price, prints raw rows (masked) via raw_orders_today(), warns on clock skew; HANDOFF install window 15:30.
+- Controller follow-up: resume_requested now carries the reason of the pause the user saw; the page writes it only while paused, the executor clears only that same pause (closes the race the agent flagged). 1084 passed.
