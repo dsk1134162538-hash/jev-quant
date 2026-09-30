@@ -8,11 +8,12 @@
 
 ```
 git fetch origin
-git checkout live-trading
+git checkout master
+git pull
 .venv\Scripts\pip install -r requirements.txt
 ```
 
-这一步只是拿到实测脚本。
+（实盘代码合进 master 之前，把上面的 `master` 换成分支 `live-trading-6luqxt`。）这一步只是拿到实测脚本。
 
 ## 0.5 搬家：一键装好家里的后台
 
