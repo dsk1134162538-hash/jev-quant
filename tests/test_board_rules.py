@@ -97,3 +97,23 @@ def test_first_board_uses_live_pre_close_not_db_yesterday():
     cmap = {c: ["机器人"] for c in quotes}
     assert watch_candidates(quotes, cmap, {c: 1.0 for c in quotes}, {"600001": 9.0}, TODAY) == []
     assert watch_candidates(quotes, cmap, {c: 1.0 for c in quotes}, {}, TODAY) == []   # 缺前日收 → 保守不算
+
+
+def test_sentiment_gate_blocks_on_any_weak_reading_and_explains_why():
+    from jevq.rules.board import sentiment_gate
+    ok = {"涨停家数": 57, "跌停家数": 9, "炸板率%": 12.3, "最高连板": 6}
+    assert sentiment_gate(ok) == (False, "炸板率 12.3%、跌停 9 家、最高 6 连板")
+    blocked, why = sentiment_gate({**ok, "炸板率%": 30.1})
+    assert blocked is True and "炸板率 30.1% 高于 30%" in why
+    assert sentiment_gate({**ok, "炸板率%": 30.0})[0] is False                # 刚好等于线不算
+    assert sentiment_gate({**ok, "跌停家数": 11}) == (True, "跌停 11 家多于 10 家")
+    assert sentiment_gate({**ok, "最高连板": 2}) == (True, "最高只有 2 连板，不到 3 板")
+    blocked, why = sentiment_gate({**ok, "炸板率%": 45.0, "跌停家数": 20})
+    assert blocked is True and "炸板率" in why and "跌停 20 家" in why
+
+
+def test_sentiment_gate_unknown_when_stats_missing():
+    from jevq.rules.board import sentiment_gate
+    assert sentiment_gate(None) == (None, "没有上一交易日的情绪统计")
+    assert sentiment_gate({}) == (None, "没有上一交易日的情绪统计")
+    assert sentiment_gate({"涨停家数": 50, "跌停家数": 3})[0] is None           # 缺炸板率/连板高度：不下结论

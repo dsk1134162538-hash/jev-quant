@@ -41,7 +41,10 @@ def builtin_summaries() -> list[dict]:
                  f"跌破 {board_rules.EXIT_PCT:g}% 移出"]},
              {"title": "买点", "lines": [
                  f"扫描窗口 {windows} 内每 3 秒检查，涨幅到 {board_rules.TRIGGER_PCT:g}% 触发",
-                 "主账户经 Jev 排雷，影子账户不拦截"]},
+                 "主账户经 Jev 排雷，影子账户不拦截",
+                 f"情绪闸门（试验中，只记录不拦截）：上一交易日收盘前炸板率高于 {board_rules.GATE_BREAK_RATE:g}%、"
+                 f"跌停多于 {board_rules.GATE_LIMIT_DOWN} 家或最高连板不到 {board_rules.GATE_MIN_BOARD} 板时，"
+                 "当天记为「会拦」，买卖照旧"]},
              {"title": "卖出（次日起）", "lines": [
                  f"跌到 {board_sell.STOP:g}% 止损；封死涨停继续持有",
                  f"炸板卖；冲高回落 {board_sell.PULLBACK:g} 点卖",

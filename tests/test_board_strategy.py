@@ -616,8 +616,59 @@ def test_board_deadline_leaves_unjudged_in_watch_and_judges_next_minute(monkeypa
     strat.buy_step(quotes, at(9, 35), deadline=clock[0] - 1)    # 预算已用完：进池但不判断
     assert strat.watch and notice.calls == [] and strat.verdicts == {}
     assert strat.rejected == set()
-    assert conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM decisions WHERE verdict != 'gate'").fetchone()[0] == 0
     strat.buy_step(quotes, at(9, 36), deadline=clock[0] + 40.0)
     assert notice.calls == list(strat.watch)[:1]                # 第一只问完已过时限，只判了一只
     strat.buy_step(quotes, at(9, 37), deadline=clock[0] + 40.0)
     assert len(notice.calls) == min(2, len(strat.watch))
+
+
+def _sentiment_row(conn, ts, stats):
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, trace, strategy) VALUES (?, '', 'sentiment', ?, NULL, 'market')",
+                 (ts, json.dumps({"stats": stats, "label": "正常", "overseas": None}, ensure_ascii=False)))
+    conn.commit()
+
+
+def _gate_rows(conn):
+    return conn.execute("SELECT ts, code, detail FROM decisions WHERE strategy='board' AND verdict='gate'").fetchall()
+
+
+def test_gate_recorded_once_per_day_from_last_sentiment_of_prev_day_without_blocking_buys():
+    """情绪闸门是试验：只留一条记录（用上一交易日收盘前最后一次统计），照常买。"""
+    quotes = hot_quotes()
+    code = leader_code(quotes)
+    fast = {code: quote(code, pct=9.5, pre_close=10.0, ts=at(9, 36))}
+    strat, conn, ledger = make(fetch_quotes=lambda codes: fast)
+    _sentiment_row(conn, "2026-09-22T10:00:00", {"涨停家数": 60, "跌停家数": 2, "炸板率%": 10.0, "最高连板": 5})
+    _sentiment_row(conn, "2026-09-22T14:56:00", {"涨停家数": 30, "跌停家数": 15, "炸板率%": 41.0, "最高连板": 4})
+
+    strat.on_minute(quotes, at(9, 35))
+    strat.on_minute(quotes, at(9, 36))
+    fills = strat.on_fast(at(9, 36))
+
+    (ts, row_code, detail), = _gate_rows(conn)
+    assert ts.startswith("2026-09-23T09:35") and row_code == ""
+    assert detail.startswith("情绪闸门（只记录不拦截）：会拦") and "炸板率 41.0%" in detail and "跌停 15 家" in detail
+    assert {f.account for f in fills} == {"board_main", "board_shadow"}          # 没拦
+
+
+def test_gate_not_recorded_twice_after_restart_and_says_so_when_no_prev_stats():
+    strat, conn, _ = make()
+    strat.on_minute(hot_quotes(), at(9, 35))
+    (_, _, detail), = _gate_rows(conn)
+    assert detail == "情绪闸门（只记录不拦截）：无法判断，没有上一交易日的情绪统计"
+
+    again = BoardStrategy(conn, Ledger(conn), Judge(), Judge(), lambda codes: {}, UNIVERSE, RET5, CONCEPT_MAP,
+                          PREV_CLOSES, PREV_DAY)
+    again.on_minute(hot_quotes(), at(9, 40))
+    assert len(_gate_rows(conn)) == 1
+
+
+def test_gate_failure_never_stops_watch_maintenance():
+    strat, conn, _ = make()
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, trace, strategy) "
+                 "VALUES ('2026-09-22T14:56:00', '', 'sentiment', '不是 JSON', NULL, 'market')")
+    conn.commit()
+    quotes = hot_quotes()
+    strat.on_minute(quotes, at(9, 35))
+    assert leader_code(quotes) in strat.watch and _gate_rows(conn) == []

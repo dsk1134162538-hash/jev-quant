@@ -596,7 +596,7 @@ function mdToHtml(md) {
   return out.join("");
 }
 
-const VERDICT = {pass: "通过", reject: "否决", error: "出错", sentiment: "情绪", skip: "跳过"};
+const VERDICT = {pass: "通过", reject: "否决", error: "出错", sentiment: "情绪", skip: "跳过", gate: "闸门"};
 function sentimentDetail(raw) {
   try {
     const j = JSON.parse(raw);

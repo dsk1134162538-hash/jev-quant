@@ -4,10 +4,11 @@ from time import monotonic
 
 from jevq.models import Fill, Quote
 from jevq.rules.board import (EXIT_PCT, SCAN_WINDOWS, WATCH_MAX, Candidate, in_scan_window, scan_trigger,
-                              watch_candidates)
+                              sentiment_gate, watch_candidates)
 from jevq.rules.board_sell import decide_board_sell
 
 SEALED_SKIP = "快照已封死，视为排队未买到"
+GATE_PREFIX = "情绪闸门（只记录不拦截）："
 
 
 class BoardStrategy:
@@ -34,6 +35,7 @@ class BoardStrategy:
         self.rejected: set[str] = set()
         self.sealed_logged: set[str] = set()     # 当日已记过「快照已封死」的票，每只每天只记一次
         self._rejected_day: date | None = None
+        self._gate_day: date | None = None
 
     def has_watch(self) -> bool:
         return bool(self.watch)
@@ -57,8 +59,28 @@ class BoardStrategy:
             self._restore_rejected(now.date())
         if not quotes or not self.enabled:
             return []
+        if self._gate_day != now.date():
+            self._note_gate(now)
         self._maintain_watch(quotes, now, deadline)
         return []
+
+    def _note_gate(self, now: datetime):
+        """每天第一次买入阶段记一条情绪闸门结论（试验：只留痕，买卖照旧），之后拿它和首板成交的盈亏对比。
+        用上一交易日收盘前最后一次情绪统计；当天已经记过（重启）就不再记。出错只打印，不影响交易。"""
+        self._gate_day = now.date()
+        try:
+            if self.conn.execute("SELECT 1 FROM decisions WHERE strategy='board' AND verdict='gate' "
+                                 "AND substr(ts, 1, 10) = ?", (now.date().isoformat(),)).fetchone():
+                return
+            row = self.conn.execute(
+                "SELECT detail FROM decisions WHERE verdict='sentiment' AND substr(ts, 1, 10) = ? "
+                "ORDER BY ts DESC, rowid DESC LIMIT 1", (self.prev_day.isoformat(),)).fetchone()
+            blocked, why = sentiment_gate(json.loads(row[0]).get("stats") if row else None)
+            head = "无法判断" if blocked is None else ("会拦" if blocked else "放行")
+            self._log(now, "", "gate", f"{GATE_PREFIX}{head}，{why}", None)
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[board] {now:%H:%M} 情绪闸门记录失败: {e!r}")
 
     def _restore_rejected(self, day: date):
         """重启后恢复当日已否决/出错的票，避免重复问 Jev（同 Engine._restore_rejected）；

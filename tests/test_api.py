@@ -350,6 +350,9 @@ def test_rules_list_includes_builtin_readonly_summaries(paths):
     assert set(builtin) == {"board", "rebound"}                  # 低吸已下线
     titles = [s["title"] for s in builtin["board"]["sections"]]
     assert titles[0] == "选股" and all(s["lines"] for s in builtin["board"]["sections"])
+    board_lines = [line for s in builtin["board"]["sections"] for line in s["lines"]]
+    assert any("情绪闸门" in line and "只记录不拦截" in line and "30%" in line and "10 家" in line and "3 板" in line
+               for line in board_lines)
     rebound_lines = [line for s in builtin["rebound"]["sections"] for line in s["lines"]]
     assert builtin["rebound"]["accounts"] == ["rebound_main", "rebound_shadow"]
     assert any("-3%" in line for line in rebound_lines)

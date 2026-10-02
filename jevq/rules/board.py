@@ -10,6 +10,10 @@ HOT_MIN = 3
 WATCH_MAX = 5
 TRIGGER_PCT = 9.0
 SCAN_WINDOWS: list[tuple[time, time]] = [(time(9, 30), time(10, 30))]
+# 情绪闸门（试验中：只记录、不拦截）。上一交易日收盘前的统计碰到任意一条就记为「会拦」
+GATE_BREAK_RATE = 30.0      # 炸板率高于这个百分比
+GATE_LIMIT_DOWN = 10        # 跌停家数多于这个数
+GATE_MIN_BOARD = 3          # 最高连板不到这个板数
 
 
 def limit_price(pre_close: float) -> float:
@@ -90,3 +94,21 @@ def scan_trigger(q: Quote, now: datetime, windows: list[tuple[time, time]] = SCA
     已封死视为排队不成交；摸过涨停又回落的（炸过板）不再扫，只扫第一次冲板。"""
     return (in_scan_window(now.time(), windows) and q.ts.date() >= now.date() and not q.suspended
             and q.pct >= TRIGGER_PCT and q.price < q.limit_up and q.high < q.limit_up)
+
+
+def sentiment_gate(stats: dict | None) -> tuple[bool | None, str]:
+    """情绪闸门：按上一交易日收盘前最后一次情绪统计，判断今天该不该打板。
+    返回（会不会拦, 说明）；统计缺失或缺项时不下结论，返回 (None, 原因)。"""
+    rate, down, top = ((stats or {}).get(k) for k in ("炸板率%", "跌停家数", "最高连板"))
+    if rate is None or down is None or top is None:
+        return None, "没有上一交易日的情绪统计"
+    reasons = []
+    if rate > GATE_BREAK_RATE:
+        reasons.append(f"炸板率 {rate}% 高于 {GATE_BREAK_RATE:g}%")
+    if down > GATE_LIMIT_DOWN:
+        reasons.append(f"跌停 {down} 家多于 {GATE_LIMIT_DOWN} 家")
+    if top < GATE_MIN_BOARD:
+        reasons.append(f"最高只有 {top} 连板，不到 {GATE_MIN_BOARD} 板")
+    if reasons:
+        return True, "；".join(reasons)
+    return False, f"炸板率 {rate}%、跌停 {down} 家、最高 {top} 连板"
