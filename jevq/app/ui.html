@@ -314,9 +314,9 @@
   @media (max-width: 1100px) { #kbNav { top:10px; } }
   @media (max-width: 820px) { #kbNav { position:static; } .kb-layout { grid-template-columns:minmax(0, 1fr); } }
   .kb-read h3 { font-size:18px; font-weight:600; margin:0 0 6px; }
-  .kb-intro { color:var(--text-2); max-width:70ch; margin:0 0 2px; }
+  .kb-intro { color:var(--text-2); margin:0 0 2px; }
   .kb-read .tag { font-size:12.5px; margin:0; }
-  .kb-read .builtin-sec { max-width:70ch; }
+  .kb-read .builtin-sec, .kb-art-body.builtin-sec { max-width:none; }   /* 用户要求：窗口放大时正文跟着铺满，不限行宽 */
   .kb-read .builtin-sec h4 { margin:28px 0 8px; font-size:14px; }
   .kb-read .builtin-sec li { margin:9px 0; line-height:1.72; }
   .kb-read .builtin-sec li::before { top:.8em; }
@@ -325,7 +325,7 @@
                   font-size:11px; line-height:18px; color:var(--muted); vertical-align:1px; font-variant-numeric:tabular-nums; }
   button.kb-ref:hover { color:var(--accent); border-color:color-mix(in srgb, var(--accent) 45%, var(--line)); background:color-mix(in srgb, var(--accent) 8%, var(--card)); }
   .kb-count { font-size:12.5px; margin:0 0 6px; }
-  .kb-art { border-bottom:1px solid var(--line); max-width:96ch; }
+  .kb-art { border-bottom:1px solid var(--line); }
   .kb-art summary { display:flex; align-items:center; gap:10px; padding:9px 6px; border-radius:8px; cursor:pointer; list-style:none; }
   .kb-art summary::-webkit-details-marker { display:none; }
   .kb-art summary:hover { background:color-mix(in srgb, var(--accent) 5%, transparent); }
@@ -336,7 +336,6 @@
   .kb-title { flex:1; min-width:0; font-weight:500; }
   .kb-art summary .badge { flex:none; }
   .kb-art-body { padding:0 6px 14px 30px; }
-  .kb-art-body.builtin-sec { max-width:74ch; }
   .kb-art-body li { line-height:1.7; }
   .kb-art-body p { margin:4px 0; }
   .kb-src { display:inline-flex; align-items:center; gap:5px; margin-top:8px; font-size:13px; }
