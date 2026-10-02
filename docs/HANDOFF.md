@@ -102,6 +102,12 @@ A 股主板（60/00）T+1 模拟盘：规则选股 → Jev（TypeSafe System One
 - 一条消息多说几件事，少贴大截图；中途可用 `/compact`。
 - 实现、审查这类活派子 agent；日常活可以用 Sonnet。
 
+## 知识库（面板「知识库」页，2026-10-02）
+- **是什么**：用户让学 Telegram 频道 @gsxt233（公开预览 `https://t.me/s/gsxt233`）里的实战文章。376 篇带链接的文章里 269 篇有摘要、21 篇是重复发布、86 篇原文已被删只留标题；读完后整理成 10 个专题共 249 条要点（每条带出处）加一份文章索引。只读、带搜索，**只是参考资料，没有接进任何交易规则**。
+- **内容在哪**：整份在 `jevq/app/knowledge.json`（`source` / `topics[].sections[].points[{text, refs}]` / `articles[{id, date, title, url, topic, points, dup, deleted}]`），接口 `Api.knowledge()` 原样返回，界面在 `ui.html` 的「知识库」段（`kbNavHtml` / `kbMainHtml` 是纯函数，`tests/test_ui.py` 用 node 跑）。要点和摘要都是用自己的话写的，不存原文；原文里明显夸大的说法（如“胜率九成”）在要点里标了不可当真。
+- **怎么改**：直接改 `knowledge.json`。`tests/test_api.py` 会检查每条要点的出处都指向索引里有摘要、不是重复的文章，文章的专题必须是已有专题或空串。文章 `id` 是频道里的帖子号。频道有新文章时：从公开预览页取帖子列表，telegra.ph 用 `api.telegra.ph/getPage/<path>?return_content=true` 取正文（空页时看返回里的 `author_url`，多数在 mobile.aigupiao.com），读完再往 `articles` 和对应专题里加。登录态的 web.telegram.org 不好批量读，别走那条路。
+- 「知识库」页不参加 5 秒定时刷新（和规则页、复盘报告一样），否则搜索框会丢焦点。
+
 ## 验证面板
 `scripts/panel_preview.py`：只读预览服务（真实数据库，拦截开始运行、保存/停用规则），端口 8765。周末或盘前试跑时，阶梯缩量/放量显示「—」是设计如此（今天没行情不折算）。
 - **家里没有真实库**：`panel_preview.py` 里 `REPO` 写死公司路径 `D:\claude\jev-quant`，家里用不了。家里做视觉验收：起一个临时 HTTP 服务，把 `ui.html` 接到 `jevq.app.home_view.ReadOnlyApi`（先 `build_db(exports/, 临时路径)` 用导出重建库），页面里注入 `window.pywebview = {api: Proxy → fetch('/api/<方法>')}` 并在 load 后派发 `pywebviewready`（写法同 `panel_preview.py`）。内置浏览器的截图只截左上 800 px，宽窗口要用 `javascript_tool` 滚动/位移后多截几张，页面自带的 5 秒刷新会冲掉手动注入的内容（先 `window.renderTab = async () => {}`）。

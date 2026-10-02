@@ -148,3 +148,92 @@ def test_notice_risk_detail_error_verdict_is_not_shown_as_clean(tmp_path):
     for h in html[:2]:
         assert "公告没判完" in h and "没有疑似雷的公告" not in h
     assert "公告没判完" not in html[2] and "没有疑似雷的公告" in html[2]
+
+
+def test_knowledge_tab_exists_and_is_not_redrawn_by_timer():
+    """知识库页有搜索框，5 秒定时刷新不能重画它（会丢焦点和展开状态）。"""
+    html = UI.read_text(encoding="utf-8")
+    assert '<button data-tab="knowledge">知识库</button>' in html
+    js = _scripts()
+    assert 'tab !== "reports" && tab !== "rules" && tab !== "knowledge"' in js
+    assert "await api.knowledge()" in js
+
+
+_KB_HARNESS = r"""
+const vm = require("vm"), fs = require("fs");
+const noop = () => {};
+const ctx = {console, document: {addEventListener: noop, getElementById: () => null,
+                                 querySelectorAll: () => [], querySelector: () => null},
+             window: {addEventListener: noop}, CSS: {escape: (s) => s}, setInterval: noop, setTimeout: noop};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8") + "\n;globalThis.kbMainHtml = kbMainHtml; globalThis.kbNavHtml = kbNavHtml;", ctx);
+const {data, states} = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+console.log(JSON.stringify(states.map((s) => [ctx.kbNavHtml(data, s), ctx.kbMainHtml(data, s)])));
+"""
+
+_KB = {
+    "source": {"name": "频道<x>", "url": "https://t.me/s/x", "fetched": "2026-10-02"},
+    "topics": [
+        {"id": "cycle", "name": "情绪周期", "intro": "先定阶段<i>", "sections": [
+            {"title": "阶段", "points": [{"text": "启动期试错，退潮期空仓<b>", "refs": [1, 2]}]}]},
+        {"id": "risk", "name": "仓位风控", "intro": "活下来", "sections": [
+            {"title": "止损", "points": [{"text": "亏损的持仓不加仓", "refs": [2]}]}]},
+    ],
+    "articles": [
+        {"id": 1, "date": "2026-01-02", "title": "周期<script>", "url": "https://telegra.ph/a", "topic": "cycle",
+         "points": ["冰点是观察窗口"], "dup": None, "deleted": False},
+        {"id": 2, "date": "2026-01-03", "title": "仓位管理", "url": "https://telegra.ph/b", "topic": "risk",
+         "points": ["单票不超过三成"], "dup": None, "deleted": False},
+        {"id": 3, "date": "2026-01-04", "title": "已删的文章", "url": "https://telegra.ph/c", "topic": "",
+         "points": [], "dup": None, "deleted": True},
+        {"id": 4, "date": "2026-01-05", "title": "重发", "url": "https://telegra.ph/d", "topic": "risk",
+         "points": [], "dup": 2, "deleted": False},
+    ],
+}
+
+
+def _kb_render(tmp_path, states: list) -> list:
+    import json
+    (tmp_path / "ui.js").write_text(_scripts(), encoding="utf-8")
+    (tmp_path / "h.js").write_text(_KB_HARNESS, encoding="utf-8")
+    (tmp_path / "in.json").write_text(json.dumps({"data": _KB, "states": states}, ensure_ascii=False), encoding="utf-8")
+    r = subprocess.run(["node", str(tmp_path / "h.js"), str(tmp_path / "ui.js"), str(tmp_path / "in.json")],
+                       capture_output=True, text=True, encoding="utf-8")
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="没有安装 node")
+def test_knowledge_topic_view_lists_points_with_source_links(tmp_path):
+    (nav, main), = _kb_render(tmp_path, [{"view": "cycle", "q": "", "filter": "", "open": None}])
+    assert "情绪周期" in nav and "仓位风控" in nav and "文章索引" in nav
+    assert "启动期试错，退潮期空仓&lt;b&gt;" in main and "空仓<b>" not in main
+    assert "先定阶段&lt;i&gt;" in main and "<i>" not in main
+    assert main.count("data-kb-article=") == 2                     # 两个出处
+    assert 'title="周期&lt;script&gt;"' in main and "<script>" not in main
+    assert "亏损的持仓不加仓" not in main                          # 别的专题不出现
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="没有安装 node")
+def test_knowledge_index_shows_summary_link_deleted_and_duplicate(tmp_path):
+    (_, everything), (_, only_risk) = _kb_render(tmp_path, [
+        {"view": "index", "q": "", "filter": "", "open": 2},
+        {"view": "index", "q": "", "filter": "risk", "open": None}])
+    assert everything.index("重发") < everything.index("周期&lt;script&gt;")      # 新的在前
+    assert 'href="https://telegra.ph/b"' in everything and 'target="_blank"' in everything
+    assert "单票不超过三成" in everything and "原文已删" in everything
+    assert 'id="kb-a-2" open' in everything and 'id="kb-a-1" open' not in everything
+    assert "仓位管理" in only_risk and "重发" in only_risk and "已删的文章" not in only_risk and "冰点" not in only_risk
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="没有安装 node")
+def test_knowledge_search_matches_points_and_articles_and_escapes_query(tmp_path):
+    (_, hit), (_, both_terms), (_, miss), (_, evil) = _kb_render(tmp_path, [
+        {"view": "cycle", "q": "不加仓", "filter": "", "open": None},
+        {"view": "cycle", "q": "单票 三成", "filter": "", "open": None},
+        {"view": "cycle", "q": "不存在的词", "filter": "", "open": None},
+        {"view": "cycle", "q": "<script>", "filter": "", "open": None}])
+    assert "亏损的持仓<mark>不加仓</mark>" in hit and "仓位风控" in hit and "启动期试错" not in hit
+    assert "<mark>单票</mark>不超过<mark>三成</mark>" in both_terms and "冰点是观察窗口" not in both_terms
+    assert "没有找到" in miss
+    assert "<script>" not in evil and "周期<mark>&lt;script&gt;</mark>" in evil

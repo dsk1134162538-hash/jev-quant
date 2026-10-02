@@ -360,3 +360,33 @@ def test_rules_list_includes_builtin_readonly_summaries(paths):
     assert any("连续缩量" in line and "至少 3 天" in line and "09:45" in line for line in rebound_lines)
     assert any("4 天" in line and "优先" in line for line in rebound_lines)
     assert any("当天卖出" in line and "低 1%" in line and "再买" in line for line in rebound_lines)
+
+
+def test_knowledge_points_all_cite_existing_summarized_articles(paths):
+    """知识库：专题手册里每条要点都要指向索引里真实存在、且有摘要的文章。"""
+    kb = make_api(paths).knowledge()
+    articles = {a["id"]: a for a in kb["articles"]}
+    assert len(articles) == len(kb["articles"]) > 300
+    topic_ids = [t["id"] for t in kb["topics"]]
+    assert len(topic_ids) == len(set(topic_ids)) >= 8
+    for t in kb["topics"]:
+        assert t["name"] and t["intro"] and t["sections"]
+        for s in t["sections"]:
+            assert s["title"] and s["points"]
+            for p in s["points"]:
+                assert p["text"] and p["refs"] and len(set(p["refs"])) == len(p["refs"])
+                for ref in p["refs"]:
+                    assert articles[ref]["points"] and not articles[ref]["dup"], (p["text"], ref)
+
+
+def test_knowledge_articles_carry_title_date_link_and_known_topic(paths):
+    kb = make_api(paths).knowledge()
+    topic_ids = {t["id"] for t in kb["topics"]}
+    ids = {a["id"] for a in kb["articles"]}
+    for a in kb["articles"]:
+        assert a["title"].strip() and "]]" not in a["title"]
+        assert len(a["date"]) == 10 and a["url"].startswith("https://")
+        assert a["topic"] in topic_ids or a["topic"] == ""          # "" = 没归进专题（非交易内容或原文已删）
+        assert a["dup"] is None or (a["dup"] in ids and a["dup"] != a["id"])
+        assert a["deleted"] == (not a["points"] and a["dup"] is None)
+    assert kb["source"]["url"].startswith("https://t.me/")

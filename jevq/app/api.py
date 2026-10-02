@@ -71,6 +71,7 @@ def builtin_summaries() -> list[dict]:
 
 REPORT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 PREVIEW_TTL = 60.0      # 试跑行情缓存秒数
+KNOWLEDGE_PATH = Path(__file__).with_name("knowledge.json")
 
 
 class Api:
@@ -295,6 +296,10 @@ class Api:
             return board_events.summary(conn)
         finally:
             conn.close()
+
+    def knowledge(self) -> dict:
+        """知识库（专题手册 + 文章索引）：只读，内容整份放在 knowledge.json，要改就改那个文件。"""
+        return json.loads(KNOWLEDGE_PATH.read_text(encoding="utf-8"))
 
     # ---- 规则（自定义策略） ----
     # 写操作一律用 db.connect（WAL + 15 秒 busy timeout，custom_store.save/disable 内部 BEGIN IMMEDIATE），
