@@ -48,6 +48,17 @@ HI189_ARTICLE_MAX_CHARS = 3000   # 每篇送给 Jev 的最长字数
 HI189_FETCH_UNTIL = time(11, 30)  # 这个时刻之后不再联网查新文章
 HI189_TIMEOUT = 8.0              # 联网超时（秒）
 
+# 自建板块（只记录，不进交易；docs/specs/2026-10-04-own-sectors-design.md）
+OWN_SECTORS_ENABLED = True
+OWN_SECTORS_BUDGET = 600.0       # 收盘后刷新成员最多花的秒数，没跑完下个交易日接着跑
+OWN_SECTORS_LEADERS = 6          # 日快照里记前几名龙头
+OWN_SECTORS_CORE_SHARE = 0.5     # 对应产品收入占比 ≥ 此值才算 core（进板块）
+OWN_SECTORS_RELATED_SHARE = 0.3  # [此值, CORE) 记为 related（只记录，不入板块）
+OWN_SECTORS_REFRESH_DAYS = 30    # 主营构成/介绍缓存多久后重取
+OWN_SECTORS_VALID_DAYS = 90      # 成员有效期
+OWN_SECTORS_STRONG_PCT = 5.0     # 日快照里「强势」的涨幅线（%）
+OWN_SECTORS_JEV_MIN_STRONG = 3   # 板块当天强势成员数 ≥ 此值（或被晚报点名）才问 Jev 强弱
+
 # 过滤
 NOTICE_LOOKBACK_DAYS = 90
 NEWS_LOOKBACK_HOURS = 24

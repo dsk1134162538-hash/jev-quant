@@ -113,6 +113,14 @@ A 股主板（60/00）T+1 模拟盘：规则选股 → Jev（TypeSafe System One
 ## 候选页（面板「候选」，2026-10-04）
 只读展示此刻被选出的票，按买入优先顺序：扫首板观察池（文章点名 → 热度 → 龙头分，含 Jev 结论）、超跌反弹入选名单（缩量 ≥4 天优先 → 5 日跌得多的优先，含缩量天数、情绪和是否在买入时段）。后台 `run.py::_publish_candidates` 每分钟把快照写进 `day_cache`（kind=candidates，`jevq/data/candidates.py`），`Api.candidates()` 读最近一天的；盘后/休市看到的是最后一次快照。策略侧是 `BoardStrategy.candidates_view` / `ReboundStrategy.candidates_view`（不看买入时段，不影响买卖）。自定义策略的候选没做。家里只读面板用导出重建库，没有 day_cache，这页显示「还没有候选快照」。
 
+## 自建板块（2026-10-04，只记录，不进交易）
+按**产品收入占比 ≥ 50%** 自己划板块（≥30% 记「相关」不入板块），记录龙头顺序和 Jev 板块强弱，攒约 20 个交易日数据后再决定要不要用到选股。设计 `docs/specs/2026-10-04-own-sectors-design.md`（含数据探测结果），计划 `docs/plans/2026-10-04-own-sectors.md`。**不被任何策略 import，不影响买卖**；总开关 `config.OWN_SECTORS_ENABLED`。
+- 代码：`jevq/data/own_sectors.py`（种子 `own_sectors_seed.json`、取数缓存、成员判定、龙头、日快照）、`jevq/judge/own_sectors.py`（Jev 三问：产品→板块映射、主营介绍、板块强弱）；表 `own_*`（`db.py`）。只收主板 60/00 股票池内的票。
+- 流程（`run.py` 收盘后）：先 `snapshot_step`（报告之前，写 `own_sector_daily`）→ 写报告（有「自建板块」一节）→ `refresh_step`（报告之后，最多 `OWN_SECTORS_BUDGET`=600 秒：提议新板块 + 刷新成员，没跑完下个交易日接着跑）。
+- 数据源：东方财富主营构成 `akshare.stock_zygc_em`（收入比例是小数，要排除「其中:」细分行）、同花顺主营介绍 `stock_zyjs_ths`（偶发连接重置，已重试）。产品行是收入类型（技术授权、金融业务）的公司走「Jev 读主营介绍」，成员 `pending`，**用户确认后才算**。
+- 面板「自建板块」页：板块摘要（Jev 强弱、强势、涨停、龙头前三、晚报点名）、龙头顺序、成员依据；pending/auto 成员可确认/驳回，晚报提议的新板块要写产品定义才能启用。家里只读面板拦截这些写操作。
+- 种子清单 `own_sectors_seed.json` 首版整理自 9-30 晚报，**待用户审**（产品定义写得越具体越好）。
+
 ## 验证面板
 `scripts/panel_preview.py`：只读预览服务（真实数据库，拦截开始运行、保存/停用规则），端口 8765。周末或盘前试跑时，阶梯缩量/放量显示「—」是设计如此（今天没行情不折算）。
 - **家里没有真实库**：`panel_preview.py` 里 `REPO` 写死公司路径 `D:\claude\jev-quant`，家里用不了。家里做视觉验收：起一个临时 HTTP 服务，把 `ui.html` 接到 `jevq.app.home_view.ReadOnlyApi`（先 `build_db(exports/, 临时路径)` 用导出重建库），页面里注入 `window.pywebview = {api: Proxy → fetch('/api/<方法>')}` 并在 load 后派发 `pywebviewready`（写法同 `panel_preview.py`）。内置浏览器的截图只截左上 800 px，宽窗口要用 `javascript_tool` 滚动/位移后多截几张，页面自带的 5 秒刷新会冲掉手动注入的内容（先 `window.renderTab = async () => {}`）。

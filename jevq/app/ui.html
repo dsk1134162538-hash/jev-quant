@@ -124,6 +124,9 @@
   .tabs button.active { color:var(--accent); }
   .tabs button.active::after { content:""; position:absolute; left:10px; right:10px; bottom:-1px; height:2px; border-radius:2px 2px 0 0; background:var(--accent); }
   #tabBody .muted { color:var(--muted); font-size:13px; margin:2px 0 10px; }
+  #tabBody .own-sec { border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin:8px 0; }
+  #tabBody .own-sec > summary { cursor:pointer; }
+  #tabBody .own-prop { margin:6px 0; }
   #tabBody h3 { font-size:14px; font-weight:600; margin:18px 0 8px; }
   #tabBody .tabs { border-bottom:none; gap:6px; margin:0 0 14px; }
   #tabBody .tabs button { min-height:30px; padding:0 13px; border:1px solid var(--line); border-radius:999px; font-size:13px; font-weight:400; color:var(--text-2); }
@@ -387,6 +390,7 @@
       <button data-tab="fills" class="active">今日成交</button>
       <button data-tab="candidates">候选</button>
       <button data-tab="decisions">Jev 判断</button>
+      <button data-tab="own">自建板块</button>
       <button data-tab="board">封板统计</button>
       <button data-tab="rules">规则</button>
       <button data-tab="reports">复盘报告</button>
@@ -482,6 +486,77 @@ function candidatesHtml(d) {
       r.shrink_days == null ? "–" : esc(r.shrink_days), candVerdict(r.verdict, r.why)]), [7])
     : '<div class="empty">此刻没有满足条件的票（09:45 前折算不了缩量，不入选）</div>';
   return html;
+}
+
+// 「自建板块」页（只记录，不参与交易）：按主营收入占比自己划的板块；确认/驳回只改自建板块自己的表
+const OWN_TIER = {core: "核心", related: "相关"};
+const OWN_STATUS = {auto: "自动", confirmed: "已确认", pending: "待确认", rejected: "已驳回"};
+function ownBasis(m) {
+  const b = m.basis || {};
+  if (b.source === "主营构成") {
+    const items = (b.products || []).slice(0, 4).map((p) => `${p.name} ${fmt((p.ratio || 0) * 100, 1)}%`).join("；");
+    return `主营构成 ${b.period || ""}：${items}`;
+  }
+  if (b.source === "主营介绍") {
+    const j = b.jev || {};
+    return `主营介绍：${(b.intro && b.intro["主营业务"]) || ""}；Jev 判「${j.choice || "?"}」`;
+  }
+  return "";
+}
+function ownMemberRow(sid, m) {
+  const acts = m.status === "pending" || m.status === "auto"
+    ? `<button data-own-review="confirm" data-sector="${esc(sid)}" data-code="${esc(m.code)}">确认</button> `
+      + `<button data-own-review="reject" data-sector="${esc(sid)}" data-code="${esc(m.code)}">驳回</button>` : "";
+  return [esc(m.code), esc((m.basis && m.basis.name) || ""), esc(OWN_TIER[m.tier] || m.tier),
+    m.share == null ? "–" : fmt(m.share * 100, 1) + "%", esc(OWN_STATUS[m.status] || m.status),
+    esc(ownBasis(m)), esc(String(m.valid_to || "").slice(5)), acts];
+}
+function ownSectorHtml(s) {
+  const d = s.daily || {}, leaders = d.leaders || [];
+  const head = `<summary><b>${esc(s.name)}</b>　${d.jev_strength ? "Jev " + esc(d.jev_strength) : "未判"}　成员 ${esc(d.members ?? s.members.filter((m) => m.tier === "core" && (m.status === "auto" || m.status === "confirmed")).length)}`
+    + `　强势 ${esc(d.strong ?? "–")}　涨停 ${esc(d.limit_up ?? "–")}`
+    + `　龙头 ${esc(leaders.slice(0, 3).map((l) => l.name || l.code).join("、") || "–")}`
+    + `${d.article_mentioned ? "　晚报点名" : ""}</summary>`;
+  const lead = leaders.length ? table(["#", "代码", "名称", "涨幅", "占比", "连板", "名次和"],
+    leaders.map((l) => [esc(l.rank), esc(l.code), esc(l.name), (l.pct == null ? "–" : fmt(l.pct) + "%"),
+      l.share == null ? "–" : fmt(l.share * 100, 1) + "%", esc(l.board), esc(l.score)])) : "";
+  const mem = s.members.length ? table(["代码", "公司", "层级", "占比", "状态", "依据", "有效至", "操作"],
+    s.members.map((m) => ownMemberRow(s.id, m)), [5, 7]) : '<div class="empty">暂无成员（收盘后刷新）</div>';
+  return `<details class="own-sec">${head}<div class="muted">${esc(s.product_def)}</div>`
+    + (lead ? "<h3>龙头顺序</h3>" + lead : "") + "<h3>成员</h3>" + mem + "</details>";
+}
+function ownSectorsHtml(d) {
+  d = d || {};
+  const all = d.sectors || [];
+  if (!all.length) return '<div class="empty">还没有自建板块记录，后台收盘后生成（只记录，不参与交易）</div>';
+  const active = all.filter((s) => s.status === "active"), proposed = all.filter((s) => s.status === "proposed");
+  let html = `<div class="muted">数据日期 ${esc(d.date || "–")}（只记录，不参与交易；核心 = 对应产品收入占比 ≥ 50%）</div>`;
+  if (proposed.length) {
+    html += "<h3>晚报提到、等你确认的新板块</h3>" + proposed.map((s) =>
+      `<div class="own-prop"><b>${esc(s.name)}</b> <input data-own-def="${esc(s.id)}" placeholder="写清核心产品，例如：xxx 的生产与销售" size="40"> `
+      + `<button data-own-decide="activate" data-sector="${esc(s.id)}">启用</button> `
+      + `<button data-own-decide="reject" data-sector="${esc(s.id)}">驳回</button></div>`).join("");
+  }
+  const pend = active.reduce((n, s) => n + s.members.filter((m) => m.status === "pending").length, 0);
+  html += `<h3>板块（${esc(active.length)} 个${pend ? `，待确认成员 ${esc(pend)} 个` : ""}）</h3>` + active.map(ownSectorHtml).join("");
+  return html;
+}
+async function renderOwnTab(body) {
+  let data;
+  try { data = await api.own_sectors(); } catch (e) { data = {sectors: []}; }
+  if (tab !== "own") return;
+  body.innerHTML = ownSectorsHtml(data);
+  body.querySelectorAll("[data-own-review]").forEach((b) => b.onclick = async () => {
+    const r = await api.own_sector_review(b.dataset.sector, b.dataset.code, b.dataset.ownReview);
+    if (!r.ok) alert((r.errors || ["失败"]).join("\n"));
+    renderOwnTab(body);
+  });
+  body.querySelectorAll("[data-own-decide]").forEach((b) => b.onclick = async () => {
+    const input = body.querySelector(`[data-own-def="${CSS.escape(b.dataset.sector)}"]`);
+    const r = await api.own_sector_decide(b.dataset.sector, b.dataset.ownDecide, input ? input.value : "");
+    if (!r.ok) alert((r.errors || ["失败"]).join("\n"));
+    renderOwnTab(body);
+  });
 }
 
 function accountCard(a) {
@@ -790,6 +865,8 @@ async function renderTab() {
     });
     const expandBtn = body.querySelector("#noticesExpand");
     if (expandBtn) expandBtn.onclick = () => { noticesExpanded = true; renderTab(); };
+  } else if (tab === "own") {
+    await renderOwnTab(body);
   } else if (tab === "candidates") {
     const data = await api.candidates();
     if (moved()) return;
@@ -1661,7 +1738,7 @@ async function refresh() {
   $("btnStop").disabled = !s.running;
   renderAccounts(s.accounts || []);
   renderCurve(await api.equity_curve());
-  if (tab !== "reports" && tab !== "rules" && tab !== "knowledge") await renderTab();   // 规则页是编辑器，定时刷新会冲掉正在编辑的内容；知识库有搜索框和展开状态
+  if (tab !== "reports" && tab !== "rules" && tab !== "knowledge" && tab !== "own") await renderTab();   // 规则页是编辑器，定时刷新会冲掉正在编辑的内容；知识库有搜索框和展开状态
 }
 
 window.addEventListener("pywebviewready", async () => {
