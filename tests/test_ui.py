@@ -70,9 +70,9 @@ def test_render_tab_bails_out_when_user_switched_tabs():
     """renderTab 的每个 await 后都要检查标签没变，慢回来的旧结果不能盖掉规则编辑器。"""
     js = _scripts()
     body = js[js.index("async function renderTab"):js.index("// ======================= 规则页")]
-    awaits = re.findall(r"await api\.(fills|decisions|decision|board_stats|reports|logs)\(", body)
-    assert set(awaits) == {"fills", "decisions", "decision", "board_stats", "reports", "logs"}
-    assert body.count("if (moved()) return;") == 5          # fills/decisions(两次 await 后一次)/board/reports/logs
+    awaits = re.findall(r"await api\.(fills|decisions|decision|candidates|board_stats|reports|logs)\(", body)
+    assert set(awaits) == {"fills", "decisions", "decision", "candidates", "board_stats", "reports", "logs"}
+    assert body.count("if (moved()) return;") == 6          # fills/decisions(两次 await 后一次)/candidates/board/reports/logs
 
 
 def test_decision_detail_renders_new_notice_risk_and_legacy_list():

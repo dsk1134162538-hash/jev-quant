@@ -302,6 +302,15 @@ class Api:
         finally:
             conn.close()
 
+    def candidates(self) -> dict:
+        """「候选」页：后台最近一次写下的候选快照（扫首板观察池、超跌反弹入选名单，均已按优先顺序）。"""
+        from jevq.data import candidates
+        conn = db.connect_readonly(self._db_path)
+        try:
+            return candidates.latest(conn)
+        finally:
+            conn.close()
+
     def knowledge(self) -> dict:
         """知识库（专题手册 + 文章索引）：只读，内容整份放在 knowledge.json，要改就改那个文件。"""
         return json.loads(KNOWLEDGE_PATH.read_text(encoding="utf-8"))

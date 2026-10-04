@@ -110,6 +110,9 @@ A 股主板（60/00）T+1 模拟盘：规则选股 → Jev（TypeSafe System One
 - **怎么改**：直接改 `knowledge.json`。`tests/test_api.py` 会检查每条要点的出处都指向索引里有摘要、不是重复的文章，文章的专题必须是已有专题或空串。文章 `id` 是频道里的帖子号。频道有新文章时：从公开预览页取帖子列表，telegra.ph 用 `api.telegra.ph/getPage/<path>?return_content=true` 取正文（空页时看返回里的 `author_url`，多数在 mobile.aigupiao.com），读完再往 `articles` 和对应专题里加。登录态的 web.telegram.org 不好批量读，别走那条路。
 - 「知识库」页不参加 5 秒定时刷新（和规则页、复盘报告一样），否则搜索框会丢焦点。
 
+## 候选页（面板「候选」，2026-10-04）
+只读展示此刻被选出的票，按买入优先顺序：扫首板观察池（文章点名 → 热度 → 龙头分，含 Jev 结论）、超跌反弹入选名单（缩量 ≥4 天优先 → 5 日跌得多的优先，含缩量天数、情绪和是否在买入时段）。后台 `run.py::_publish_candidates` 每分钟把快照写进 `day_cache`（kind=candidates，`jevq/data/candidates.py`），`Api.candidates()` 读最近一天的；盘后/休市看到的是最后一次快照。策略侧是 `BoardStrategy.candidates_view` / `ReboundStrategy.candidates_view`（不看买入时段，不影响买卖）。自定义策略的候选没做。家里只读面板用导出重建库，没有 day_cache，这页显示「还没有候选快照」。
+
 ## 验证面板
 `scripts/panel_preview.py`：只读预览服务（真实数据库，拦截开始运行、保存/停用规则），端口 8765。周末或盘前试跑时，阶梯缩量/放量显示「—」是设计如此（今天没行情不折算）。
 - **家里没有真实库**：`panel_preview.py` 里 `REPO` 写死公司路径 `D:\claude\jev-quant`，家里用不了。家里做视觉验收：起一个临时 HTTP 服务，把 `ui.html` 接到 `jevq.app.home_view.ReadOnlyApi`（先 `build_db(exports/, 临时路径)` 用导出重建库），页面里注入 `window.pywebview = {api: Proxy → fetch('/api/<方法>')}` 并在 load 后派发 `pywebviewready`（写法同 `panel_preview.py`）。内置浏览器的截图只截左上 800 px，宽窗口要用 `javascript_tool` 滚动/位移后多截几张，页面自带的 5 秒刷新会冲掉手动注入的内容（先 `window.renderTab = async () => {}`）。

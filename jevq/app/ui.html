@@ -123,6 +123,8 @@
   .tabs button:hover:not(:disabled) { color:var(--text); }
   .tabs button.active { color:var(--accent); }
   .tabs button.active::after { content:""; position:absolute; left:10px; right:10px; bottom:-1px; height:2px; border-radius:2px 2px 0 0; background:var(--accent); }
+  #tabBody .muted { color:var(--muted); font-size:13px; margin:2px 0 10px; }
+  #tabBody h3 { font-size:14px; font-weight:600; margin:18px 0 8px; }
   #tabBody .tabs { border-bottom:none; gap:6px; margin:0 0 14px; }
   #tabBody .tabs button { min-height:30px; padding:0 13px; border:1px solid var(--line); border-radius:999px; font-size:13px; font-weight:400; color:var(--text-2); }
   #tabBody .tabs button:hover:not(:disabled):not(.active) { background:var(--tile); }
@@ -383,6 +385,7 @@
   <section class="card">
     <div class="tabs" id="mainTabs">
       <button data-tab="fills" class="active">今日成交</button>
+      <button data-tab="candidates">候选</button>
       <button data-tab="decisions">Jev 判断</button>
       <button data-tab="board">封板统计</button>
       <button data-tab="rules">规则</button>
@@ -451,6 +454,34 @@ function table(headers, rows, wrapCols) {
     && rows.every((r) => NUM_CELL.test(String(r[i] ?? "").trim())));
   return `<div class="table-wrap"><table><tr>${headers.map((h, i) => `<th${num[i] ? ' class="num"' : ""}>${h}</th>`).join("")}</tr>${rows.map((r) =>
     `<tr>${r.map((c, i) => `<td class="${[wrap.includes(i) ? "wrap" : "", num[i] ? "num" : ""].filter(Boolean).join(" ")}">${c}</td>`).join("")}</tr>`).join("")}</table></div>`;
+}
+
+// 「候选」页：后台每分钟写的快照，两张表都已按优先顺序排好；字符串一律 esc
+const CAND_VERDICT = {pass: "已通过", reject: "否决", error: "出错", skip: "跳过"};
+function candVerdict(v, why) {
+  const label = CAND_VERDICT[v];
+  return label ? `<span title="${esc(why || "")}">${esc(label)}</span>` : "未判";
+}
+function candidatesHtml(d) {
+  d = d || {};
+  if (!d.date) return '<div class="empty">还没有候选快照，后台开盘后每分钟生成一次</div>';
+  const pct = (v) => v == null ? "–" : `<span class="${signCls(v)}">${v > 0 ? "+" : ""}${fmt(v)}%</span>`;
+  const board = d.board || [];
+  const rb = d.rebound;
+  let html = `<div class="muted">数据日期 ${esc(d.date)}　更新于 ${esc(d.updated || "–")}（只读，按买入优先顺序排列，不影响买卖）</div>`;
+  html += "<h3>扫首板 · 观察池</h3>" + (board.length ? table(["#", "代码", "名称", "题材", "热度", "涨幅", "现价", "文章点名", "Jev"],
+    board.map((r) => [esc(r.rank), esc(r.code), esc(r.name), esc(r.concept), esc(r.heat), pct(r.pct), fmt(r.price),
+      r.article_hot ? esc(r.article_hot) : "–", candVerdict(r.verdict, r.why)]), [3, 7])
+    : '<div class="empty">观察池为空（开盘后涨幅进入热门题材的首板才会进来）</div>');
+  html += "<h3>超跌反弹 · 入选名单</h3>";
+  if (!rb) return html + '<div class="empty">超跌反弹未运行</div>';
+  const mode = rb.mode === "tail" ? "偏弱/冰点/未知，只在尾盘买" : "盘中可买";
+  html += `<div class="muted">情绪 ${esc(rb.sentiment || "未知")}（${esc(mode)}）；${rb.window_open ? "现在在买入时段内" : "现在不在买入时段"}${rb.enabled ? "" : "；今天只卖不买"}${rb.total > (rb.items || []).length ? `；共 ${esc(rb.total)} 只，只列前 ${esc((rb.items || []).length)} 只` : ""}</div>`;
+  html += (rb.items || []).length ? table(["#", "代码", "名称", "涨幅", "现价", "近5日", "缩量天数", "Jev"],
+    rb.items.map((r) => [esc(r.rank), esc(r.code), esc(r.name), pct(r.pct), fmt(r.price), pct(r.ret5),
+      r.shrink_days == null ? "–" : esc(r.shrink_days), candVerdict(r.verdict, r.why)]), [7])
+    : '<div class="empty">此刻没有满足条件的票（09:45 前折算不了缩量，不入选）</div>';
+  return html;
 }
 
 function accountCard(a) {
@@ -759,6 +790,10 @@ async function renderTab() {
     });
     const expandBtn = body.querySelector("#noticesExpand");
     if (expandBtn) expandBtn.onclick = () => { noticesExpanded = true; renderTab(); };
+  } else if (tab === "candidates") {
+    const data = await api.candidates();
+    if (moved()) return;
+    body.innerHTML = candidatesHtml(data);
   } else if (tab === "board") {
     const rows = await api.board_stats();
     if (moved()) return;

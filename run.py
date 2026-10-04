@@ -10,13 +10,13 @@ from time import monotonic
 from jevq import accounts as accounts_mod
 from jevq import config, db, notify_content
 from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
-from jevq.data import akdata, board_events, closes, concepts, custom_store, sell_followups, tencent
+from jevq.data import (akdata, board_events, candidates, closes, concepts, custom_store, hi189, sell_followups,
+                       tencent)
 from jevq.data.features import history_features
 from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
 from jevq.engine import Engine
 from jevq.judge.jev import JevClient
-from jevq.data import hi189
 from jevq.judge.market import MarketJudge
 from jevq.judge.news import NewsJudge
 from jevq.judge.notices import NoticeJudge
@@ -504,7 +504,21 @@ def _run_minute(engine: Engine, board: BoardStrategy | None, customs: list, t: d
         if sid not in fails:
             buys += safe(sid, f"自定义策略 {sid} 本轮出错", lambda s=strat: s.buy_step(quotes, t, deadline))
     emit(buys)
+    _publish_candidates(conn, t, board, rebound, quotes, log)
     return sells + buys
+
+
+def _publish_candidates(conn, t: datetime, board, rebound, quotes: dict, log: Callable[[str], None]):
+    """把当前候选快照写进库给面板「候选」页读；只是展示，出错只记日志。行情这一分钟没取到就不动上一份。"""
+    if not quotes:
+        return
+    try:
+        candidates.save(conn, t.date(), t,
+                        board.candidates_view(quotes) if board is not None else [],
+                        rebound.candidates_view(quotes, t) if rebound is not None else None)
+    except Exception as e:
+        conn.rollback()
+        log(f"候选快照写入失败：{e!r}")
 
 
 def _fresh_quotes(engine: Engine, t: datetime) -> dict:

@@ -72,6 +72,31 @@ class ReboundStrategy:
             shrink_days=None if self.features is None else (lambda q: self._shrink_days(q, now)))
         return self._buy_shadow(ranked, now) + self._buy_main(ranked, now, mode, sentiment, deadline)
 
+    def candidates_view(self, quotes: dict[str, Quote], now: datetime) -> dict:
+        """面板「候选」页：此刻满足选股条件的票，按买入优先顺序（同 buy_step 的 rank_rebound）。
+        不看买入时段：没到买点时也列出来，window_open 标明现在能不能买。"""
+        sentiment = self.sentiment_provider()
+        mode = rebound_mode(sentiment)
+        info = {"sentiment": sentiment, "mode": mode, "window_open": buy_window_open(mode, now.time()),
+                "enabled": self.enabled, "items": []}
+        if not self.enabled or not quotes:
+            return info
+        ranked = rank_rebound(
+            (q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()),
+            self.ret5, self.excluded,
+            shrink_days=None if self.features is None else (lambda q: self._shrink_days(q, now)))
+        verdicts = {code: (v, d) for code, v, d in self.conn.execute(
+            "SELECT code, verdict, detail FROM decisions WHERE strategy = ? AND code != '' "
+            "AND substr(ts, 1, 10) = ? ORDER BY id", (SID, now.date().isoformat()))}
+        for rank, q in enumerate(ranked[:30], 1):
+            v = verdicts.get(q.code)
+            info["items"].append({"rank": rank, "code": q.code, "name": q.name or self.universe.get(q.code, ""),
+                                  "pct": q.pct, "price": q.price, "ret5": self.ret5.get(q.code),
+                                  "shrink_days": self._shrink_days(q, now),
+                                  "verdict": v[0] if v else "", "why": v[1] if v else ""})
+        info["total"] = len(ranked)
+        return info
+
     def _shrink_days(self, q: Quote, now: datetime) -> int | None:
         """这只票连续缩量几天（含今天）；没有量能历史/今天的量还不能折算 → None。"""
         if self.features is None:

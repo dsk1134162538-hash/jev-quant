@@ -195,6 +195,19 @@ class BoardStrategy:
                     self.conn.rollback()
                     print(f"[board] {now:%H:%M} 判断 {code} 出错: {e!r}")
 
+    def candidates_view(self, quotes: dict[str, Quote]) -> list[dict]:
+        """面板「候选」页：当前观察池按优先顺序（文章点名 → 热度 → 龙头分，同 watch_candidates）。"""
+        out = []
+        for cand in sorted(self.watch.values(), key=lambda c: (not c.article_hot, -c.heat, c.score)):
+            q = quotes.get(cand.code)
+            verdict = self.verdicts.get(cand.code)
+            out.append({"rank": len(out) + 1, "code": cand.code, "name": self.universe.get(cand.code, ""),
+                        "concept": cand.concept, "heat": cand.heat,
+                        "pct": None if q is None else q.pct, "price": None if q is None else q.price,
+                        "article_hot": cand.article_hot,
+                        "verdict": verdict[0] if verdict else "", "why": verdict[1] if verdict else ""})
+        return out
+
     def _article_hot(self):
         """文章点名判定函数；没有文章或取板块出错 → None（顺序不变）。"""
         try:
