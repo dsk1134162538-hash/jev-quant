@@ -1,4 +1,3 @@
-import json
 from datetime import date, datetime
 from pathlib import Path
 
@@ -83,29 +82,30 @@ def test_fetch_feed_failure_returns_empty():
     assert hi189.fetch_feed(Boom()) == []
 
 
-def test_parse_sectors_from_evening_report():
+def test_parse_sectors_from_real_evening_report():
     got = hi189.parse_sectors(FIXTURE.read_text(encoding="utf-8"))
-    assert got == [Sector("机器人概念", ["甲股份", "乙科技"], ["丙电子", "丁智能"]),
-                   Sector("算力", ["戊通信"], ["己光电", "庚网络"]),
-                   Sector("光伏板块", [], ["辛能源", "壬材料"])]
+    assert [s.name for s in got] == ["创新药", "人形机器人", "固态电池", "汽车", "AI 应用", "乳业", "白酒", "电力",
+                                     "房地产", "农业", "分散染料", "玻璃基板", "光伏", "风电设备"]
+    pharma = got[0]
+    assert pharma.limit_up[0] == "康希诺" and len(pharma.limit_up) == 8 and pharma.strong[-1] == "药石科技"
+    assert got[4].limit_up == ["新华传媒", "龙版传媒", "亚联发展", "德才股份"]
+    assert got[5].name == "乳业" and got[5].limit_up == ["阳光乳业", "均瑶健康"]    # 说明文字被硬换行拆成两行
+    assert got[8].limit_up == ["深物业A", "陆家嘴", "中天服务"]
+    wind = got[-1]                                                            # 只有「强势股：…。」
+    assert wind.limit_up == [] and wind.strong[0] == "大金重工" and wind.strong[-1] == "振宏股份"
     assert hi189.parse_sectors("没有任何结构的文字") == []
 
 
-def test_article_hot_by_sector_name_either_direction():
+def test_article_hot_on_real_report():
     sectors = hi189.parse_sectors(FIXTURE.read_text(encoding="utf-8"))
-    assert hi189.article_hot("机器人", ["1"], {}, sectors) == "板块：机器人概念"     # 题材名被板块名包含
-    assert hi189.article_hot("光伏", ["1"], {}, sectors) == "板块：光伏板块"
-    assert hi189.article_hot("算力租赁", ["1"], {}, sectors) == "板块：算力"        # 板块名被题材名包含
+    assert hi189.article_hot("固态电池", ["1"], {}, sectors) == "板块：固态电池"
+    assert hi189.article_hot("人形机器人概念", ["1"], {}, sectors) == "板块：人形机器人"   # 归一化去掉「概念」
+    assert hi189.article_hot("新能源汽车", ["1"], {}, sectors) == "板块：汽车"           # 板块名被题材名包含
+    assert hi189.article_hot("芯片", ["1", "2"], {"1": "无关", "2": "雷曼光电"}, sectors) == "个股：雷曼光电"
     assert hi189.article_hot("芯片", ["1"], {"1": "无关"}, sectors) == ""
 
 
-def test_article_hot_by_member_stock_name():
-    sectors = hi189.parse_sectors(FIXTURE.read_text(encoding="utf-8"))
-    assert hi189.article_hot("芯片", ["600001", "600002"], {"600001": "无关", "600002": "丙电子"},
-                             sectors) == "个股：丙电子"
-
-
 def test_sectors_of_merges_articles():
-    assert [s.name for s in hi189.sectors_of([{"text": FIXTURE.read_text(encoding="utf-8")}, {"text": ""}])] \
-        == ["机器人概念", "算力", "光伏板块"]
-    assert json.dumps(hi189.sectors_of([])) == "[]"
+    text = FIXTURE.read_text(encoding="utf-8")
+    assert len(hi189.sectors_of([{"text": text}, {"text": ""}, {}])) == 14
+    assert hi189.sectors_of([]) == []

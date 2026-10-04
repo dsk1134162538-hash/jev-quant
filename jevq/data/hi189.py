@@ -122,10 +122,16 @@ def refresh(conn: sqlite3.Connection, day: date, prev_day: date, now: datetime,
 
 
 # ---- 晚报解析与点名 ----
-_LIMIT_UP = re.compile(r"^(?:涨停板|涨停股|涨停)\s*[:：]\s*(.*)$")
+# 真实版式（2026-09-30 晚报 https://hi189.com/6999.html）：
+#   板块名（单独一行）/ 一到几行说明文字 / 涨停板：甲、乙 / 其他强势股：丙、丁
+# 个别板块只有「强势股：…。」没有涨停板；说明文字可能被硬换行拆成两行。板块名 = 往回数第一个「像名字」的短行。
+_LIMIT_UP = re.compile(r"^(?:涨停板|涨停股)\s*[:：]\s*(.*)$")
 _STRONG = re.compile(r"^(?:其他强势股|其它强势股|强势股)\s*[:：]\s*(.*)$")
 _LEAD_NO = re.compile(r"^(?:\d+|[一二三四五六七八九十]+)\s*[.、)）]\s*")
 _PAREN = re.compile(r"[（(][^）)]*[）)]")
+_NOT_NAME = re.compile(r"[。，、：:；;（）()《》“”%％]")
+NAME_MAX_CHARS = 12
+NAME_LOOKBACK = 8
 
 
 def _clean_sector(s: str) -> str:
@@ -133,28 +139,41 @@ def _clean_sector(s: str) -> str:
 
 
 def _stocks(s: str) -> list[str]:
-    s = _PAREN.sub("", s)
+    s = _PAREN.sub("", s).strip().rstrip("。.")
     return [x for x in re.split(r"[、，,；;\s]+", s) if x]
 
 
+def _is_name(line: str) -> bool:
+    return (0 < len(line) <= NAME_MAX_CHARS and not _NOT_NAME.search(line) and not line.startswith(("【", "[", "①", "②", "③"))
+            and not _LEAD_NO.match(line))
+
+
+def _sector_name(lines: list[str], idx: int) -> str:
+    for k in range(idx - 1, max(idx - 1 - NAME_LOOKBACK, -1), -1):
+        if _LIMIT_UP.match(lines[k]) or _STRONG.match(lines[k]):
+            break
+        if _is_name(lines[k]):
+            return _clean_sector(lines[k])
+    return ""
+
+
 def parse_sectors(text: str) -> list[Sector]:
-    """晚报格式：「板块名 / 涨停板：… / 其他强势股：…」。认不出结构 → 空列表。"""
+    """晚报板块：见上面的版式说明。认不出结构 → 空列表。"""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     sectors: list[Sector] = []
-    prev_plain, last = "", None
-    for line in (ln.strip() for ln in (text or "").splitlines()):
-        if not line:
-            continue
+    last = None
+    for i, line in enumerate(lines):
         if m := _LIMIT_UP.match(line):
-            sectors.append(Sector(_clean_sector(prev_plain), _stocks(m.group(1))))
+            sectors.append(Sector(_sector_name(lines, i), _stocks(m.group(1))))
             last = "lu"
         elif m := _STRONG.match(line):
             if last == "lu" and sectors and not sectors[-1].strong:
                 sectors[-1].strong = _stocks(m.group(1))
             else:
-                sectors.append(Sector(_clean_sector(prev_plain), [], _stocks(m.group(1))))
+                sectors.append(Sector(_sector_name(lines, i), [], _stocks(m.group(1))))
             last = "st"
         else:
-            prev_plain, last = line, None
+            last = None
     return [s for s in sectors if s.name]
 
 
