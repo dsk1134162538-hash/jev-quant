@@ -46,7 +46,7 @@ def test_refresh_caches_and_does_not_refetch():
     got = hi189.refresh(conn, TODAY, PREV, NOW, fetch=feed, fetch_page=lambda l: "")
     assert [d["title"] for d in got] == ["晚报"] and got[0]["published"] == "2026-09-29T19:00"
     hi189.refresh(conn, TODAY, PREV, datetime(2026, 9, 30, 9, 0), fetch=feed, fetch_page=lambda l: "")
-    assert len(calls) == 2                                      # 11:30 前每次都查，但同一篇只存一次
+    assert len(calls) == 2                                      # 14:40 前每次都查，但同一篇只存一次
     assert conn.execute("SELECT COUNT(*) FROM day_cache WHERE kind='hi189'").fetchone()[0] == 1
 
 
@@ -55,9 +55,9 @@ def test_refresh_stops_fetching_after_cutoff_but_reads_cache():
     hi189.refresh(conn, TODAY, PREV, NOW, fetch=lambda: [art("晚报", "b", datetime(2026, 9, 29, 19, 0))])
 
     def boom():
-        raise AssertionError("11:30 后不该联网")
+        raise AssertionError("14:40 后不该联网")
 
-    got = hi189.refresh(conn, TODAY, PREV, datetime(2026, 9, 30, 11, 31), fetch=boom)
+    got = hi189.refresh(conn, TODAY, PREV, datetime(2026, 9, 30, 14, 41), fetch=boom)
     assert [d["title"] for d in got] == ["晚报"]
 
 
@@ -109,3 +109,67 @@ def test_sectors_of_merges_articles():
     text = FIXTURE.read_text(encoding="utf-8")
     assert len(hi189.sectors_of([{"text": text}, {"text": ""}, {}])) == 14
     assert hi189.sectors_of([]) == []
+
+
+MORNING = Path(__file__).parent / "fixtures" / "hi189_morning.txt"
+
+
+@pytest.mark.parametrize("title,kind", [
+    ("2026/09/29（早）机构研究总结和市场消息汇总解读", "早"),
+    ("2026/09/28-(早) 机构研究总结和市场消息汇总解读", "早"),
+    ("2026/09/23-(中) 机构研究总结和市场消息汇总解读", "中"),
+    ("2026/09/30(晚) 机构研究总结和市场消息汇总解读", "晚"),
+    ("2026/09/20 机构研究总结和市场消息汇总解读", ""),           # 周末版没有标早/中/晚
+    ("9.28 深度复盘/操作计划", ""),
+])
+def test_kind_of_reads_morning_midday_evening_from_title(title, kind):
+    assert hi189.kind_of(title) == kind
+
+
+def test_parse_morning_hot_from_real_morning_report():
+    got = hi189.parse_morning_hot(MORNING.read_text(encoding="utf-8"))
+    assert [(s.name, s.strong) for s in got] == [
+        ("并购", ["新华传媒"]), ("机器人", ["襄阳轴承"]), ("AI影视", ["博纳影业"]),
+        ("AI安全", ["中新赛克"]), ("汽车", ["众泰汽车"])]
+    assert all(s.limit_up == [] for s in got)        # 只记「点名」，不假定是涨停
+    # 后面每条要闻末尾的「板块：个股」（AI安全：启明信息…、固态电池：…）不在「昨日热点」里，不读
+    assert "固态电池" not in [s.name for s in got] and "启明信息" not in [x for s in got for x in s.strong]
+
+
+def test_parse_morning_hot_handles_multi_stock_and_other_titles():
+    text = "【盘前热点事件】\n一、昨日热点\n传媒：新华传媒、新华文轩\n福建：国统股份、平潭发展\n二、上交所三季报预约\n机器人：襄阳轴承"
+    got = hi189.parse_morning_hot(text)
+    assert [(s.name, s.strong) for s in got] == [("传媒", ["新华传媒", "新华文轩"]), ("福建", ["国统股份", "平潭发展"])]
+    assert hi189.parse_morning_hot("盘前热点事件\n昨日热点\n机器人：甲")[0].name == "机器人"   # 没有序号也认
+    assert hi189.parse_morning_hot("没有昨日热点这一节\n机器人：甲") == []
+    assert hi189.parse_morning_hot("") == [] and hi189.parse_morning_hot(None) == []
+
+
+def test_parse_morning_hot_stops_at_first_non_topic_line():
+    text = "一、昨日热点\n机器人：甲\n这是一段说明文字，不是板块行\n汽车：乙"
+    assert [s.name for s in hi189.parse_morning_hot(text)] == ["机器人"]
+
+
+def test_sectors_of_includes_morning_hot_and_evening_together():
+    evening = FIXTURE.read_text(encoding="utf-8")
+    got = hi189.sectors_of([{"text": evening}, {"text": MORNING.read_text(encoding="utf-8")}])
+    assert len(got) == 14 + 5
+    assert hi189.article_hot("AI影视概念", ["1"], {}, got) == "板块：AI影视"
+
+
+def test_midday_report_published_this_afternoon_is_eligible_and_cached_until_cutoff():
+    conn = db.connect(":memory:")
+    mid = art("2026/09/30-(中) 机构研究总结和市场消息汇总解读", "m", datetime(2026, 9, 30, 13, 20))
+    got = hi189.refresh(conn, TODAY, PREV, datetime(2026, 9, 30, 14, 0), fetch=lambda: [mid])
+    assert [d["link"] for d in got] == ["m"]
+    # 第二天它早于「上一交易日 15:00」，不会再被当成新文章
+    assert hi189.eligible([mid], date(2026, 9, 30), datetime(2026, 10, 8, 8, 50)) == []
+
+
+def test_midday_report_not_judged_while_switch_off_but_morning_and_evening_are(monkeypatch):
+    arts = [{"title": "2026/09/30(晚) x"}, {"title": "2026/09/30-(中) x"}, {"title": "2026/09/30-(早) x"}, {"title": "周末版"}]
+    monkeypatch.setattr(hi189, "HI189_MIDDAY_JUDGE", False)
+    assert [a["title"][-5:] for a in hi189.for_judge(arts)] == ["(晚) x", "(早) x", "周末版"]
+    assert hi189.in_judgement(arts[1]) is False
+    monkeypatch.setattr(hi189, "HI189_MIDDAY_JUDGE", True)
+    assert hi189.for_judge(arts) == arts and hi189.in_judgement(arts[1]) is True

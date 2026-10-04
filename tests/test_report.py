@@ -162,3 +162,15 @@ def test_report_reference_articles_line(tmp_path):
     arts = [{"title": "晚报", "link": "https://hi189.com/1.html"}]
     text = write_report(conn, ledger, day, {}, "中性", "正常", tmp_path, articles=arts).read_text(encoding="utf-8")
     assert "今日参考文章：晚报（https://hi189.com/1.html）" in text
+
+
+def test_report_marks_midday_article_as_record_only_while_switch_off(tmp_path, monkeypatch):
+    from jevq.data import hi189
+    monkeypatch.setattr(hi189, "HI189_MIDDAY_JUDGE", False)
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    arts = [{"title": "2026/09/23(晚) x", "link": "https://e"}, {"title": "2026/09/23-(中) x", "link": "https://m"}]
+    text = write_report(conn, ledger, date(2026, 9, 23), {}, "中性", "正常", tmp_path, articles=arts).read_text(encoding="utf-8")
+    line = next(ln for ln in text.splitlines() if ln.startswith("今日参考文章"))
+    assert "(晚) x（https://e）" in line and "(中) x（https://m）【只记录，未参与判断】" in line
+    assert "(晚) x（https://e）【" not in line

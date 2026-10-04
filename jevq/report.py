@@ -5,7 +5,7 @@ from pathlib import Path
 
 from jevq import accounts as accounts_mod
 from jevq.config import LIVE_ACCOUNT, REPORT_DIR, STRATEGIES
-from jevq.data import custom_store, sell_followups
+from jevq.data import custom_store, hi189, sell_followups
 from jevq.ledger import Ledger
 from jevq.live import store as live_store
 
@@ -151,7 +151,8 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
     groups, strategy_labels = _strategy_groups(conn, day)
     lines = [f"# 复盘 {day.isoformat()}", "",
              f"外围：{overseas or '未知'}　情绪：{sentiment or '未知'}",
-             "今日参考文章：" + ("；".join(f"{a['title']}（{a['link']}）" for a in articles) if articles else "未取到"),
+             "今日参考文章：" + ("；".join(f"{a['title']}（{a['link']}）" + ("" if hi189.in_judgement(a) else "【只记录，未参与判断】")
+                                         for a in articles) if articles else "未取到"),
              "",
              "## 净值"]
     for group in groups:

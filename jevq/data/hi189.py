@@ -12,7 +12,7 @@ from email.utils import parsedate_to_datetime
 
 import requests
 
-from jevq.config import HI189_ENABLED, HI189_FEED_URL, HI189_FETCH_UNTIL, HI189_TIMEOUT
+from jevq.config import HI189_ENABLED, HI189_FEED_URL, HI189_FETCH_UNTIL, HI189_MIDDAY_JUDGE, HI189_TIMEOUT
 
 KIND = "hi189"
 CN_TZ = timezone(timedelta(hours=8))
@@ -91,6 +91,24 @@ def eligible(articles: list[Article], prev_day: date, now: datetime) -> list[Art
     start = datetime.combine(prev_day, PUBLISHED_AFTER)
     return [a for a in articles
             if start < a.published <= now and not a.title.startswith(PASSWORD_PREFIXES)]
+
+
+_KIND = re.compile(r"[（(]\s*([早中晚])\s*[)）]")
+
+
+def kind_of(title: str) -> str:
+    """标题里的「(早)/(中)/(晚)」；周末版、复盘/操作计划这类没标的返回空串。"""
+    m = _KIND.search(title or "")
+    return m.group(1) if m else ""
+
+
+def in_judgement(article: dict) -> bool:
+    """这篇文章是否交给 Jev 判情绪：中报在 HI189_MIDDAY_JUDGE 关着时只记录，其余都参与。"""
+    return HI189_MIDDAY_JUDGE or kind_of(article.get("title", "")) != "中"
+
+
+def for_judge(articles: list[dict]) -> list[dict]:
+    return [a for a in articles if in_judgement(a)]
 
 
 def cached(conn: sqlite3.Connection, day: date) -> list[dict]:
@@ -177,8 +195,33 @@ def parse_sectors(text: str) -> list[Sector]:
     return [s for s in sectors if s.name]
 
 
+# 早报版式（2026-09-29 早报 https://hi189.com/6988.html）：「一、昨日热点」后面每行「板块：个股、个股」，
+# 到下一个带序号的小标题（「二、…」）为止。后面每条要闻末尾也有「板块：个股」，那是受益标的，这里不读。
+_MORNING_HEAD = re.compile(r"^(?:[一二三四五六七八九十]+[、.]\s*)?昨日热点\s*$")
+_HEADING = re.compile(r"^[一二三四五六七八九十]+[、.]")
+_TOPIC_LINE = re.compile(r"^([^：:]+)[:：](.+)$")
+MORNING_HOT_MAX_LINES = 30
+
+
+def parse_morning_hot(text: str | None) -> list[Sector]:
+    """早报「昨日热点」：只记点名（strong），不假定是涨停。没有这一节 → 空列表。"""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    head = next((i for i, ln in enumerate(lines) if _MORNING_HEAD.match(ln)), None)
+    if head is None:
+        return []
+    out: list[Sector] = []
+    for ln in lines[head + 1:head + 1 + MORNING_HOT_MAX_LINES]:
+        m = _TOPIC_LINE.match(ln)
+        if _HEADING.match(ln) or not m or not _is_name(m.group(1).strip()):
+            break
+        stocks = _stocks(m.group(2))
+        if name := _clean_sector(m.group(1)):
+            out.append(Sector(name, [], stocks))
+    return out
+
+
 def sectors_of(articles: list[dict]) -> list[Sector]:
-    return [s for a in articles for s in parse_sectors(a.get("text", ""))]
+    return [s for a in articles for s in (*parse_sectors(a.get("text", "")), *parse_morning_hot(a.get("text", "")))]
 
 
 def _norm(name: str) -> str:

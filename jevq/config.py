@@ -45,7 +45,8 @@ SENTIMENT_REFRESH_MIN = 10
 HI189_ENABLED = True             # 总开关：False = 完全等同没接文章
 HI189_FEED_URL = "https://hi189.com/category/gupiaoqihuo/feed"
 HI189_ARTICLE_MAX_CHARS = 3000   # 每篇送给 Jev 的最长字数
-HI189_FETCH_UNTIL = time(11, 30)  # 这个时刻之后不再联网查新文章
+HI189_FETCH_UNTIL = time(14, 40)  # 这个时刻之后不再联网查新文章（中报 13:00~14:20 发，要赶在 14:50 尾盘买点之前取到）
+HI189_MIDDAY_JUDGE = False       # 中报（标题带「(中)」）是否参与情绪判断：False = 只缓存、只记进复盘报告，不交给 Jev（演练期先观察）
 HI189_TIMEOUT = 8.0              # 联网超时（秒）
 
 # 过滤

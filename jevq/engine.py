@@ -112,7 +112,9 @@ class Engine:
             stats = self._market_stats(now, quotes)
             if stats:
                 try:
-                    self.sentiment_label = (self.market_judge.sentiment(stats, self.articles) if self.articles
+                    from jevq.data.hi189 import for_judge
+                    judged = for_judge(self.articles)         # 中报在演练期只记录，不交给 Jev
+                    self.sentiment_label = (self.market_judge.sentiment(stats, judged) if judged
                                             else self.market_judge.sentiment(stats))
                     self.sentiment_trace = getattr(self.market_judge, "sentiment_trace", None)
                 except Exception as e:

@@ -200,3 +200,30 @@ def test_engine_without_articles_calls_sentiment_with_stats_only():
     eng.articles_provider = lambda now: []
     eng.tick(at(10, 0))
     assert len(market.calls) == 1
+
+
+def test_engine_judges_without_midday_report_while_switch_off_but_still_keeps_it(monkeypatch):
+    from jevq.data import hi189
+    monkeypatch.setattr(hi189, "HI189_MIDDAY_JUDGE", False)
+    evening = {"title": "2026/09/22(晚) x", "link": "e", "published": "2026-09-22T19:00", "text": "机器人\n涨停板：甲"}
+    midday = {"title": "2026/09/23-(中) x", "link": "m", "published": "2026-09-23T13:20", "text": "调研纪要"}
+    market = ArticleMarket()
+    eng, ledger, feed = make(qs(**{"600001": 1.0}), market=market)
+    eng.articles_provider = lambda now: [evening, midday]
+    eng.tick(at(10, 0))
+    assert market.calls[0][1] == [evening]                    # 中报只记录，不交给 Jev
+    assert eng.articles == [evening, midday]                  # 但缓存和报告里都在
+
+    monkeypatch.setattr(hi189, "HI189_MIDDAY_JUDGE", True)
+    eng.tick(at(10, 20))
+    assert market.calls[1][1] == [evening, midday]
+
+
+def test_engine_with_only_midday_report_while_switch_off_judges_on_stats_only(monkeypatch):
+    from jevq.data import hi189
+    monkeypatch.setattr(hi189, "HI189_MIDDAY_JUDGE", False)
+    market = ArticleMarket()
+    eng, ledger, feed = make(qs(**{"600001": 1.0}), market=market)
+    eng.articles_provider = lambda now: [{"title": "x-(中) y", "link": "m", "published": "2026-09-23T13:20", "text": "t"}]
+    eng.tick(at(10, 0))
+    assert market.calls[0][1] is None
