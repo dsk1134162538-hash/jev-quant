@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, time
 
 from jevq.models import Quote
@@ -45,6 +45,7 @@ class Candidate:
     heat: int
     score: int
     ranks: dict = field(default_factory=dict)     # {"pct": n, "amount": n, "ret5": n}
+    article_hot: str = ""                          # hi189 文章点名该题材的原因（空 = 没点名）
 
 
 def _rank(codes: list[str], key) -> dict[str, int]:
@@ -67,22 +68,25 @@ def leader(concept: str, members: list[str], quotes: dict[str, Quote], ret5: dic
 
 def watch_candidates(quotes: dict[str, Quote], concept_map: dict[str, list[str]], ret5: dict[str, float],
                      prev_prev_closes: dict[str, float | None], today,
-                     exclude: set[str] = frozenset()) -> list[Candidate]:
+                     exclude: set[str] = frozenset(),
+                     article_hot=None) -> list[Candidate]:
     """每个热点题材取龙头；满足：涨幅 ≥ ENTER_PCT、今天还没摸过涨停（只扫第一次冲板）、首板。
     按热度降序、龙头分升序，去重后最多 WATCH_MAX。
     首板判断的昨收用实时行情的 pre_close，prev_prev_closes 只提供前日收（code → 收盘价）。
-    exclude：近 10 日涨停过的代码，龙头命中就跳过该题材（不取第二名——只做龙头）。"""
+    exclude：近 10 日涨停过的代码，龙头命中就跳过该题材（不取第二名——只做龙头）。
+    article_hot(题材, 强势成员) -> 命中原因：文章点名的题材排在前面，只调顺序，不降门槛；None = 不用文章。"""
     out: dict[str, Candidate] = {}
     hot = hot_concepts(quotes, concept_map, today)
-    for concept, members in sorted(hot.items(), key=lambda kv: -len(kv[1])):
+    why = {c: (article_hot(c, m) if article_hot else "") or "" for c, m in hot.items()}
+    for concept, members in sorted(hot.items(), key=lambda kv: (not why[kv[0]], -len(kv[1]))):
         cand = leader(concept, members, quotes, ret5)
         if cand is None or cand.code in out or cand.code in exclude:
             continue
         q = quotes[cand.code]
         if q.pct < ENTER_PCT or q.high >= q.limit_up                 or not is_first_board(q.pre_close, prev_prev_closes.get(cand.code)):
             continue
-        out[cand.code] = cand
-    return sorted(out.values(), key=lambda c: (-c.heat, c.score))[:WATCH_MAX]
+        out[cand.code] = replace(cand, article_hot=why[concept])
+    return sorted(out.values(), key=lambda c: (not c.article_hot, -c.heat, c.score))[:WATCH_MAX]
 
 
 def in_scan_window(t: time, windows: list[tuple[time, time]] = SCAN_WINDOWS) -> bool:

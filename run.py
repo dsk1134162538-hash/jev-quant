@@ -16,6 +16,7 @@ from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
 from jevq.engine import Engine
 from jevq.judge.jev import JevClient
+from jevq.data import hi189
 from jevq.judge.market import MarketJudge
 from jevq.judge.news import NewsJudge
 from jevq.judge.notices import NoticeJudge
@@ -274,12 +275,14 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         log(f"自定义账户读取失败，只拉内置账户持仓行情：{e!r}")
         day_accounts = config.builtin_accounts()
     engine = Engine(conn, ledger, market, tencent.fetch_quotes, akdata.fetch_pool_stats, universe, prev_day,
-                    overseas, accounts_provider=lambda: day_accounts)
+                    overseas, accounts_provider=lambda: day_accounts,
+                    articles_provider=None if late else lambda t: hi189.refresh(conn, today, prev_day, t))
     board = None
     if not late:
         board = BoardStrategy(conn, ledger, notice_judge, news_judge, tencent.fetch_quotes, universe, ret5,
                               concept_map, prev_prev_closes, prev_day, enabled=board_enabled,
-                              recent_limit_ups=recent_limit_ups)
+                              recent_limit_ups=recent_limit_ups,
+                              sectors_provider=lambda: engine.sectors)
         # 「隔夜超期」只管 runner 错过了上一交易日的情况：昨天跑过，说明持仓昨天已经按规则处理过
         # （封死涨停隔夜的票就是规则允许留下的），今天照常按同一套规则判断，不在开盘一刀切卖掉。
         try:
@@ -389,7 +392,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         log(f"封板统计记录失败：{e!r}")
     try:
         path = write_report(conn, ledger, today, prices, overseas, engine.sentiment_label,
-                            out_dir=REPORT_DIR, names=names)
+                            out_dir=REPORT_DIR, names=names, articles=hi189.cached(conn, today))
     except Exception as e:
         log(f"复盘报告生成失败：{e!r}")
         return None

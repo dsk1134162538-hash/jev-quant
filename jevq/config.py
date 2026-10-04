@@ -41,6 +41,13 @@ BUY_END = time(14, 57)
 EOD_SELL = time(14, 55)
 SENTIMENT_REFRESH_MIN = 10
 
+# hi189「股票期货」文章（docs/specs/2026-10-04-hi189-articles-design.md）
+HI189_ENABLED = True             # 总开关：False = 完全等同没接文章
+HI189_FEED_URL = "https://hi189.com/category/gupiaoqihuo/feed"
+HI189_ARTICLE_MAX_CHARS = 3000   # 每篇送给 Jev 的最长字数
+HI189_FETCH_UNTIL = time(11, 30)  # 这个时刻之后不再联网查新文章
+HI189_TIMEOUT = 8.0              # 联网超时（秒）
+
 # 过滤
 NOTICE_LOOKBACK_DAYS = 90
 NEWS_LOOKBACK_HOURS = 24

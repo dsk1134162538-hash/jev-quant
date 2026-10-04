@@ -14,12 +14,16 @@ class Engine:
 
     def __init__(self, conn: sqlite3.Connection, ledger: Ledger, market_judge, fetch_quotes, fetch_pools,
                  universe: dict[str, str], prev_day: date, overseas: str | None,
-                 accounts_provider: Callable[[], tuple[str, ...]] | None = None):
+                 accounts_provider: Callable[[], tuple[str, ...]] | None = None,
+                 articles_provider: Callable[[datetime], list[dict]] | None = None):
         self.conn, self.ledger = conn, ledger
         # 持仓代码（_fetch 用来决定该拉哪些行情）要看全部账户；默认取内置账户，
         # 自定义策略跑起来后由调用方注入一个能看到「今天在跑」账户全集的 provider（见 jevq.accounts.all_accounts）。
         self.accounts_provider = accounts_provider or (lambda: ACCOUNTS)
         self.market_judge = market_judge
+        self.articles_provider = articles_provider     # hi189 文章；None = 不接
+        self.articles: list[dict] = []
+        self.sectors: list = []                        # 文章里解析出的板块（扫首板点名用）
         self.fetch_quotes, self.fetch_pools = fetch_quotes, fetch_pools
         self.universe, self.prev_day, self.overseas = universe, prev_day, overseas
         self.fail_streak = 0
@@ -55,6 +59,17 @@ class Engine:
         self._fetched_minute = None               # 每分钟只刷一轮
         self._sentiment(now, quotes)
         return []
+
+    def _refresh_articles(self, now: datetime):
+        """查 hi189 新文章；失败保留已有的，不影响情绪刷新。"""
+        if self.articles_provider is None:
+            return
+        try:
+            from jevq.data.hi189 import sectors_of
+            self.articles = self.articles_provider(now) or []
+            self.sectors = sectors_of(self.articles)
+        except Exception as e:
+            print(f"[engine] hi189 文章刷新失败: {e!r}")
 
     def _restore_sentiment(self, day: date):
         """重启后恢复当日最后一次情绪标签，只给卖出阶段（自定义退出条件）一个合理值；
@@ -93,10 +108,12 @@ class Engine:
     def _sentiment(self, now: datetime, quotes: dict[str, Quote]):
         fresh = self._sentiment_at and now - self._sentiment_at < timedelta(minutes=SENTIMENT_REFRESH_MIN)
         if not fresh:
+            self._refresh_articles(now)
             stats = self._market_stats(now, quotes)
             if stats:
                 try:
-                    self.sentiment_label = self.market_judge.sentiment(stats)
+                    self.sentiment_label = (self.market_judge.sentiment(stats, self.articles) if self.articles
+                                            else self.market_judge.sentiment(stats))
                     self.sentiment_trace = getattr(self.market_judge, "sentiment_trace", None)
                 except Exception as e:
                     print(f"[engine] 情绪判断异常: {e!r}")

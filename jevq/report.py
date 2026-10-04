@@ -144,13 +144,15 @@ def live_report_lines(conn: sqlite3.Connection, day: date) -> list[str]:
 
 def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: dict[str, float],
                  overseas: str | None, sentiment: str | None, out_dir=REPORT_DIR,
-                 names: dict[str, str] | None = None) -> Path:
+                 names: dict[str, str] | None = None, articles: list[dict] | None = None) -> Path:
     names = names or {}
     fills = ledger.fills_on(day)
     account_names = accounts_mod.account_names(conn, day)
     groups, strategy_labels = _strategy_groups(conn, day)
     lines = [f"# 复盘 {day.isoformat()}", "",
-             f"外围：{overseas or '未知'}　情绪：{sentiment or '未知'}", "",
+             f"外围：{overseas or '未知'}　情绪：{sentiment or '未知'}",
+             "今日参考文章：" + ("；".join(f"{a['title']}（{a['link']}）" for a in articles) if articles else "未取到"),
+             "",
              "## 净值"]
     for group in groups:
         baseline = accounts_mod.capital_baseline(conn, group["id"])

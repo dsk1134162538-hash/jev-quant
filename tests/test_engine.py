@@ -174,3 +174,29 @@ def test_sentiment_not_restored_from_previous_day():
     nxt, _, _ = make(quotes, market=Market("冰点"), conn=eng.conn)
     nxt.sell_step(at(10, 0, datetime(2026, 9, 24)))
     assert nxt.sentiment_label is None
+
+
+class ArticleMarket(Market):
+    def sentiment(self, stats, articles=None):
+        self.calls.append((stats, articles))
+        return self.label
+
+
+def test_engine_passes_articles_and_exposes_sectors_and_survives_provider_failure():
+    arts = [{"title": "晚报", "link": "l", "published": "2026-09-22T19:00", "text": "机器人\n涨停板：甲\n其他强势股：乙"}]
+    market = ArticleMarket()
+    eng, ledger, feed = make(qs(**{"600001": 1.0}), market=market)
+    eng.articles_provider = lambda now: arts
+    eng.tick(at(10, 0))
+    assert market.calls[0][1] == arts and eng.sectors[0].name == "机器人"
+    eng.articles_provider = lambda now: (_ for _ in ()).throw(OSError("down"))
+    eng.tick(at(10, 20))                                   # 取文章出错：保留旧文章，情绪照常刷新
+    assert len(market.calls) == 2 and eng.articles == arts
+
+
+def test_engine_without_articles_calls_sentiment_with_stats_only():
+    market = Market()
+    eng, ledger, feed = make(qs(**{"600001": 1.0}), market=market)
+    eng.articles_provider = lambda now: []
+    eng.tick(at(10, 0))
+    assert len(market.calls) == 1

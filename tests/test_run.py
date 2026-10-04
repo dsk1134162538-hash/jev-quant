@@ -62,8 +62,9 @@ class FakeEngine:
     behavior = None
 
     def __init__(self, conn, ledger, market, fetch_quotes, fetch_pools, universe, prev_day, overseas,
-                 accounts_provider=None):
+                 accounts_provider=None, articles_provider=None):
         self.conn, self.ledger = conn, ledger
+        self.articles_provider, self.articles, self.sectors = articles_provider, [], []
         self.universe, self.prev_day, self.overseas = universe, prev_day, overseas
         self.fetch_quotes, self.accounts_provider = fetch_quotes, accounts_provider
         self.ticks, self.last_quotes, self.sentiment_label = [], {}, "正常"

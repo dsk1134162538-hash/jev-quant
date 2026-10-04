@@ -117,3 +117,31 @@ def test_sentiment_gate_unknown_when_stats_missing():
     assert sentiment_gate(None) == (None, "没有上一交易日的情绪统计")
     assert sentiment_gate({}) == (None, "没有上一交易日的情绪统计")
     assert sentiment_gate({"涨停家数": 50, "跌停家数": 3})[0] is None           # 缺炸板率/连板高度：不下结论
+
+
+def _two_themes():
+    quotes = {"600001": q("600001", 8.5, amount=9e8), "600002": q("600002", 6), "600003": q("600003", 5.5),
+              "600004": q("600004", 8.0, amount=9e8), "600005": q("600005", 6), "600006": q("600006", 5.5),
+              "600007": q("600007", 5.2)}
+    cmap = {"600001": ["机器人"], "600002": ["机器人"], "600003": ["机器人"], "600007": ["机器人"],
+            "600004": ["算力"], "600005": ["算力"], "600006": ["算力"]}
+    return quotes, cmap, {c: 1.0 for c in quotes}, {"600001": 9.5, "600004": 9.5}
+
+
+def test_watch_candidates_article_hot_goes_first_without_lowering_threshold():
+    quotes, cmap, ret5, prev = _two_themes()
+    base = watch_candidates(quotes, cmap, ret5, prev, TODAY)
+    assert [c.code for c in base] == ["600001", "600004"]                # 机器人 4 只热度更高
+    hot = lambda concept, members: "板块：算力" if concept == "算力" else ""      # noqa: E731
+    got = watch_candidates(quotes, cmap, ret5, prev, TODAY, article_hot=hot)
+    assert [c.code for c in got] == ["600004", "600001"] and got[0].article_hot == "板块：算力"
+    assert got[1].article_hot == ""
+    # 点名了但题材没到 3 只强势成员：不会因为点名而入选
+    weak = {k: v for k, v in quotes.items() if k not in ("600005", "600006")}
+    assert [c.code for c in watch_candidates(weak, cmap, ret5, prev, TODAY, article_hot=hot)] == ["600001"]
+
+
+def test_watch_candidates_without_article_hot_unchanged():
+    quotes, cmap, ret5, prev = _two_themes()
+    assert watch_candidates(quotes, cmap, ret5, prev, TODAY) == watch_candidates(
+        quotes, cmap, ret5, prev, TODAY, article_hot=lambda c, m: "")

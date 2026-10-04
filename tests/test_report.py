@@ -151,3 +151,14 @@ def test_report_notice_risk_stats(tmp_path):
     assert st == {"judged": 3, "reject": 1, "unsure": 1, "unread": 1, "by_category": {"减持": 2, "回购": 1}}
     text = write_report(conn, ledger, datetime(2026, 9, 28).date(), {}, "中性", "正常", tmp_path).read_text(encoding="utf-8")
     assert "## 公告风险统计" in text and "| 减持 | 2 |" in text
+
+
+def test_report_reference_articles_line(tmp_path):
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    day = date(2026, 9, 23)
+    text = write_report(conn, ledger, day, {}, "中性", "正常", tmp_path).read_text(encoding="utf-8")
+    assert "今日参考文章：未取到" in text
+    arts = [{"title": "晚报", "link": "https://hi189.com/1.html"}]
+    text = write_report(conn, ledger, day, {}, "中性", "正常", tmp_path, articles=arts).read_text(encoding="utf-8")
+    assert "今日参考文章：晚报（https://hi189.com/1.html）" in text

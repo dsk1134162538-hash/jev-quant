@@ -21,7 +21,7 @@ class BoardStrategy:
                  prev_prev_closes: dict[str, float | None], prev_day: date,
                  accounts: tuple[str, str] = ("board_main", "board_shadow"),
                  windows: list = SCAN_WINDOWS, enabled: bool = True,
-                 recent_limit_ups: set[str] = frozenset()):
+                 recent_limit_ups: set[str] = frozenset(), sectors_provider=None):
         self.conn, self.ledger = conn, ledger
         self.notice_judge, self.news_judge = notice_judge, news_judge
         self.fetch_quotes = fetch_quotes
@@ -29,6 +29,7 @@ class BoardStrategy:
         self.prev_prev_closes, self.prev_day = prev_prev_closes, prev_day   # 前日收，首板判断用
         self.recent_limit_ups = recent_limit_ups   # 近 10 日涨停过的代码，扫首板龙头命中就跳过该题材
         self.accounts, self.windows, self.enabled = accounts, windows, enabled
+        self.sectors_provider = sectors_provider   # () -> hi189 文章里的板块列表；None = 不用文章
         self.stale_before: date | None = prev_day
         self.watch: dict[str, Candidate] = {}
         self.verdicts: dict[str, tuple[str, str, dict]] = {}
@@ -171,7 +172,7 @@ class BoardStrategy:
         if len(self.watch) < WATCH_MAX:
             uni_quotes = {c: q for c, q in quotes.items() if c in self.universe}
             for cand in watch_candidates(uni_quotes, self.concept_map, self.ret5, self.prev_prev_closes, today,
-                                         self.recent_limit_ups):
+                                         self.recent_limit_ups, article_hot=self._article_hot()):
                 if len(self.watch) >= WATCH_MAX:
                     break
                 if cand.code in self.watch or cand.code in self.rejected:
@@ -194,6 +195,18 @@ class BoardStrategy:
                     self.conn.rollback()
                     print(f"[board] {now:%H:%M} 判断 {code} 出错: {e!r}")
 
+    def _article_hot(self):
+        """文章点名判定函数；没有文章或取板块出错 → None（顺序不变）。"""
+        try:
+            sectors = self.sectors_provider() if self.sectors_provider else None
+        except Exception as e:
+            print(f"[board] 读取文章板块出错: {e!r}")
+            return None
+        if not sectors:
+            return None
+        from jevq.data.hi189 import article_hot
+        return lambda concept, members: article_hot(concept, members, self.universe, sectors)
+
     def _judge(self, cand: Candidate, q: Quote, now: datetime):
         verdict, why = self._check(self.notice_judge, cand.code, now.date())
         notice_trace = getattr(self.notice_judge, "last_trace", None)
@@ -214,7 +227,8 @@ class BoardStrategy:
         return {"strategy": "board",
                 "candidate": {"name": q.name, "price": q.price, "pct": q.pct,
                               "ret5": self.ret5.get(cand.code), "concept": cand.concept,
-                              "heat": cand.heat, "score": cand.score, "ranks": cand.ranks},
+                              "heat": cand.heat, "score": cand.score, "ranks": cand.ranks,
+                              "article_hot": bool(cand.article_hot), "article_hot_why": cand.article_hot},
                 "notices": None, "news": None, "sealed_at_snapshot": False,
                 "outcome": {"bought": False, "shares": None, "price": None}}
 

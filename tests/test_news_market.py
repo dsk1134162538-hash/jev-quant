@@ -91,3 +91,20 @@ def test_market_traces():
     assert m.sentiment_trace["probabilities"]["火热"] == 0.9
     m2 = MarketJudge(ScoreJev("中性", fail=True))
     assert m2.overseas({"道琼斯": 0.1}) is None and m2.overseas_trace is None
+
+
+def test_sentiment_with_articles_adds_interpretation_and_trims():
+    jev = ScoreJev("偏弱")
+    market = MarketJudge(jev)
+    arts = [{"title": "晚报", "link": "https://hi189.com/1.html", "published": "2026-09-23T19:00", "text": "字" * 5000}]
+    assert market.sentiment({"涨停家数": 30}, arts) == "偏弱"
+    st = jev.states[0]
+    assert len(st["市场解读"][0]["正文"]) == 3000 and st["涨停家数"] == 30
+    assert market.sentiment_trace["articles"] == [{"title": "晚报", "link": "https://hi189.com/1.html"}]
+
+
+def test_sentiment_without_articles_unchanged():
+    jev = ScoreJev("正常")
+    market = MarketJudge(jev)
+    market.sentiment({"涨停家数": 30})
+    assert "市场解读" not in jev.states[0] and "articles" not in market.sentiment_trace

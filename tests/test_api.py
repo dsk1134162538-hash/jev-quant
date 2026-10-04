@@ -353,8 +353,10 @@ def test_rules_list_includes_builtin_readonly_summaries(paths):
     board_lines = [line for s in builtin["board"]["sections"] for line in s["lines"]]
     assert any("情绪闸门" in line and "只记录不拦截" in line and "30%" in line and "10 家" in line and "3 板" in line
                for line in board_lines)
+    assert any("hi189" in line and "只调顺序" in line for line in board_lines)
     rebound_lines = [line for s in builtin["rebound"]["sections"] for line in s["lines"]]
     assert builtin["rebound"]["accounts"] == ["rebound_main", "rebound_shadow"]
+    assert any("hi189" in line for line in rebound_lines)
     assert any("-3%" in line for line in rebound_lines)
     assert any("-20%" in line and "0%" in line for line in rebound_lines)
     assert any("40" in line and "2 连板" in line for line in rebound_lines)
