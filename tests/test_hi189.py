@@ -109,3 +109,23 @@ def test_sectors_of_merges_articles():
     text = FIXTURE.read_text(encoding="utf-8")
     assert len(hi189.sectors_of([{"text": text}, {"text": ""}, {}])) == 14
     assert hi189.sectors_of([]) == []
+
+
+def test_fetch_feed_and_page_report_captcha_challenge_without_bypass(capsys):
+    class Resp:
+        status_code = 202
+        text = '<meta http-equiv="refresh" content="0;/.well-known/sgcaptcha/?r=%2Ffeed">'
+        headers = {"sg-captcha": "challenge"}
+
+        def raise_for_status(self):
+            pass
+
+    class Sess:
+        calls = 0
+
+        def get(self, *a, **k):
+            Sess.calls += 1
+            return Resp()
+
+    assert hi189.fetch_feed(Sess()) == [] and hi189.fetch_page_text("https://hi189.com/1.html", Sess()) == ""
+    assert Sess.calls == 2 and "验证码" in capsys.readouterr().out      # 各只请求一次，不重试、不绕过
