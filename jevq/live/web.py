@@ -7,6 +7,7 @@
 """
 import json
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -228,17 +229,37 @@ def make_handler(conn_factory, clock=datetime.now, quotes=tencent.fetch_quotes,
     return Handler
 
 
-def serve(hosts: list[str], port: int, handler_cls, log=print) -> list[ThreadingHTTPServer]:
-    """每个地址开一个 ThreadingHTTPServer + 一个 daemon 线程；绑定失败只记日志，不影响其它地址。"""
-    servers = []
-    for host in hosts:
-        try:
-            server = ThreadingHTTPServer((host, port), handler_cls)
-        except OSError as e:
-            log(f"手机页绑定失败 {host}:{port}：{e!r}")
-            continue
+BIND_RETRY_SECONDS = 10.0
+
+
+def serve(hosts: list[str], port: int, handler_cls, log=print,
+          retry_seconds: float = BIND_RETRY_SECONDS) -> list[ThreadingHTTPServer]:
+    """每个地址开一个 ThreadingHTTPServer + 一个 daemon 线程。绑定失败只记一次日志、不影响其它地址，
+    并在后台每 retry_seconds 秒重试直到成功（开机时 Tailscale 地址常常比 live.py 晚起来），成功后补进返回的列表。"""
+    servers: list[ThreadingHTTPServer] = []
+
+    def start(host: str) -> bool:
+        server = ThreadingHTTPServer((host, port), handler_cls)
         threading.Thread(target=server.serve_forever, daemon=True, name=f"live-web-{host}").start()
         servers.append(server)
+        return True
+
+    def retry(host: str):
+        while True:
+            time.sleep(retry_seconds)
+            try:
+                start(host)
+            except OSError:
+                continue
+            log(f"手机页已绑定 {host}:{port}")
+            return
+
+    for host in hosts:
+        try:
+            start(host)
+        except OSError as e:
+            log(f"手机页绑定失败 {host}:{port}：{e!r}，之后每 {retry_seconds:g} 秒重试")
+            threading.Thread(target=retry, args=(host,), daemon=True, name=f"live-web-retry-{host}").start()
     return servers
 
 

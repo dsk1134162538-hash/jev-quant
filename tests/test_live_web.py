@@ -441,3 +441,48 @@ def test_rejected_host_gets_json_403_body(guarded):
 
 def test_no_whitelist_by_default_accepts_any_host(server):
     assert requests.get(f"{server}/api/status", headers={"Host": "evil.example.com"}).status_code == 200
+
+
+def test_serve_keeps_retrying_a_host_that_is_not_up_yet_and_binds_it_later(monkeypatch):
+    """开机时 Tailscale 地址可能还没起来（2026-10-07 实际发生：绑定失败后手机页再也没起来），
+    绑定失败的地址要在后台一直重试，起来后补进 servers；失败只记一次，不是每次重试都记。"""
+    from jevq.live import web
+    attempts = []
+
+    class FlakyServer:
+        def __init__(self, addr, handler):
+            attempts.append(addr)
+            if len(attempts) < 4:
+                raise OSError(10049, "address not valid")
+            self.server_address = addr
+
+        def serve_forever(self):
+            pass
+
+    monkeypatch.setattr(web, "ThreadingHTTPServer", FlakyServer)
+    logs = []
+    servers = serve(["100.1.1.1"], 8766, object, log=logs.append, retry_seconds=0.01)
+    assert servers == [] and logs and "绑定失败" in logs[0] and "100.1.1.1:8766" in logs[0]
+    deadline = time.time() + 5
+    while not servers and time.time() < deadline:
+        time.sleep(0.01)
+    assert [x.server_address for x in servers] == [("100.1.1.1", 8766)] and len(attempts) == 4
+    assert sum("绑定失败" in m for m in logs) == 1
+    assert any("已绑定" in m and "100.1.1.1:8766" in m for m in logs)
+
+
+def test_serve_binds_good_hosts_immediately_even_when_another_host_is_down(monkeypatch):
+    from jevq.live import web
+
+    class Server:
+        def __init__(self, addr, handler):
+            if addr[0] == "100.9.9.9":
+                raise OSError(10049, "address not valid")
+            self.server_address = addr
+
+        def serve_forever(self):
+            pass
+
+    monkeypatch.setattr(web, "ThreadingHTTPServer", Server)
+    servers = serve(["127.0.0.1", "100.9.9.9"], 8766, object, log=lambda m: None, retry_seconds=60)
+    assert [x.server_address[0] for x in servers] == ["127.0.0.1"]
