@@ -92,15 +92,21 @@ def holding_from_row(row: dict) -> Holding:
 
 
 _SIDE_KEYS = ("操作", "买卖标志", "买卖方向", "委托类别")
+_CANCEL_STATUS_IN_SIDE = ("全部撤单", "部分撤单")   # 「操作」列里带的是原委托的撤单状态
 _TIME_RE = re.compile(r"(\d{1,2}):(\d{2}):(\d{2})")
 
 
 def is_cancel_row(row: dict) -> bool:
     """当日委托里的撤单记录行（操作/买卖标志列是「撤买」「撤卖」「撤单」之类）：那是一条撤单动作，不是委托。
     它含「买」「卖」字，不排除的话会被解析成一笔四要素和原委托完全相同的委托，
-    没有委托号时「取最后一条」就可能匹配到它。gateway、easytrader 两个适配器的 orders_today 都要先排除。"""
+    没有委托号时「取最后一条」就可能匹配到它。gateway、easytrader 两个适配器的 orders_today 都要先排除。
+    但有的客户端（2026-10-08 家里实测）不单列撤单行，而是把原委托的「操作」写成「买入全部撤单」「卖出部分撤单」：
+    那是委托本身（状态已撤/部撤），必须保留，否则撤单后就找不到这笔委托。"""
     key = _pick(row, *_SIDE_KEYS)
-    return key is not None and "撤" in str(row[key])
+    if key is None:
+        return False
+    text = str(row[key])
+    return "撤" in text and not any(s in text for s in _CANCEL_STATUS_IN_SIDE)
 
 
 def _normalize_time(raw) -> str:

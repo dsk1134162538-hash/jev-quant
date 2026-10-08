@@ -384,3 +384,29 @@ def test_cash_from_balance_unknown_header_raises():
     with pytest.raises(BrokerError) as exc:
         cash_from_balance({"foo": "1"})
     assert exc.value.code == "UNKNOWN_HEADER"
+
+
+# 2026-10-08 家里实盘客户端真实当日委托行：撤掉的委托不单列「撤买」行，而是原委托的「操作」列
+# 直接变成「买入全部撤单」、备注「全部撤单(股票)」、撤消数量 = 委托数量。它是委托本身（已撤），不是撤单记录行；
+# 当撤单记录行排除掉，撤单后就再也找不到这笔，程序会判「委托状态查不到」自动暂停。
+REAL_CANCELLED = {"交易市场": "上海Ａ股", "合同编号": "2986", "备注": "全部撤单(股票)", "委托价格": "7.460",
+                  "委托数量": "100", "委托时间": "10:01:49", "成交均价": "0.000", "成交数量": "0",
+                  "撤消数量": "100", "操作": "买入全部撤单", "证券代码": "601398", "证券名称": "工商银行"}
+
+
+@pytest.mark.parametrize("op", ["买入全部撤单", "卖出全部撤单", "买入部分撤单", "卖出部分撤单"])
+def test_original_order_whose_side_column_shows_its_cancel_status_is_not_a_cancel_row(op):
+    assert is_cancel_row({**REAL_CANCELLED, "操作": op}) is False
+
+
+def test_real_fully_cancelled_order_parses_as_a_closed_order_with_its_contract_number():
+    (o,) = orders_from_rows([REAL_CANCELLED])
+    assert (o.entrust_no, o.code, o.side, o.price, o.shares, o.cancelled, o.time) ==         ("2986", "601398", "buy", 7.46, 100, 100, "10:01:49")
+    assert o.open is False
+
+
+def test_real_partially_cancelled_sell_parses_as_closed_with_its_fill():
+    row = {**REAL_CANCELLED, "操作": "卖出部分撤单", "备注": "部分撤单(股票)", "成交数量": "300",
+           "撤消数量": "200", "委托数量": "500", "成交均价": "7.470"}
+    (o,) = orders_from_rows([row])
+    assert o.side == "sell" and o.filled == 300 and o.cancelled == 200 and o.open is False
