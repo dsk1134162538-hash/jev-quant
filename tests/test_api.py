@@ -395,3 +395,34 @@ def test_knowledge_articles_carry_title_date_link_and_known_topic(paths):
         assert a["dup"] is None or (a["dup"] in ids and a["dup"] != a["id"])
         assert a["deleted"] == (not a["points"] and a["dup"] is None)
     assert kb["source"]["url"].startswith("https://t.me/")
+
+
+def _sentiment_row(paths, ts, label, overseas):
+    conn = db.connect(paths[0])
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, trace, strategy) VALUES (?, '', 'sentiment', ?, NULL, 'market')",
+                 (ts, json.dumps({"stats": {}, "label": label, "overseas": overseas}, ensure_ascii=False)))
+    conn.commit()
+    conn.close()
+
+
+def test_status_header_reads_todays_latest_sentiment_when_daemon_is_trading(paths):
+    """后台 daemon 在交易时面板自己的状态是空的：顶栏的情绪/外围读今天最近一条情绪记录（2026-10-08 顶栏一直是「–」）。"""
+    today = _date.today().isoformat()
+    _sentiment_row(paths, f"{today}T10:00:00", "正常", "中性")
+    _sentiment_row(paths, f"{today}T11:27:02", "偏弱", "偏弱")
+    s = make_api(paths).status()
+    assert (s["sentiment"], s["overseas"]) == ("偏弱", "偏弱")
+
+
+def test_status_header_ignores_sentiment_from_previous_days(paths):
+    _sentiment_row(paths, "2020-01-02T14:56:00", "火热", "偏强")
+    s = make_api(paths).status()
+    assert s["sentiment"] is None and s["overseas"] is None
+
+
+def test_status_header_prefers_panel_state_when_panel_itself_is_running(paths):
+    _sentiment_row(paths, f"{_date.today().isoformat()}T11:27:02", "偏弱", "偏弱")
+    api = make_api(paths)
+    api._state.update({"sentiment": "火热", "overseas": "偏强"})
+    s = api.status()
+    assert (s["sentiment"], s["overseas"]) == ("火热", "偏强")

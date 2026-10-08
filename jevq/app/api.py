@@ -173,6 +173,9 @@ class Api:
             names = self._lookup_names(held, quotes)
             accounts = [self._account(ledger, a, prices, names, account_names, account_strategy, strategy_names)
                        for a in account_list]
+            market = {"sentiment": self._state.get("sentiment"), "overseas": self._state.get("overseas")}
+            if market["sentiment"] is None and market["overseas"] is None:
+                market = self._todays_market(conn, today)
         finally:
             conn.close()
         running = self.is_running()
@@ -180,9 +183,22 @@ class Api:
         daemon = runlock.is_held(Path(self._db_path).parent / runlock.DAEMON_LOCK_NAME)
         return {"running": running, "background": background, "daemon": daemon,
                 "phase": self._state.get("phase", "未运行"),
-                "overseas": self._state.get("overseas"), "sentiment": self._state.get("sentiment"),
+                "overseas": market["overseas"], "sentiment": market["sentiment"],
                 "warning": self._state.get("warning"), "board_watch": self._state.get("board_watch") or [],
                 "today": date.today().isoformat(), "accounts": accounts}
+
+    @staticmethod
+    def _todays_market(conn, today: date) -> dict:
+        """顶栏的情绪/外围：面板自己没在跑时（交易由后台 daemon 接管），读今天最近一条情绪记录；今天没有就是空。"""
+        row = conn.execute("SELECT detail FROM decisions WHERE verdict='sentiment' AND substr(ts, 1, 10) = ? "
+                           "ORDER BY ts DESC, id DESC LIMIT 1", (today.isoformat(),)).fetchone()
+        try:
+            detail = json.loads(row[0]) if row and row[0] else {}
+        except ValueError:
+            detail = {}
+        if not isinstance(detail, dict):
+            detail = {}
+        return {"sentiment": detail.get("label"), "overseas": detail.get("overseas")}
 
     def _account(self, ledger: Ledger, account: str, prices: dict[str, float], names: dict[str, str],
                 account_names: dict[str, str], account_strategy: dict[str, str],

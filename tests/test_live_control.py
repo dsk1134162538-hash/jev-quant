@@ -840,3 +840,40 @@ def test_startup_reconcile_stops_touching_the_client_once_auto_paused():
     assert ("cancel_last",) not in broker.calls
     rows = {r["code"]: r["status"] for r in live_store.orders_on(c, TODAY)}
     assert rows == {"600009": "failed", "600001": "sending"}
+
+
+# 2026-10-08 实测杀网关：空仓 15 分钟、有持仓 5 分钟读一次，连续 3 次失败才暂停 → 网关挂了要 15~45 分钟才发现。
+# 读失败之后改成每 LIVE_RECONCILE_RETRY 分钟再读，3 次失败约 2 分钟内暂停；读成功一次就回到正常间隔。
+
+def test_idle_read_failure_retries_after_one_minute_and_pauses_on_the_third_failure():
+    c, clock, broker, notifier, ex = env()
+    broker.fail_reads = 99
+    ex.step()                                              # 09:35 第 1 次失败
+    assert ex.read_fail_streak == 1
+    clock.t = datetime(2026, 9, 29, 9, 35, 59)
+    ex.step()
+    assert ex.read_fail_streak == 1                        # 还没到 1 分钟
+    clock.t = datetime(2026, 9, 29, 9, 36, 0)
+    ex.step()
+    assert ex.read_fail_streak == 2
+    clock.t = datetime(2026, 9, 29, 9, 37, 0)
+    ex.step()
+    assert ex.read_fail_streak == 3 and live_store.paused(c) is not None
+
+
+def test_holding_read_failure_also_retries_after_one_minute():
+    c, clock, broker, notifier, ex = env(holdings={"600001": [500, 500]})
+    hold(c)
+    sim_holds(c)
+    broker.fail_reads = 1
+    ex.step()                                              # 第 1 次对账失败
+    assert ex.read_fail_streak == 1
+    clock.t = datetime(2026, 9, 29, 9, 36, 0)
+    ex.step()                                              # 1 分钟后重试，成功
+    assert ex.read_fail_streak == 0 and names(broker).count("positions") == 2   # 失败那次也记在调用里
+    clock.t = datetime(2026, 9, 29, 9, 40, 59)
+    ex.step()
+    assert names(broker).count("positions") == 2           # 成功之后回到 5 分钟一次
+    clock.t = datetime(2026, 9, 29, 9, 41, 0)
+    ex.step()
+    assert names(broker).count("positions") == 3

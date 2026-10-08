@@ -793,11 +793,14 @@ class Executor:
 
     def _scheduled_reconcile(self, now: datetime) -> None:
         """只在卖出时段（午休、收盘后不对账）：有持仓每 LIVE_RECONCILE_HOLDING 分钟对账；空仓每
-        LIVE_RECONCILE_IDLE 分钟读一次资金确认在线（失败只计数）。"""
+        LIVE_RECONCILE_IDLE 分钟读一次资金确认在线（失败只计数）。上次读失败了就每 LIVE_RECONCILE_RETRY 分钟再读。"""
         if not self._in_sell_window(now):
             return
         holding = bool(live_store.positions(self.conn))
-        gap = timedelta(minutes=config.LIVE_RECONCILE_HOLDING if holding else config.LIVE_RECONCILE_IDLE)
+        if self.read_fail_streak > 0:
+            gap = timedelta(minutes=config.LIVE_RECONCILE_RETRY)   # 上次读失败：尽快再读，确认是不是掉线了
+        else:
+            gap = timedelta(minutes=config.LIVE_RECONCILE_HOLDING if holding else config.LIVE_RECONCILE_IDLE)
         if self._last_reconcile is not None and now - self._last_reconcile < gap:
             return
         if holding:

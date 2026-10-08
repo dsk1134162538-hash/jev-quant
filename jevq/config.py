@@ -121,6 +121,7 @@ LIVE_CANCEL_WAIT = 30           # 秒：撤单后等「已报待撤」变成终�
 LIVE_RECONCILE_HOLDING = 5      # 分钟：有持仓时对账间隔
 LIVE_RECONCILE_IDLE = 15        # 分钟：空仓时读资金确认在线的间隔
 LIVE_READ_FAIL_PAUSE = 3        # 连续读取失败几次自动暂停
+LIVE_RECONCILE_RETRY = 1        # 分钟：定时读取失败后多久再读（网关挂了约 2 分钟内就能暂停，不用等 5/15 分钟）
 LIVE_REDUCE_CONFIRM = 60        # 秒：客户端股数变少，两次读数至少隔这么久才减账
 LIVE_BUY_WINDOWS = ((time(9, 30), time(11, 30)), (time(13, 0), time(14, 57)))
 LIVE_SELL_WINDOWS = ((time(9, 30), time(11, 30)), (time(13, 0), time(15, 0)))
