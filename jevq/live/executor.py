@@ -148,7 +148,8 @@ class Executor:
             balance = self._read(self.broker.balance)
         except Exception:
             return
-        budget = min(balance, config.LIVE_BUDGET) * (1 - config.LIVE_CASH_BUFFER)
+        cap = balance if config.LIVE_BUDGET is None else min(balance, config.LIVE_BUDGET)
+        budget = cap * (1 - config.LIVE_CASH_BUFFER)
         shares = ledger.affordable_shares(budget, price)
         if shares == 0:
             live_store.finish_intent(conn, intent.id, "skipped", "买不起一手", now)

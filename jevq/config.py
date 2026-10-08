@@ -105,7 +105,7 @@ DEPLOY_ENABLED = True
 
 # 实盘跟单（docs/specs/2026-09-29-live-trading-design.md）
 LIVE_ACCOUNT = "rebound_main"
-LIVE_BUDGET = 20_000.0
+LIVE_BUDGET = None               # 实盘单笔最多用多少资金；None = 全部可用资金（2026-10-08 用户允许用全部资金，原来是 2 万）
 LIVE_MAX_POSITIONS = 1
 LIVE_MAX_BUYS_PER_DAY = 2
 LIVE_INTENT_TTL = 60            # 秒：意图超过这么久没处理就作废（买入）

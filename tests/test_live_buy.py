@@ -46,7 +46,7 @@ def only_order(c):
     return live_store.orders_on(c, TODAY)[0]
 
 
-BUDGET = min(50_000, config.LIVE_BUDGET) * (1 - config.LIVE_CASH_BUFFER)
+BUDGET = (50_000 if config.LIVE_BUDGET is None else min(50_000, config.LIVE_BUDGET)) * (1 - config.LIVE_CASH_BUFFER)
 
 
 # ---- 心跳 / 模式 / 交易日 ----
@@ -791,3 +791,25 @@ def test_read_auto_pauses_after_consecutive_failures():
         pass
     p = live_store.paused(c)
     assert p is not None and p["kind"] == "auto" and "客户端可能掉线" in p["reason"]
+
+
+def _buy_with_cash(monkeypatch, budget, cash, price=10.0):
+    monkeypatch.setattr(config, "LIVE_BUDGET", budget)
+    c = conn()
+    clock = FakeClock(datetime(2026, 9, 29, 9, 35))
+    setup_ready(c, clock)
+    add_intent(c, clock.now(), price=price)
+    broker = FakeBroker(clock, cash=cash)
+    make(c, broker, clock=clock).step()
+    return [call for call in broker.calls if call[0] == "place"]
+
+
+def test_budget_none_uses_all_available_cash(monkeypatch):
+    """2026-10-08 用户允许用全部资金：LIVE_BUDGET = None 时按全部可用资金算股数，不再封顶 2 万。"""
+    (place,) = _buy_with_cash(monkeypatch, None, 80_000)
+    assert place[4] == affordable_shares(80_000 * (1 - config.LIVE_CASH_BUFFER), place[3])
+
+
+def test_budget_number_still_caps_cash(monkeypatch):
+    (place,) = _buy_with_cash(monkeypatch, 20_000.0, 80_000)
+    assert place[4] == affordable_shares(20_000 * (1 - config.LIVE_CASH_BUFFER), place[3])

@@ -4,7 +4,7 @@
 
 ## 一句话
 A 股主板（60/00）T+1 模拟盘：规则选股 → Jev（TypeSafe System One 模型）拦公告雷和消息面 → 主账户按 Jev 结论买、影子账户同规则不走 Jev 做对照。
-**新增实盘跟单**（设计 `docs/specs/2026-09-29-live-trading-design.md`）：模拟账户 `rebound_main`（超跌反弹·主）每成交一笔，家里电脑的 `live.py` 在东亚前海真实账户里跟一笔，单只最多 2 万、最多持 1 只；手机（Tailscale）上可暂停/恢复/立即卖出。低吸策略已下线。
+**新增实盘跟单**（设计 `docs/specs/2026-09-29-live-trading-design.md`）：模拟账户 `rebound_main`（超跌反弹·主）每成交一笔，家里电脑的 `live.py` 在东亚前海真实账户里跟一笔，单只用全部可用资金（2026-10-08 用户允许，原来最多 2 万；`config.LIVE_BUDGET = None`）、最多持 1 只；手机（Tailscale）上可暂停/恢复/立即卖出。低吸策略已下线。
 
 用户风格见全局 `~/.claude/CLAUDE.md`：中文，结论先行，先问再做，破坏性/对外操作先确认，关键权衡给一个推荐。
 
