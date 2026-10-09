@@ -16,7 +16,7 @@ def spec(name="尾盘弱转强"):
             "jev": {"notices": True, "news": True}}
 
 
-BUILTIN = ("board_main", "board_shadow", "rebound_main", "rebound_shadow")
+BUILTIN = ("board_main", "board_shadow", "rebound_main", "rebound_shadow", "lowbuy_main", "lowbuy_shadow", "regime_main")
 
 
 def test_all_accounts_is_builtin_four_with_no_custom_strategies():

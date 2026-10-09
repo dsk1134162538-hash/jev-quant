@@ -83,6 +83,32 @@ def builtin_summaries() -> list[dict]:
                  f"当天最高盈利到 +{config.REBOUND_TRAIL_START:g}% 后，从最高回落 {config.REBOUND_TRAIL_PULLBACK:g} 个点卖；"
                  f"最近 {config.REBOUND_FLOW_MINUTES} 分钟主买大于主卖时先留着，跌回成本价必卖",
                  f"最多拿 {config.REBOUND_MAX_HOLD_DAYS} 个交易日，最后一天 {hm(config.EOD_SELL)} 清仓"]}]},
+        {"id": "lowbuy", "name": STRATEGIES["lowbuy"]["name"], "accounts": list(STRATEGIES["lowbuy"]["accounts"]),
+         "sections": [
+             {"title": "选股", "lines": [
+                 f"当前涨幅在 {config.BUY_ZONE_LOW:g}% ~ {config.BUY_ZONE_HIGH:g}% 之间（强势股回调）",
+                 "按近 5 日涨幅从高到低排序（涨得多的优先）"]},
+             {"title": "买点", "lines": [
+                 f"情绪偏弱/冰点/未知或外围偏弱：只在尾盘 {hm(config.TAIL_BUY_START)}~{hm(config.BUY_END)} 买；否则盘中可买",
+                 f"主账户经 Jev 公告排雷 + 消息面判断，每分钟最多检查 {config.MAX_CHECKS_PER_TICK} 只；影子账户不拦截"]},
+             {"title": "卖出（次日起，相对昨收）", "lines": [
+                 f"当前或开盘跌到 {config.LOWBUY_STOP:g}% 止损",
+                 f"开盘 ≥ +{config.LOWBUY_TAKE_PROFIT:g}% 高开止盈；平开时盘中摸到 +{config.LOWBUY_TAKE_PROFIT:g}% 卖",
+                 f"开盘 ≤ {config.LOWBUY_LOW_OPEN:g}%：回到 {config.LOWBUY_ZERO_LINE:g}% 以上或从当天最低反弹 "
+                 f"{config.LOWBUY_BOUNCE:g} 个点卖",
+                 f"{hm(config.EOD_SELL)} 还没卖就清仓，不隔第二夜"]}]},
+        {"id": "regime", "name": STRATEGIES["regime"]["name"], "accounts": list(STRATEGIES["regime"]["accounts"]),
+         "sections": [
+             {"title": "跟谁（按大盘情绪）", "lines": [
+                 "火热：扫首板",
+                 f"正常：{hm(config.REGIME_BOARD_FIRST_UNTIL)} 前只等扫首板，之后没买到再跟低吸",
+                 "偏弱：低吸（不打板）",
+                 "冰点或情绪没判出来：不买",
+                 "当天确认了情绪拐点：超跌反弹的拐点抄底优先（偏弱、冰点也买）"]},
+             {"title": "怎么跟", "lines": [
+                 "自己不选股、不问 Jev：上面三个策略的主账户成交一笔，按当时情绪决定跟不跟，跟就同价买进",
+                 "原策略卖出时同价卖出（卖法完全沿用原策略）；全仓单票",
+                 "实盘跟这个账户（东亚前海，单只用全部可用资金）"]}]},
     ]
 
 

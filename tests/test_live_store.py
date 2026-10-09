@@ -72,11 +72,13 @@ def test_set_mode_off_to_live_does_not_clear_positions():
 
 # ---- live_intents ----
 
-def test_add_intents_only_writes_rebound_main():
+def test_add_intents_only_writes_the_live_account():
+    """实盘只跟 LIVE_ACCOUNT（10-09 起是情绪轮动 regime_main），其他账户的成交（含 rebound_main）不写意图。"""
     c = conn()
     fills = [
-        Fill("rebound_main", "600001", "buy", 9.5, 500, 5.0, datetime(2026, 9, 29, 9, 31), "超跌反弹买入"),
+        Fill("regime_main", "600001", "buy", 9.5, 500, 5.0, datetime(2026, 9, 29, 9, 31), "超跌反弹买入"),
         Fill("main", "600002", "buy", 8.0, 100, 5.0, datetime(2026, 9, 29, 9, 31), "低吸买入"),
+        Fill("rebound_main", "600004", "buy", 8.0, 100, 5.0, datetime(2026, 9, 29, 9, 31), "超跌买入"),
         Fill("rebound_shadow", "600003", "buy", 7.0, 100, 5.0, datetime(2026, 9, 29, 9, 31), "影子买入"),
     ]
     n = live_store.add_intents(c, fills, {"600001": "甲"})
@@ -88,7 +90,7 @@ def test_add_intents_only_writes_rebound_main():
 
 def test_add_intents_falls_back_to_code_when_name_missing():
     c = conn()
-    fills = [Fill("rebound_main", "600001", "sell", 9.0, 500, 5.0, datetime(2026, 9, 29, 10, 0), "止损")]
+    fills = [Fill("regime_main", "600001", "sell", 9.0, 500, 5.0, datetime(2026, 9, 29, 10, 0), "止损")]
     live_store.add_intents(c, fills, {})
     assert c.execute("SELECT name FROM live_intents").fetchone()[0] == "600001"
 
@@ -110,8 +112,8 @@ def test_add_remote_sell_writes_wildcard_sell_intent():
 def test_new_intents_ordered_by_id_and_finish_intent_removes_it():
     c = conn()
     fills = [
-        Fill("rebound_main", "600001", "buy", 9.5, 500, 5.0, datetime(2026, 9, 29, 9, 31), "r1"),
-        Fill("rebound_main", "600002", "sell", 8.0, 300, 5.0, datetime(2026, 9, 29, 9, 32), "r2"),
+        Fill("regime_main", "600001", "buy", 9.5, 500, 5.0, datetime(2026, 9, 29, 9, 31), "r1"),
+        Fill("regime_main", "600002", "sell", 8.0, 300, 5.0, datetime(2026, 9, 29, 9, 32), "r2"),
     ]
     live_store.add_intents(c, fills, {"600001": "甲", "600002": "乙"})
     intents = live_store.new_intents(c)

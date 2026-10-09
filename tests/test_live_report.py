@@ -77,7 +77,7 @@ def test_live_report_counts_slippage_and_return():
     text = "\n".join(lines)
 
     assert "## 实盘跟单" in text and "演练" not in text
-    assert "今天模拟 rebound_main 成交 3 笔 → 实盘成交 2 笔、跳过 1 笔" in text
+    assert "今天模拟 regime_main 成交 3 笔 → 实盘成交 2 笔、跳过 1 笔" in text
     assert "跳过原因：余额不足 1 笔" in text
     assert "买入滑点：600002 +0.50%" in text
     assert "卖出滑点：600001 +3.00%" in text

@@ -8,7 +8,7 @@ from jevq.ledger import Ledger, affordable_shares, buy_fee, sell_fee
 
 T = datetime(2026, 9, 23, 14, 50)
 MAIN, SHADOW = "rebound_main", "rebound_shadow"
-BUILTIN = ("board_main", "board_shadow", "rebound_main", "rebound_shadow")
+BUILTIN = ("board_main", "board_shadow", "rebound_main", "rebound_shadow", "lowbuy_main", "lowbuy_shadow", "regime_main")
 
 
 @pytest.fixture
@@ -139,4 +139,4 @@ def test_ensure_account_is_idempotent(ledger):
 def test_ledger_init_only_seeds_builtin_not_custom_accounts():
     conn = db.connect(":memory:")
     Ledger(conn)
-    assert conn.execute("SELECT COUNT(*) FROM cash").fetchone()[0] == 4
+    assert conn.execute("SELECT COUNT(*) FROM cash").fetchone()[0] == 7

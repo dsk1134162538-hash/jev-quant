@@ -32,6 +32,8 @@ from jevq.runlock import hold_run_lock
 from jevq.strategies.board import BoardStrategy
 from jevq.strategies.custom import CustomStrategy
 from jevq.strategies.rebound import ReboundStrategy
+from jevq.strategies.lowbuy import LowbuyStrategy
+from jevq.strategies.regime import RegimeStrategy
 
 SESSIONS = [(time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))]
 REPORT_AT = time(15, 5)
@@ -304,6 +306,12 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                                               trend_judge=TrendJudge(jev))
     if rebound is not None:
         rebound.turn_provider = lambda: bool(getattr(engine, "turn_on", False))
+    lowbuy = None if late else _load_lowbuy(conn, ledger, universe, ret5, sell_only, notice_judge, news_judge,
+                                            engine, prev_day, log)
+    # 情绪轮动（实盘跟它）：只跟各策略主账户的成交，晚启动不跑；只卖日照样跟卖
+    regime = None if late else RegimeStrategy(conn, ledger, lambda: engine.sentiment_label,
+                                              lambda: bool(getattr(engine, "turn_on", False)),
+                                              can_buy=not sell_only)
     if calendar_fallback:
         if board is not None:
             board.stale_before = None
@@ -316,7 +324,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if once:
         t = now()
         fills = _run_minute(engine, board, customs, t, conn, log, notifier, state["names"], acct_names,
-                            log_each=False, rebound=rebound)
+                            log_each=False, rebound=rebound, lowbuy=lowbuy, regime=regime)
         state.update(sentiment=engine.sentiment_label, prices={c: q.price for c, q in engine.last_quotes.items()})
         if board is not None:
             state["board_watch"] = _board_watch_state(board, state["names"])
@@ -340,7 +348,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             last_tick_minute = minute_key
             state["phase"] = "盘中"
             _run_minute(engine, board, customs, t, conn, log, notifier, state["names"], acct_names,
-                        rebound=rebound)
+                        rebound=rebound, lowbuy=lowbuy, regime=regime)
             try:        # 卖飞统计：只记录，失败不影响交易
                 after_sell.update(conn, today, _fresh_quotes(engine, t))
             except Exception as e:
@@ -363,7 +371,10 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             state["phase"] = "休市等待"
 
         if _should_fast_scan(board, now().time()):
-            stopped = _fast_scan(board, stop, log, state, notifier, conn, acct_names)
+            stopped = _fast_scan(board, stop, log, state, notifier, conn, acct_names,
+                                 follow=None if regime is None else (
+                                     lambda fills, t: _follow(regime, fills, engine, t, conn, log, notifier,
+                                                              state.get("names", {}), acct_names)))
         else:
             stopped = stop.wait(seconds_to_next_minute())
         if stopped:
@@ -483,7 +494,8 @@ def _warn(state: dict, log: Callable[[str], None], notifier: Notifier, msg: str)
 
 def _run_minute(engine: Engine, board: BoardStrategy | None, customs: list, t: datetime, conn,
                 log: Callable[[str], None], notifier: Notifier, names: dict, acct_names: dict | None,
-                log_each: bool = True, rebound: ReboundStrategy | None = None) -> list:
+                log_each: bool = True, rebound: ReboundStrategy | None = None,
+                lowbuy: LowbuyStrategy | None = None, regime: RegimeStrategy | None = None) -> list:
     """一分钟一轮：引擎先取行情，再让所有策略卖完（扫首板 → 超跌反弹 → 各自定义，全程不碰 Jev），推送卖出，
     再按「扫首板 → 引擎刷新情绪 → 超跌反弹 → 各自定义」跑买入阶段（超跌反弹、自定义读的是这一分钟刷新后的情绪）。
     买入阶段共用一个 Jev 时间预算（TICK_JEV_BUDGET，卖出之后才开始计时；情绪刷新不受它限制）：过了时限各策略
@@ -518,6 +530,8 @@ def _run_minute(engine: Engine, board: BoardStrategy | None, customs: list, t: d
         sells += safe("board", "扫首板本轮出错", lambda: board.sell_step(quotes, t))
     if rebound is not None:
         sells += safe("rebound", "超跌反弹本轮出错", lambda: rebound.sell_step(quotes, t))
+    if lowbuy is not None:
+        sells += safe("lowbuy", "低吸本轮出错", lambda: lowbuy.sell_step(quotes, t))
     for sid, strat in customs:
         sells += safe(sid, f"自定义策略 {sid} 本轮出错", lambda s=strat: s.sell_step(quotes, t))
     emit(sells)
@@ -530,12 +544,20 @@ def _run_minute(engine: Engine, board: BoardStrategy | None, customs: list, t: d
         buys += safe("engine", "本轮出错", lambda: engine.buy_step(t))
     if rebound is not None and "rebound" not in fails:
         buys += safe("rebound", "超跌反弹本轮出错", lambda: rebound.buy_step(quotes, t, deadline))
+    if lowbuy is not None and "lowbuy" not in fails:
+        buys += safe("lowbuy", "低吸本轮出错", lambda: lowbuy.buy_step(quotes, t, deadline))
     for sid, strat in customs:
         if sid not in fails:
             buys += safe(sid, f"自定义策略 {sid} 本轮出错", lambda s=strat: s.buy_step(quotes, t, deadline))
     emit(buys)
+    follows: list = []
+    if regime is not None:      # 情绪轮动跟这一分钟各策略主账户的成交（实盘跟它）
+        quote_of = lambda c: quotes.get(c) or getattr(engine, "last_quotes", {}).get(c)      # noqa: E731
+        follows = safe("regime", "情绪轮动本轮出错",
+                       lambda: regime.mirror(sells + buys, quote_of, t) + regime.reconcile(quote_of, t))
+        emit(follows)
     _publish_candidates(conn, t, board, rebound, quotes, log)
-    return sells + buys
+    return sells + buys + follows
 
 
 def _publish_candidates(conn, t: datetime, board, rebound, quotes: dict, log: Callable[[str], None]):
@@ -660,7 +682,8 @@ def _should_fast_scan(board: BoardStrategy | None, t: time) -> bool:
 
 
 def _fast_scan(board: BoardStrategy, stop: threading.Event, log: Callable[[str], None],
-               state: dict, notifier: Notifier, conn, acct_names: dict | None = None) -> bool:
+               state: dict, notifier: Notifier, conn, acct_names: dict | None = None,
+               follow: Callable[[list, datetime], None] | None = None) -> bool:
     """观察池非空时的 3 秒扫板循环。返回是否被 stop 打断。
 
     边界在进入时算死一次（deadline = 现在 + seconds_to_next_minute()，带着 :02 缓冲），
@@ -685,10 +708,49 @@ def _fast_scan(board: BoardStrategy, stop: threading.Event, log: Callable[[str],
             fast_fills = board.on_fast(now())
             _log_fills(fast_fills, log, "%H:%M:%S")
             _notify_fills(notifier, conn, fast_fills, state.get("names", {}), log, acct_names)
+            if follow is not None and fast_fills:
+                follow(fast_fills, now())
         except Exception as e:
             log(f"扫板出错：{e!r}")
         state["board_watch"] = _board_watch_state(board, state.get("names", {}))
     return False
+
+
+def _follow(regime: RegimeStrategy, fills: list, engine: Engine, t: datetime, conn, log, notifier, names: dict,
+            acct_names: dict | None) -> list:
+    """扫板快扫里的成交也让情绪轮动跟（实盘跟它）：写实盘意图、记日志、推送。出错只记日志。"""
+    try:
+        got = regime.mirror(fills, lambda c: engine.last_quotes.get(c), t)
+    except Exception as e:
+        conn.rollback()
+        log(f"情绪轮动跟扫板出错：{e!r}")
+        return []
+    if got:
+        try:
+            live_store.add_intents(conn, got, names)
+        except Exception as e:
+            conn.rollback()
+            log(f"实盘意图写入失败：{e!r}")
+        _log_fills(got, log, "%H:%M:%S")
+        _notify_fills(notifier, conn, got, names, log, acct_names)
+    return got
+
+
+def _load_lowbuy(conn, ledger: Ledger, universe: dict, ret5: dict, sell_only: bool, notice_judge, news_judge,
+                 engine: Engine, prev_day: date, log: Callable[[str], None]) -> LowbuyStrategy | None:
+    """低吸（10-09 重新上线）：只卖日 / 股票池或 5 日涨幅为空 → 只卖不买。"""
+    enabled = not sell_only and bool(universe) and bool(ret5)
+    try:
+        strat = LowbuyStrategy(conn, ledger, notice_judge, news_judge, dict(universe), ret5, prev_day,
+                               lambda: engine.sentiment_label, lambda: getattr(engine, "overseas", None),
+                               enabled=enabled)
+    except Exception as e:
+        conn.rollback()
+        log(f"低吸加载失败：{e!r}")
+        return None
+    if not enabled:
+        log("低吸：今日只卖不买")
+    return strat
 
 
 def _log_fills(fills, log: Callable[[str], None], fmt: str = "%H:%M") -> None:

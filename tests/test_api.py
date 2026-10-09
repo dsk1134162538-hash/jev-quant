@@ -32,7 +32,7 @@ def test_status_marks_positions_to_fetched_prices(paths):
     conn.close()
     api = make_api(paths, fetch=lambda codes: {"600001": quote("600001", pct=1.0)})
     s = api.status()
-    board_main, board_shadow, main, shadow = s["accounts"]
+    board_main, board_shadow, main, shadow, *_ = s["accounts"]
     assert main["id"] == "rebound_main" and main["positions"][0]["price"] == 10.1
     assert main["positions"][0]["pnl_pct"] == round((10.1 / 9.9 - 1) * 100, 2)
     assert main["strategy"] == "rebound" and main["strategy_name"] == "超跌反弹"
@@ -58,7 +58,8 @@ def test_retired_lowbuy_accounts_stay_off_panel_but_old_fills_keep_their_name(pa
     conn.close()
     api = make_api(paths)
     assert [a["id"] for a in api.status()["accounts"]] == ["board_main", "board_shadow", "rebound_main",
-                                                          "rebound_shadow"]
+                                                          "rebound_shadow", "lowbuy_main", "lowbuy_shadow",
+                                                          "regime_main"]
     curve = api.equity_curve()
     assert "main" not in curve and "shadow" not in curve
     assert curve["rebound_main"] == [["2026-09-21", 30100.0]]
@@ -115,7 +116,8 @@ def test_fills_decisions_curve(paths):
     assert {k: v for k, v in d.items() if k not in ("id", "has_trace")} == {
         "time": "10:00", "code": "600002", "name": "", "verdict": "reject", "detail": "新增减持"}
     assert api.equity_curve() == {"board_main": [], "board_shadow": [],
-                                  "rebound_main": [["2026-09-23", 30100.0]], "rebound_shadow": []}
+                                  "rebound_main": [["2026-09-23", 30100.0]], "rebound_shadow": [],
+                                  "lowbuy_main": [], "lowbuy_shadow": [], "regime_main": []}
 
 
 def test_decisions_filtered_by_strategy(paths):
@@ -244,13 +246,14 @@ def test_query_methods_never_open_write_connection(paths, monkeypatch):
     assert len(api.fills("2026-09-23")) == 1
     rows = api.decisions("2026-09-23")
     assert api.decision(rows[0]["id"])["code"] == "600002"
-    assert api.equity_curve() == {"board_main": [], "board_shadow": [], "rebound_main": [], "rebound_shadow": []}
+    assert api.equity_curve() == {"board_main": [], "board_shadow": [], "rebound_main": [], "rebound_shadow": [],
+                                  "lowbuy_main": [], "lowbuy_shadow": [], "regime_main": []}
 
 
 def test_api_init_creates_fresh_db(paths):
     api = make_api(paths)
     s = api.status()
-    assert [a["equity"] for a in s["accounts"]] == [30000] * 4
+    assert [a["equity"] for a in s["accounts"]] == [30000] * 7
 
 
 def test_status_includes_active_custom_strategy_accounts(paths):
@@ -347,7 +350,9 @@ def test_rules_list_includes_builtin_readonly_summaries(paths):
     result = make_api(paths).rules_list()
     assert result["ok"] and result["rules"] == []
     builtin = {b["id"]: b for b in result["builtin"]}
-    assert set(builtin) == {"board", "rebound"}                  # 低吸已下线
+    assert set(builtin) == {"board", "rebound", "lowbuy", "regime"}       # 10-09 低吸重新上线 + 情绪轮动
+    regime_lines = [line for s in builtin["regime"]["sections"] for line in s["lines"]]
+    assert builtin["regime"]["accounts"] == ["regime_main"] and any("偏弱：低吸" in x for x in regime_lines)
     titles = [s["title"] for s in builtin["board"]["sections"]]
     assert titles[0] == "选股" and all(s["lines"] for s in builtin["board"]["sections"])
     board_lines = [line for s in builtin["board"]["sections"] for line in s["lines"]]

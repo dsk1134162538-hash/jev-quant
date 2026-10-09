@@ -172,7 +172,8 @@ def test_close_summary_lists_builtin_accounts_without_retired_lowbuy():
     for dynamic in (None, conn):
         content = close_summary_content(ledger, date(2026, 9, 24), {}, dynamic)
         assert [line.split(" ")[0] for line in content.splitlines()] == [
-            "首板·主(Jev)", "首板·影子", "超跌·主(Jev)", "超跌·影子"]
+            "首板·主(Jev)", "首板·影子", "超跌·主(Jev)", "超跌·影子",
+            "低吸·主(Jev)", "低吸·影子", "情绪轮动(实盘跟)"]
 
 
 def test_push_notices_new_format_top3_by_score():

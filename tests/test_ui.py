@@ -82,11 +82,12 @@ def test_decision_detail_renders_new_notice_risk_and_legacy_list():
     assert "已读正文" in js and "仅标题" in js
 
 
-def test_ui_has_no_lowbuy_left():
-    """低吸下线：面板上没有低吸的账户颜色、策略筛选、留痕分支和标题。"""
+def test_ui_orders_builtin_accounts_with_regime_first_and_never_shows_retired_lowbuy_ids():
+    """10-09：低吸以 lowbuy_main/lowbuy_shadow 重新上线、情绪轮动排最前（实盘跟它）；9-23 版的 main/shadow 不进面板。"""
     html = UI.read_text(encoding="utf-8")
-    assert "低吸" not in html and "lowbuy" not in html
-    assert 'BUILTIN_ORDER = ["board_main", "board_shadow", "rebound_main", "rebound_shadow"]' in html
+    assert 'BUILTIN_ORDER = ["regime_main", "board_main", "board_shadow", "rebound_main", "rebound_shadow",' in html
+    assert '"lowbuy_main", "lowbuy_shadow"]' in html
+    assert "已下线" not in html
 
 
 _RENDER_HARNESS = r"""

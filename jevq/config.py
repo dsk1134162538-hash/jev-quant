@@ -19,6 +19,15 @@ MAX_CHECKS_PER_TICK = 10
 MAX_ERRORS_PER_TICK = 3
 
 # 超跌反弹（当日区间用上面的 BUY_ZONE_*，尾盘时刻、Jev 检查额度与其他策略共用）
+# 低吸（9-23 版规则，10-09 重新上线）：当日 0~-3% 区间，近 5 日涨幅高的优先（强势股回调）
+LOWBUY_STOP = -3.0             # 卖出：当前涨幅或开盘涨幅 ≤ 这个值止损（%，相对昨收）
+LOWBUY_TAKE_PROFIT = 1.0       # 卖出：开盘 ≥ 这个值高开止盈；平开时盘中摸到这个值卖
+LOWBUY_LOW_OPEN = -1.0         # 卖出：开盘 ≤ 这个值算低开（之后回到 0 轴或从低点反弹就卖）
+LOWBUY_ZERO_LINE = -0.2        # 卖出：低开后回到这个涨幅以上算回到 0 轴
+LOWBUY_BOUNCE = 1.5            # 卖出：低开后从当天最低反弹这么多个点卖
+# 情绪轮动：各情绪下用哪个策略（按顺序 = 优先级）；拐点确认后另外允许超跌反弹（拐点抄底）
+REGIME_SOURCES = {"火热": ("board",), "正常": ("board", "lowbuy"), "偏弱": ("lowbuy",), "冰点": ()}
+REGIME_BOARD_FIRST_UNTIL = time(10, 30)   # 正常：这之前只等扫首板（扫板窗口），之后没买到再做低吸
 REBOUND_RET5_LOW = -20.0       # 近 5 日涨幅下限（%）
 REBOUND_RET5_HIGH = 0.0        # 近 5 日涨幅上限（%）
 REBOUND_BOARD_LOOKBACK = 40    # 近 N 个交易日出现过连板的排除
@@ -117,18 +126,24 @@ REPORT_DIR = "reports"
 STRATEGIES = {
     "board": {"name": "扫首板", "accounts": ("board_main", "board_shadow")},
     "rebound": {"name": "超跌反弹", "accounts": ("rebound_main", "rebound_shadow")},
+    # 低吸 2026-10-09 按用户要求重新上线（新账户，旧 main/shadow 的历史不动），给情绪轮动在偏弱/正常时用
+    "lowbuy": {"name": "低吸", "accounts": ("lowbuy_main", "lowbuy_shadow")},
+    # 情绪轮动（用户 2026-10-09）：按大盘情绪跟上面三个策略主账户的成交，实盘跟它；只有一个账户
+    "regime": {"name": "情绪轮动", "accounts": ("regime_main",)},
 }
 ACCOUNTS = tuple(a for s in STRATEGIES.values() for a in s["accounts"])
 ACCOUNT_NAMES = {
-    "main": "低吸·主(已下线)", "shadow": "低吸·影子(已下线)",      # 低吸已下线，只给历史成交显示名字
+    "main": "低吸·主(已下线)", "shadow": "低吸·影子(已下线)",      # 9-23 版低吸已下线，只给历史成交显示名字
     "board_main": "首板·主(Jev)", "board_shadow": "首板·影子",
     "rebound_main": "超跌·主(Jev)", "rebound_shadow": "超跌·影子",
+    "lowbuy_main": "低吸·主(Jev)", "lowbuy_shadow": "低吸·影子",
+    "regime_main": "情绪轮动(实盘跟)",
 }
 ACCOUNT_STRATEGY = {a: sid for sid, s in STRATEGIES.items() for a in s["accounts"]}
 
 
 def builtin_accounts() -> tuple[str, ...]:
-    """内置账户（扫首板 board_main/board_shadow + 超跌反弹 rebound_main/rebound_shadow）。"""
+    """内置账户（扫首板、超跌反弹、低吸各主/影子 + 情绪轮动 regime_main）。"""
     return ACCOUNTS
 
 
@@ -140,7 +155,7 @@ SYNC_ENABLED = True
 DEPLOY_ENABLED = True
 
 # 实盘跟单（docs/specs/2026-09-29-live-trading-design.md）
-LIVE_ACCOUNT = "rebound_main"
+LIVE_ACCOUNT = "regime_main"     # 2026-10-09 起实盘跟情绪轮动（原来跟 rebound_main）
 LIVE_BUDGET = None               # 实盘单笔最多用多少资金；None = 全部可用资金（2026-10-08 用户允许用全部资金，原来是 2 万）
 LIVE_MAX_POSITIONS = 1
 LIVE_MAX_BUYS_PER_DAY = 2

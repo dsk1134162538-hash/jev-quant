@@ -12,6 +12,7 @@
     --accent:#2455d6; --on-accent:#ffffff;
     --up:#c9302c; --down:#0b7d45; --warn:#a15c00;
     --board-accent:#d97706; --board-shadow:#0d9488; --rebound-accent:#db2777; --rebound-shadow:#4d7c0f;
+    --lowbuy-accent:#2563eb; --lowbuy-shadow:#64748b; --regime-accent:#7c3aed;
     --shadow-pop:0 12px 32px rgba(19,28,43,.16), 0 2px 6px rgba(19,28,43,.08); --pop-ring:transparent;
     --ease:cubic-bezier(.22,1,.36,1);
   }
@@ -22,6 +23,7 @@
       --accent:#7ea2ff; --on-accent:#0b1220;
       --up:#ff7468; --down:#41d48f; --warn:#f2b04a;
       --board-accent:#f5a83c; --board-shadow:#2dd4bf; --rebound-accent:#f472b6; --rebound-shadow:#a3e635;
+      --lowbuy-accent:#60a5fa; --lowbuy-shadow:#94a3b8; --regime-accent:#a78bfa;
       --shadow-pop:0 14px 36px rgba(0,0,0,.55), 0 2px 6px rgba(0,0,0,.4); --pop-ring:var(--line-strong);
     }
   }
@@ -419,9 +421,11 @@ let strategyFilter = null;
 let noticesExpanded = false;
 
 // ---- 账户颜色与名称：内置四个固定色，自定义策略按 c{n} 的序号分配颜色，影子账户用虚线 ----
-const BUILTIN_ORDER = ["board_main", "board_shadow", "rebound_main", "rebound_shadow"];
+const BUILTIN_ORDER = ["regime_main", "board_main", "board_shadow", "rebound_main", "rebound_shadow",
+  "lowbuy_main", "lowbuy_shadow"];
 const BUILTIN_COLORS = {board_main: "var(--board-accent)", board_shadow: "var(--board-shadow)",
-  rebound_main: "var(--rebound-accent)", rebound_shadow: "var(--rebound-shadow)"};
+  rebound_main: "var(--rebound-accent)", rebound_shadow: "var(--rebound-shadow)",
+  lowbuy_main: "var(--lowbuy-accent)", lowbuy_shadow: "var(--lowbuy-shadow)", regime_main: "var(--regime-accent)"};
 const PALETTE = ["#e8590c", "#0ea5e9", "#c026d3", "#65a30d", "#e11d48", "#0d9488", "#7c3aed", "#ca8a04"];
 const CUSTOM_ACCOUNT = /^c(\d+)_(main|shadow)$/;
 const CUSTOM_ID = /^c\d+$/;

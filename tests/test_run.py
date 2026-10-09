@@ -1447,14 +1447,35 @@ class _FillEngine:
         return []
 
 
-def test_run_minute_writes_live_intent_for_rebound_main_fill_only():
+def test_run_minute_writes_live_intent_for_live_account_fill_only():
     conn = db.connect(":memory:")
     t = datetime(2026, 9, 29, 9, 31)
-    fills = [Fill("rebound_main", "600001", "sell", 9.5, 500, 5.0, t, "止损"),
+    fills = [Fill("regime_main", "600001", "sell", 9.5, 500, 5.0, t, "止损"),
              Fill("main", "600002", "sell", 8.0, 100, 5.0, t, "止损")]
     run._run_minute(_FillEngine(fills), None, [], t, conn, lambda s: None, Notifier(None),
                     {"600001": "甲", "600002": "乙"}, {})
     assert [r[0] for r in conn.execute("SELECT code FROM live_intents")] == ["600001"]
+
+
+def test_run_minute_regime_follows_a_source_fill_and_only_it_reaches_live():
+    """情绪轮动：扫首板主账户这一分钟买了，情绪火热 → 轮动同价跟买，实盘意图只写轮动这一笔。"""
+    from factories import quote
+    from jevq.strategies.regime import RegimeStrategy
+    conn = db.connect(":memory:")
+    t = datetime(2026, 10, 12, 9, 41)
+    q = quote("600001", pct=9.0, ts=t)
+
+    class Eng(_FillEngine):
+        last_quotes = {"600001": q}
+        last_fetch_minute = t.strftime("%Y-%m-%d %H:%M")
+
+    fills = [Fill("board_main", "600001", "buy", q.price, 2700, 7.5, t, "扫板9.0%")]
+    regime = RegimeStrategy(conn, Ledger(conn), lambda: "火热")
+    out = run._run_minute(Eng(fills), None, [], t, conn, lambda s: None, Notifier(None), {"600001": "甲"}, {},
+                          regime=regime)
+    assert [(f.account, f.side) for f in out] == [("board_main", "buy"), ("regime_main", "buy")]
+    assert conn.execute("SELECT code, side, reason FROM live_intents").fetchall() == [
+        ("600001", "buy", "轮动[火热]跟扫首板｜扫板9.0%")]
 
 
 def test_run_minute_add_intents_exception_does_not_block_trading_or_push(monkeypatch):
