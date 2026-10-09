@@ -376,3 +376,116 @@ def test_quiet_sector_with_members_still_gets_jev_strength():
     d = json.loads(conn.execute("SELECT data FROM own_sector_daily WHERE sector_id='electronic_cloth'").fetchone()[0])
     assert d["strong"] == 0 and d["jev_strength"] == "偏弱"
     assert sum(1 for s, _ in jev.calls if "板块" in s) == 1     # 没成员的板块照旧不问
+
+
+# ---- 盘中板块情绪：每 30 分钟后台记一次（用户 2026-10-09），只记录 ----
+from datetime import time as dtime   # noqa: E402
+
+AT_1000 = datetime(2026, 10, 8, 10, 0, 30)
+
+
+def _intraday_quotes(ts=AT_1000):
+    return {c: quote(c, pct=p, amount=1e8, ts=ts) for c, p in (("600001", 6.0), ("600002", 1.0), ("600003", -1.0))}
+
+
+def test_intraday_snapshot_records_each_sector_with_members_and_jev_strength():
+    conn = make()
+    _core(conn, "electronic_cloth", "600001", 0.9)
+    _core(conn, "electronic_cloth", "600002", 0.6)
+    jev = FakeJev(level="正常")
+    n = os_.snapshot_intraday(conn, AT_1000, _intraday_quotes(), {}, UNIVERSE, OwnSectorJudge(jev), art_sectors=[])
+    assert n == 1                                                   # 没成员的板块不记盘中行
+    (ts, sid, data), = conn.execute("SELECT ts, sector_id, data FROM own_sector_intraday").fetchall()
+    d = json.loads(data)
+    assert ts == "2026-10-08T10:00" and sid == "electronic_cloth"
+    assert d["strong"] == 1 and d["jev_strength"] == "正常" and d["leaders"][0]["code"] == "600001"
+    assert conn.execute("SELECT COUNT(*) FROM own_sector_daily").fetchone()[0] == 0   # 不碰日快照
+
+
+def test_intraday_due_slot_only_within_ten_minutes_of_it():
+    slots = (dtime(10, 0), dtime(10, 30))
+    assert os_.due_slot(dtime(9, 59), slots) is None
+    assert os_.due_slot(dtime(10, 0), slots) == dtime(10, 0)
+    assert os_.due_slot(dtime(10, 9), slots) == dtime(10, 0)
+    assert os_.due_slot(dtime(10, 11), slots) is None             # 重启晚了不补跑
+    assert os_.due_slot(dtime(10, 31), slots) == dtime(10, 30)
+
+
+class _SyncThread:
+    """测试里同步执行，代替 threading.Thread。"""
+    started = []
+
+    def __init__(self, target, args=(), daemon=None, name=None):
+        self.target, self.args = target, args
+
+    def start(self):
+        _SyncThread.started.append(self.args)
+        self.target(*self.args)
+
+    def is_alive(self):
+        return False
+
+
+def test_recorder_runs_once_per_slot_in_its_own_connection(tmp_path):
+    path = str(tmp_path / "j.sqlite")
+    setup = make(db.connect(path))
+    _core(setup, "electronic_cloth", "600001", 0.9)
+    setup.commit()
+    jev = FakeJev(level="火热")
+    logs = []
+    rec = os_.IntradayRecorder(lambda: db.connect(path), lambda c: OwnSectorJudge(jev), UNIVERSE, {}, logs.append,
+                               slots=(dtime(10, 0),), thread=_SyncThread)
+    assert rec.tick(datetime(2026, 10, 8, 9, 59), _intraday_quotes()) is False
+    assert rec.tick(AT_1000, _intraday_quotes()) is True
+    assert rec.tick(datetime(2026, 10, 8, 10, 1), _intraday_quotes()) is False     # 同一时点只跑一次
+    rows = db.connect(path).execute("SELECT ts, sector_id FROM own_sector_intraday").fetchall()
+    assert rows == [("2026-10-08T10:00", "electronic_cloth")]
+    assert any("盘中板块" in x for x in logs)
+
+
+def test_recorder_skips_slot_while_previous_round_still_running():
+    class Busy:
+        def __init__(self, target, args=(), daemon=None, name=None):
+            pass
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return True
+
+    logs = []
+    rec = os_.IntradayRecorder(lambda: None, lambda c: None, UNIVERSE, {}, logs.append,
+                               slots=(dtime(10, 0), dtime(10, 30)), thread=Busy)
+    assert rec.tick(AT_1000, _intraday_quotes()) is True
+    assert rec.tick(datetime(2026, 10, 8, 10, 30), _intraday_quotes()) is False
+    assert any("上一轮还没跑完" in x for x in logs)
+
+
+def test_recorder_failure_is_only_logged(tmp_path):
+    def boom():
+        raise OSError("db gone")
+    logs = []
+    rec = os_.IntradayRecorder(boom, lambda c: None, UNIVERSE, {}, logs.append, slots=(dtime(10, 0),),
+                               thread=_SyncThread)
+    assert rec.tick(AT_1000, _intraday_quotes()) is True
+    assert any("失败" in x for x in logs)
+
+
+def test_overview_carries_todays_intraday_strength():
+    conn = make()
+    _core(conn, "electronic_cloth", "600001", 0.9)
+    os_.snapshot_intraday(conn, AT_1000, _intraday_quotes(), {}, UNIVERSE, OwnSectorJudge(FakeJev(level="正常")),
+                          art_sectors=[])
+    s = next(x for x in os_.overview(conn)["sectors"] if x["id"] == "electronic_cloth")
+    assert s["intraday"] == [{"time": "10:00", "jev_strength": "正常", "avg_pct": 6.0, "strong": 1, "limit_up": 0}]
+
+
+def test_run_builds_intraday_recorder_only_for_file_db_with_key(tmp_path):
+    import run
+    uni = {"600001": "甲"}
+    assert run._own_intraday_recorder(db.connect(":memory:"), "k", uni, {}, print, False) is None
+    conn = db.connect(str(tmp_path / "j.sqlite"))
+    assert run._own_intraday_recorder(conn, None, uni, {}, print, False) is None
+    assert run._own_intraday_recorder(conn, "k", uni, {}, print, True) is None
+    assert isinstance(run._own_intraday_recorder(conn, "k", uni, {}, print, False), os_.IntradayRecorder)

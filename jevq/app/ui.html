@@ -522,7 +522,10 @@ function ownSectorHtml(s) {
       l.share == null ? "–" : fmt(l.share * 100, 1) + "%", esc(l.board), esc(l.score)])) : "";
   const mem = s.members.length ? table(["代码", "公司", "层级", "占比", "状态", "依据", "有效至", "操作"],
     s.members.map((m) => ownMemberRow(s.id, m)), [5, 7]) : '<div class="empty">暂无成员（收盘后刷新）</div>';
+  const intra = (s.intraday || []).map((x) => `${esc(x.time)} ${esc(x.jev_strength || "未判")}`
+    + (x.avg_pct == null ? "" : `（${fmt(x.avg_pct)}%）`)).join("　");
   return `<details class="own-sec">${head}<div class="muted">${esc(s.product_def)}</div>`
+    + (intra ? `<div class="muted">盘中情绪：${intra}</div>` : "")
     + (lead ? "<h3>龙头顺序</h3>" + lead : "") + "<h3>成员</h3>" + mem + "</details>";
 }
 function ownSectorsHtml(d) {

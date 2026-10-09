@@ -3,9 +3,10 @@
 import json
 import re
 import sqlite3
+import threading
 import time as _time
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from hashlib import sha1
 from pathlib import Path
 
@@ -336,6 +337,28 @@ def rank_leaders(conn, members: list[dict], quotes: dict, ret5: dict[str, float]
             for i, m in enumerate(scored[:n])]
 
 
+def _sector_data(conn: sqlite3.Connection, s: dict, day: date, quotes: dict, ret5: dict[str, float],
+                 universe: dict[str, str], judge, art: list) -> dict:
+    """一个板块此刻的统计、龙头和 Jev 强弱（日快照、盘中快照共用）。"""
+    members = members_of(conn, s["id"], day)
+    qs = [quotes[m["code"]] for m in members if m["code"] in quotes and quotes[m["code"]].ts.date() >= day]
+    strong = sum(q.pct >= config.OWN_SECTORS_STRONG_PCT for q in qs)
+    limit_up = sum(bool(q.limit_up) and q.high >= q.limit_up for q in qs)
+    leaders = rank_leaders(conn, members, quotes, ret5, day, universe)
+    mentioned_name = article_candidates(art, s, universe)[1]
+    data = {"members": len(members), "with_quote": len(qs), "strong": strong, "limit_up": limit_up,
+            "avg_pct": round(sum(q.pct for q in qs) / len(qs), 2) if qs else None,
+            "amount": sum(q.amount for q in qs), "max_board": max([l["board"] for l in leaders], default=0),
+            "leaders": leaders, "article_mentioned": mentioned_name,
+            "jev_strength": None, "jev_probs": None, "jev_confidence": None}
+    if judge is not None and qs and (strong >= config.OWN_SECTORS_JEV_MIN_STRONG or mentioned_name):   # 线为 0 = 有行情就问
+        res = judge.strength(s, {k: data[k] for k in ("members", "strong", "limit_up", "avg_pct", "amount",
+                                                      "max_board")} | {"晚报点名": bool(mentioned_name)})
+        if res:
+            data["jev_strength"], data["jev_probs"], data["jev_confidence"] = res
+    return data
+
+
 def snapshot_day(conn: sqlite3.Connection, day: date, quotes: dict, ret5: dict[str, float],
                  universe: dict[str, str], judge=None, art_sectors: list | None = None,
                  log: Callable[[str], None] = print) -> int:
@@ -343,27 +366,89 @@ def snapshot_day(conn: sqlite3.Connection, day: date, quotes: dict, ret5: dict[s
     art = article_sectors(conn, day) if art_sectors is None else art_sectors
     written = 0
     for s in sectors(conn):
-        members = members_of(conn, s["id"], day)
-        qs = [quotes[m["code"]] for m in members if m["code"] in quotes and quotes[m["code"]].ts.date() >= day]
-        strong = sum(q.pct >= config.OWN_SECTORS_STRONG_PCT for q in qs)
-        limit_up = sum(bool(q.limit_up) and q.high >= q.limit_up for q in qs)
-        leaders = rank_leaders(conn, members, quotes, ret5, day, universe)
-        mentioned_name = article_candidates(art, s, universe)[1]
-        data = {"members": len(members), "with_quote": len(qs), "strong": strong, "limit_up": limit_up,
-                "avg_pct": round(sum(q.pct for q in qs) / len(qs), 2) if qs else None,
-                "amount": sum(q.amount for q in qs), "max_board": max([l["board"] for l in leaders], default=0),
-                "leaders": leaders, "article_mentioned": mentioned_name,
-                "jev_strength": None, "jev_probs": None, "jev_confidence": None}
-        if judge is not None and qs and (strong >= config.OWN_SECTORS_JEV_MIN_STRONG or mentioned_name):   # 线为 0 = 有行情就问
-            res = judge.strength(s, {k: data[k] for k in ("members", "strong", "limit_up", "avg_pct", "amount",
-                                                          "max_board")} | {"晚报点名": bool(mentioned_name)})
-            if res:
-                data["jev_strength"], data["jev_probs"], data["jev_confidence"] = res
+        data = _sector_data(conn, s, day, quotes, ret5, universe, judge, art)
         conn.execute("INSERT OR REPLACE INTO own_sector_daily VALUES (?, ?, ?)",
                      (day.isoformat(), s["id"], json.dumps(data, ensure_ascii=False)))
         written += 1
     conn.commit()
     return written
+
+
+def snapshot_intraday(conn: sqlite3.Connection, at: datetime, quotes: dict, ret5: dict[str, float],
+                      universe: dict[str, str], judge=None, art_sectors: list | None = None) -> int:
+    """盘中某个时点给有成员行情的板块各记一行（统计、龙头、Jev 强弱），时间记到分钟。返回记录条数。"""
+    day = at.date()
+    art = article_sectors(conn, day) if art_sectors is None else art_sectors
+    ts = at.strftime("%Y-%m-%dT%H:%M")
+    written = 0
+    for s in sectors(conn):
+        data = _sector_data(conn, s, day, quotes, ret5, universe, judge, art)
+        if not data["with_quote"]:
+            continue
+        conn.execute("INSERT OR REPLACE INTO own_sector_intraday VALUES (?, ?, ?)",
+                     (ts, s["id"], json.dumps(data, ensure_ascii=False)))
+        conn.commit()           # 每个板块写完就提交：后台线程和交易进程共用一个库，别长时间占着写锁
+        written += 1
+    return written
+
+
+def due_slot(t: time, slots=None, grace: int = 10) -> time | None:
+    """现在该跑的盘中时点：最近一个已到、且没过 grace 分钟的时点（重启晚了不补跑旧时点）。"""
+    slots = config.OWN_SECTORS_INTRADAY_SLOTS if slots is None else slots
+    now_min = t.hour * 60 + t.minute
+    for slot in sorted(slots, reverse=True):
+        start = slot.hour * 60 + slot.minute
+        if start <= now_min < start + grace:
+            return slot
+    return None
+
+
+class IntradayRecorder:
+    """盘中每个时点在后台线程记一次板块情绪（只记录，用户 2026-10-09 要求）。
+    交易循环只调 tick()：不等 Jev、不共用交易的库连接；上一轮还在跑就跳过这一轮；出错只记日志。"""
+
+    def __init__(self, open_conn: Callable[[], sqlite3.Connection], make_judge: Callable,
+                 universe: dict[str, str], ret5: dict[str, float], log: Callable[[str], None] = print,
+                 slots=None, thread=threading.Thread):
+        self.open_conn, self.make_judge = open_conn, make_judge
+        self.universe, self.ret5, self.log = universe, ret5, log
+        self.slots = config.OWN_SECTORS_INTRADAY_SLOTS if slots is None else slots
+        self.thread_cls = thread
+        self.done: set = set()
+        self._thread = None
+
+    def tick(self, now: datetime, quotes: dict) -> bool:
+        """返回这一分钟有没有启动一轮记录。"""
+        if not config.OWN_SECTORS_ENABLED or not quotes:
+            return False
+        slot = due_slot(now.time(), self.slots)
+        key = (now.date(), slot)
+        if slot is None or key in self.done:
+            return False
+        self.done.add(key)
+        if self._thread is not None and self._thread.is_alive():
+            self.log(f"盘中板块 {slot:%H:%M}：上一轮还没跑完，这一轮跳过")
+            return False
+        snap = {c: q for c, q in quotes.items() if c in self.universe}
+        at = datetime.combine(now.date(), slot)
+        self._thread = self.thread_cls(target=self._run, args=(at, snap), daemon=True, name="own-sectors-intraday")
+        self._thread.start()
+        return True
+
+    def _run(self, at: datetime, quotes: dict) -> None:
+        conn = None
+        try:
+            conn = self.open_conn()
+            n = snapshot_intraday(conn, at, quotes, self.ret5, self.universe, self.make_judge(conn))
+            self.log(f"盘中板块 {at:%H:%M}：记录 {n} 个板块")
+        except Exception as e:      # noqa: BLE001
+            self.log(f"盘中板块 {at:%H:%M} 记录失败：{e!r}")
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:   # noqa: BLE001
+                    pass
 
 
 # ---------- 给面板/报告读 ----------
@@ -372,6 +457,14 @@ def overview(conn: sqlite3.Connection) -> dict:
     last = conn.execute("SELECT MAX(date) FROM own_sector_daily").fetchone()[0]
     daily = {sid: json.loads(d) for sid, d in conn.execute(
         "SELECT sector_id, data FROM own_sector_daily WHERE date=?", (last,))} if last else {}
+    iday = conn.execute("SELECT MAX(substr(ts, 1, 10)) FROM own_sector_intraday").fetchone()[0]
+    intraday: dict[str, list] = {}
+    if iday:
+        for ts, sid, d in conn.execute("SELECT ts, sector_id, data FROM own_sector_intraday "
+                                       "WHERE substr(ts, 1, 10) = ? ORDER BY ts", (iday,)):
+            d = json.loads(d)
+            intraday.setdefault(sid, []).append({"time": ts[11:16], **{k: d.get(k) for k in (
+                "jev_strength", "avg_pct", "strong", "limit_up")}})
     out = []
     for s in sectors(conn) + sectors(conn, "proposed"):
         members = [{"code": c, "tier": t, "share": sh, "source": src, "status": st, "checked": ck,
@@ -379,8 +472,8 @@ def overview(conn: sqlite3.Connection) -> dict:
                    for c, t, sh, b, src, st, ck, vt in conn.execute(
                        "SELECT code, tier, share, basis, source, status, checked, valid_to FROM own_members "
                        "WHERE sector_id=? AND status != 'rejected' ORDER BY tier, share DESC", (s["id"],))]
-        out.append({**s, "daily": daily.get(s["id"]), "members": members})
-    return {"date": last, "sectors": out}
+        out.append({**s, "daily": daily.get(s["id"]), "members": members, "intraday": intraday.get(s["id"], [])})
+    return {"date": last, "sectors": out, "intraday_date": iday}
 
 
 def propose_from_articles(conn: sqlite3.Connection, today: date, art_sectors: list) -> int:

@@ -65,6 +65,9 @@ OWN_SECTORS_REFRESH_DAYS = 30    # 主营构成/介绍缓存多久后重取
 OWN_SECTORS_VALID_DAYS = 90      # 成员有效期
 OWN_SECTORS_STRONG_PCT = 5.0     # 日快照里「强势」的涨幅线（%）
 OWN_SECTORS_JEV_MIN_STRONG = 0   # 板块当天强势成员数 ≥ 此值（或被晚报点名）才问 Jev 强弱；0 = 有成员行情的板块每天都问（用户 2026-10-09：板块情绪全记）
+# 盘中板块情绪（用户 2026-10-09：每 30 分钟问一次 Jev），后台线程跑，只记录；约 7 轮 × 有成员的板块数次 Jev/天
+OWN_SECTORS_INTRADAY_SLOTS = (time(10, 0), time(10, 30), time(11, 0), time(11, 25),
+                              time(13, 30), time(14, 0), time(14, 30))
 
 # 过滤
 NOTICE_LOOKBACK_DAYS = 90

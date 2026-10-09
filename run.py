@@ -317,6 +317,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     resynced = False
     last_tick_minute = None
     after_sell = sell_followups.AfterSellTracker()     # 卖飞统计：盘中跟踪每笔卖出之后的最高价
+    own_intraday = _own_intraday_recorder(conn, key, universe, ret5, log, sell_only or late)
     while now().time() < REPORT_AT:
         t = now()
         if not resynced and t.time() >= NOTICE_RESYNC_AT:
@@ -335,6 +336,11 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                 after_sell.update(conn, today, _fresh_quotes(engine, t))
             except Exception as e:
                 log(f"卖飞跟踪失败：{e!r}")
+            if own_intraday is not None:
+                try:    # 盘中板块情绪：后台线程记录，这里只触发，不等
+                    own_intraday.tick(t, _fresh_quotes(engine, t))
+                except Exception as e:
+                    log(f"盘中板块触发失败：{e!r}")
             if getattr(engine, "halted", False):
                 notifier.once("halted", "⚠️ 模拟盘提醒", "行情连续 3 次获取失败；取不到行情的这几分钟各策略都不交易，恢复后照常")
             state.update(sentiment=engine.sentiment_label,
@@ -574,6 +580,22 @@ def _load_customs(conn, ledger: Ledger, today: date, universe: dict, ret5: dict,
         out.append((s["id"], strat))
         log(f"自定义策略 {s['id']} v{s['version']}「{s['name']}」" + ("" if strat.can_buy else "（只卖）"))
     return out
+
+
+def _own_intraday_recorder(conn, key: str | None, universe: dict, ret5: dict, log: Callable[[str], None],
+                           skip: bool) -> "own_sectors.IntradayRecorder | None":
+    """盘中板块情绪记录器（只记录）：后台线程用自己的库连接和 Jev 客户端。内存库（测试）、没有 Jev 凭证、
+    晚启动或只卖日不开。"""
+    if skip or not key or not universe or not config.OWN_SECTORS_ENABLED:
+        return None
+    try:
+        path = conn.execute("PRAGMA database_list").fetchone()[2]
+    except Exception:
+        return None
+    if not path:
+        return None
+    return own_sectors.IntradayRecorder(lambda: db.connect(path),
+                                        lambda c: OwnSectorJudge(JevClient(key, conn=c)), universe, ret5, log)
 
 
 def _load_rebound(conn, ledger: Ledger, today: date, universe: dict, ret5: dict, sell_only: bool,

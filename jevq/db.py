@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS own_product_map(product TEXT PRIMARY KEY, sector_id T
   defs_hash TEXT, created TEXT);
 CREATE TABLE IF NOT EXISTS own_cache(kind TEXT, code TEXT, fetched TEXT, value TEXT, PRIMARY KEY(kind, code));
 CREATE TABLE IF NOT EXISTS own_sector_daily(date TEXT, sector_id TEXT, data TEXT, PRIMARY KEY(date, sector_id));
+CREATE TABLE IF NOT EXISTS own_sector_intraday(ts TEXT, sector_id TEXT, data TEXT, PRIMARY KEY(ts, sector_id));
 CREATE TABLE IF NOT EXISTS day_cache(date TEXT, kind TEXT, key TEXT, value TEXT,
   PRIMARY KEY(date, kind, key));
 CREATE TABLE IF NOT EXISTS jev_calls(
