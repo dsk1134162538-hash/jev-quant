@@ -100,7 +100,7 @@ def test_candidates_page_renders_escapes_and_handles_empty(tmp_path):
     cases = [None, {"date": None}, evil, {**evil, "rebound": None}]
     (tmp_path / "c.json").write_text(json.dumps(cases, ensure_ascii=False), encoding="utf-8")
     r = subprocess.run(["node", str(tmp_path / "h.js"), str(tmp_path / "ui.js"), str(tmp_path / "c.json")],
-                       capture_output=True, text=True, encoding="utf-8")
+                       capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL)
     assert r.returncode == 0, r.stderr
     empty1, empty2, full, no_rebound = json.loads(r.stdout)
     assert "还没有候选快照" in empty1 and "还没有候选快照" in empty2

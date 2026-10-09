@@ -35,12 +35,14 @@ def _real_run_tests(python_exe: Path, cwd: Path, install_requirements: bool, log
         log("requirements.txt 有变化，先在隔离目录安装依赖")
         r = subprocess.run([str(python_exe), "-m", "pip", "install", "-r", "requirements.txt"],
                            cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=300)
+                           timeout=300, stdin=subprocess.DEVNULL)
         if r.returncode != 0:
             return False, ("依赖安装失败：" + r.stdout + r.stderr)[-4000:]
+    # stdin 显式给 DEVNULL：daemon 跑在 pythonw 下没有标准输入句柄，测试里再起子进程（node）会
+    # WinError 6（句柄无效），2026-10-09 自动上线因此失败
     r = subprocess.run([str(python_exe), "-m", "pytest", "-q", "-p", "no:cacheprovider"],
                        cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=900)
+                       timeout=900, stdin=subprocess.DEVNULL)
     return r.returncode == 0, (r.stdout + r.stderr)[-4000:]
 
 

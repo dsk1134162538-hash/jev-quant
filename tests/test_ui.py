@@ -22,7 +22,7 @@ def _scripts() -> str:
 def test_ui_script_parses(tmp_path):
     js = tmp_path / "ui.js"
     js.write_text(_scripts(), encoding="utf-8")
-    r = subprocess.run(["node", "--check", str(js)], capture_output=True, text=True, encoding="utf-8")
+    r = subprocess.run(["node", "--check", str(js)], capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL)
     assert r.returncode == 0, r.stderr
 
 
@@ -107,7 +107,7 @@ def _render(tmp_path, cases: list) -> list[str]:
     (tmp_path / "h.js").write_text(_RENDER_HARNESS, encoding="utf-8")
     (tmp_path / "cases.json").write_text(json.dumps(cases, ensure_ascii=False), encoding="utf-8")
     r = subprocess.run(["node", str(tmp_path / "h.js"), str(tmp_path / "ui.js"), str(tmp_path / "cases.json")],
-                       capture_output=True, text=True, encoding="utf-8")
+                       capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout)
 
@@ -198,7 +198,7 @@ def _kb_render(tmp_path, states: list) -> list:
     (tmp_path / "h.js").write_text(_KB_HARNESS, encoding="utf-8")
     (tmp_path / "in.json").write_text(json.dumps({"data": _KB, "states": states}, ensure_ascii=False), encoding="utf-8")
     r = subprocess.run(["node", str(tmp_path / "h.js"), str(tmp_path / "ui.js"), str(tmp_path / "in.json")],
-                       capture_output=True, text=True, encoding="utf-8")
+                       capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout)
 

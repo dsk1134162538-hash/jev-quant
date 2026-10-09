@@ -358,7 +358,7 @@ def test_own_sectors_page_renders_escapes_and_empty(tmp_path):
         {"id": "proposed_x", "name": "商业航天", "product_def": "", "status": "proposed", "members": [], "daily": None}]}
     (tmp_path / "c.json").write_text(json.dumps([None, {"sectors": []}, data], ensure_ascii=False), encoding="utf-8")
     r = subprocess.run(["node", str(tmp_path / "h.js"), str(tmp_path / "ui.js"), str(tmp_path / "c.json")],
-                       capture_output=True, text=True, encoding="utf-8")
+                       capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL)
     assert r.returncode == 0, r.stderr
     e1, e2, full = json.loads(r.stdout)
     assert "还没有自建板块记录" in e1 and "还没有自建板块记录" in e2
