@@ -10,7 +10,7 @@ from time import monotonic
 from jevq import accounts as accounts_mod
 from jevq import config, db, notify_content
 from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
-from jevq.data import (akdata, board_events, candidates, closes, concepts, custom_store, hi189, own_sectors,
+from jevq.data import (akdata, board_events, candidates, closes, concepts, custom_store, hi189, news7x24, own_sectors,
                        sell_followups, tencent)
 from jevq.data.features import history_features
 from jevq.data.notice_body import prefetch_bodies
@@ -22,6 +22,7 @@ from jevq.judge.own_sectors import OwnSectorJudge
 from jevq.judge.news import NewsJudge
 from jevq.judge.notices import NoticeJudge
 from jevq.judge.trend import TrendJudge
+from jevq.judge.turn import TurnJudge
 from jevq.ledger import Ledger
 from jevq.live import store as live_store
 from jevq.notify import Notifier, notifier_from_env
@@ -256,6 +257,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if key and not late:
         try:
             overseas_pcts = tencent.fetch_overseas()
+            state["overseas_pcts"] = overseas_pcts
             overseas = market.overseas(overseas_pcts)
             log(f"外围 {overseas_pcts} → {overseas}")
         except Exception as e:
@@ -276,9 +278,14 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     except Exception as e:
         log(f"自定义账户读取失败，只拉内置账户持仓行情：{e!r}")
         day_accounts = config.builtin_accounts()
+    flash = news7x24.Flash(log=log)
     engine = Engine(conn, ledger, market, tencent.fetch_quotes, akdata.fetch_pool_stats, universe, prev_day,
                     overseas, accounts_provider=lambda: day_accounts,
                     articles_provider=None if late else lambda t: hi189.refresh(conn, today, prev_day, t))
+    # 情绪拐点抄底 + 7x24 快讯：构造后再挂上（测试里的假引擎没有这些参数）
+    engine.turn_judge = None if (late or sell_only) else TurnJudge(jev, flash)
+    engine.flash = flash
+    engine.overseas_pcts = state.get("overseas_pcts") or {}
     board = None
     if not late:
         board = BoardStrategy(conn, ledger, notice_judge, news_judge, tencent.fetch_quotes, universe, ret5,
@@ -295,6 +302,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     rebound = None if late else _load_rebound(conn, ledger, today, universe, ret5, sell_only, notice_judge,
                                               news_judge, engine, prev_day, log, trade_days=days,
                                               trend_judge=TrendJudge(jev))
+    if rebound is not None:
+        rebound.turn_provider = lambda: bool(getattr(engine, "turn_on", False))
     if calendar_fallback:
         if board is not None:
             board.stale_before = None
@@ -336,6 +345,10 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                 after_sell.update(conn, today, _fresh_quotes(engine, t))
             except Exception as e:
                 log(f"卖飞跟踪失败：{e!r}")
+            if getattr(engine, "turn_on", False) and getattr(engine, "turn_detail", None):
+                notifier.once("turn", "💡 情绪拐点：开始抄底",
+                              f"{engine.turn_detail.get('text', '')}\nJev 判修复拐点 {engine.turn_detail.get('prob')}；"
+                              "超跌反弹今天偏弱/冰点也盘中买，实盘跟")
             if own_intraday is not None:
                 try:    # 盘中板块情绪：后台线程记录，这里只触发，不等
                     own_intraday.tick(t, _fresh_quotes(engine, t))

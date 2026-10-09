@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS jev_calls(
 CREATE TABLE IF NOT EXISTS decisions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, code TEXT, verdict TEXT, detail TEXT);
 CREATE TABLE IF NOT EXISTS turnover(ts TEXT PRIMARY KEY, amount REAL);
+CREATE TABLE IF NOT EXISTS market_breadth(ts TEXT PRIMARY KEY, up INTEGER, down INTEGER, total INTEGER,
+  limit_up INTEGER, limit_down INTEGER, amount_ratio REAL);
 CREATE TABLE IF NOT EXISTS equity(date TEXT, account TEXT, value REAL, PRIMARY KEY(date, account));
 CREATE TABLE IF NOT EXISTS closes(date TEXT, code TEXT, close REAL, PRIMARY KEY(date, code));
 CREATE TABLE IF NOT EXISTS concepts(code TEXT, concept TEXT, updated TEXT, PRIMARY KEY(code, concept));

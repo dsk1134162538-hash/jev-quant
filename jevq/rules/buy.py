@@ -22,11 +22,12 @@ def buy_window_open(mode: str, t: time) -> bool:
     return start <= t < BUY_END
 
 
-def rebound_mode(sentiment: str | None) -> str:
+def rebound_mode(sentiment: str | None, turn: bool = False) -> str:
     """超跌反弹的买入时机只看情绪（不看外围）：正常/火热 → 盘中可买；偏弱/冰点/未知 → 不买
-    （用户 2026-10-09 定，原来是等尾盘买）。情绪每 10 分钟刷新，盘中转好就恢复买。"""
+    （用户 2026-10-09 定，原来是等尾盘买）。情绪每 10 分钟刷新，盘中转好就恢复买。
+    turn：今天已确认情绪拐点（恐慌后的修复，jevq.rules.turn）→ 偏弱/冰点也立即盘中买（"turn"，拐点抄底）。"""
     if sentiment is None or sentiment in WEAK_SENTIMENT:
-        return "none"
+        return "turn" if turn else "none"
     return "intraday"
 
 

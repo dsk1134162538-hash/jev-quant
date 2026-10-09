@@ -11,8 +11,9 @@ class MarketJudge:
         self.sentiment_trace: dict | None = None
         self.overseas_trace: dict | None = None
 
-    def sentiment(self, stats: dict, articles: list[dict] | None = None) -> str | None:
-        """articles：hi189 当日文章（{title, link, published, text}）；有就作为「市场解读」一并交给 Jev。"""
+    def sentiment(self, stats: dict, articles: list[dict] | None = None, news: list[str] | None = None) -> str | None:
+        """articles：hi189 当日文章（{title, link, published, text}）；有就作为「市场解读」一并交给 Jev。
+        news：7x24 快讯标题（最近一小时）；有就一并交给 Jev。"""
         instructions = "A股短线情绪当前处于什么状态？（参考涨跌停家数、炸板率、连板高度、成交额和涨跌家数）"
         state = stats
         if stats and articles:
@@ -20,6 +21,9 @@ class MarketJudge:
                 {"标题": a["title"], "发布时间": a["published"], "正文": a["text"][:HI189_ARTICLE_MAX_CHARS]}
                 for a in articles]}
             instructions = instructions[:-1] + "，并结合市场解读）"
+        if stats and news:
+            state = {**state, "7x24快讯": news}
+            instructions = instructions[:-1] + "，并参考 7x24 快讯）"
         self.sentiment_trace = self._score(state, instructions, SENTIMENT_LEVELS)
         if self.sentiment_trace and articles:
             self.sentiment_trace["articles"] = [{"title": a["title"], "link": a["link"]} for a in articles]

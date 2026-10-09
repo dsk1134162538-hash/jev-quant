@@ -157,6 +157,12 @@
   .chart .tip .row .v { font-variant-numeric:tabular-nums; font-weight:600; }
   .chart .tip .row .e { font-variant-numeric:tabular-nums; color:var(--muted); min-width:70px; text-align:right; }
   .chart + .tag { margin-top:10px; font-size:12px; }
+  .chart.mood { height:240px; }
+  .chart.mood-bars { height:130px; padding-top:0; }
+  .chart .mood-turn { position:absolute; transform:translate(-50%, -100%); font-size:11px; font-weight:700;
+    color:var(--warn); pointer-events:none; }
+  .mood-head { display:flex; gap:14px; flex-wrap:wrap; align-items:baseline; margin:4px 0 6px; }
+  .mood-head b { font-size:15px; }
   .legend { display:flex; flex-wrap:wrap; gap:4px; }
   .legend span { display:inline-flex; align-items:center; height:26px; padding:0 10px; border-radius:999px; color:var(--text-2);
                  font-size:12.5px; white-space:nowrap; transition:background-color .15s var(--ease); }
@@ -389,6 +395,7 @@
     <div class="tabs" id="mainTabs">
       <button data-tab="fills" class="active">今日成交</button>
       <button data-tab="candidates">候选</button>
+      <button data-tab="mood">情绪</button>
       <button data-tab="decisions">Jev 判断</button>
       <button data-tab="own">自建板块</button>
       <button data-tab="board">封板统计</button>
@@ -479,7 +486,7 @@ function candidatesHtml(d) {
     : '<div class="empty">观察池为空（开盘后涨幅进入热门题材的首板才会进来）</div>');
   html += "<h3>超跌反弹 · 入选名单</h3>";
   if (!rb) return html + '<div class="empty">超跌反弹未运行</div>';
-  const mode = rb.mode === "none" ? "偏弱/冰点/未知，不买" : rb.mode === "tail" ? "偏弱/冰点/未知，只在尾盘买" : "盘中可买";
+  const mode = rb.mode === "none" ? "偏弱/冰点/未知，不买" : rb.mode === "turn" ? "情绪拐点，盘中抄底" : rb.mode === "tail" ? "偏弱/冰点/未知，只在尾盘买" : "盘中可买";
   html += `<div class="muted">情绪 ${esc(rb.sentiment || "未知")}（${esc(mode)}）；${rb.window_open ? "现在在买入时段内" : "现在不在买入时段"}${rb.enabled ? "" : "；今天只卖不买"}${rb.total > (rb.items || []).length ? `；共 ${esc(rb.total)} 只，只列前 ${esc((rb.items || []).length)} 只` : ""}</div>`;
   html += (rb.items || []).length ? table(["#", "代码", "名称", "涨幅", "现价", "近5日", "缩量天数", "Jev"],
     rb.items.map((r) => [esc(r.rank), esc(r.code), esc(r.name), pct(r.pct), fmt(r.price), pct(r.ret5),
@@ -816,7 +823,7 @@ function renderTrace(d) {
   }
   if (t.strategy === "rebound") {        // 超跌反弹只看情绪，不看外围；扫首板和自定义策略不显示市场
     const m = t.market || {};
-    parts.push(`<h4>当时市场：${m.mode === "none" ? "情绪不好，不买" : m.mode === "tail" ? "只在尾盘买" : "盘中可买"}</h4>`);
+    parts.push(`<h4>当时市场：${m.mode === "none" ? "情绪不好，不买" : m.mode === "turn" ? "情绪拐点，抄底" : m.mode === "tail" ? "只在尾盘买" : "盘中可买"}</h4>`);
     parts.push(marketBlock("市场情绪", m.sentiment, m.sentiment_trace));
   }
   const o = t.outcome || {};
@@ -831,6 +838,92 @@ function strategyFilters() {
   Object.keys(custom).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))
     .forEach((id) => out.push([id, custom[id] || id]));
   return out;
+}
+
+// 「情绪」页（用户 2026-10-09）：每天一根情绪 K 线——Jev 四档概率的期望分（冰点 0 / 偏弱 1 / 正常 2 / 火热 3），
+// 开 = 当天第一次判断、收 = 最后一次、高低 = 当天最高最低；下面配涨停（向上）/跌停（向下）柱。点某天看当天每 10 分钟明细。
+const MOOD_LV = ["冰点", "偏弱", "正常", "火热"];
+let moodSel = null;
+const moodLabel = (v) => v == null ? "–" : `${MOOD_LV[Math.max(0, Math.min(3, Math.round(v)))]} ${fmt(v, 2)}`;
+function moodHtml(data) {
+  const days = (data && data.days) || [];
+  if (!days.length) return '<div class="empty">还没有情绪记录：交易日后台每 10 分钟判一次，开盘后就有</div>';
+  const W = 1000, H1 = 200, H2 = 120, pad = 14, n = days.length;
+  const slot = (W - 2 * pad) / n, bw = Math.max(2, Math.min(slot * 0.6, 36));
+  const cx = (i) => pad + slot * (i + 0.5);
+  const y1 = (v) => 8 + ((3 - v) / 3) * (H1 - 16);
+  const grid = [0, 1, 2, 3].map((v) => `<line class="grid" x1="0" x2="${W}" y1="${y1(v)}" y2="${y1(v)}" vector-effect="non-scaling-stroke"/>`).join("");
+  const ylabs = [0, 1, 2, 3].map((v) => `<div class="ylab" style="top:calc(8px + (100% - 36px) * ${y1(v) / H1})">${MOOD_LV[v]}</div>`).join("");
+  const candles = days.map((d, i) => {
+    if (d.open == null) return "";
+    const up = d.close >= d.open, color = up ? "var(--up)" : "var(--down)";
+    const top = y1(Math.max(d.open, d.close)), h = Math.max(1.5, Math.abs(y1(d.open) - y1(d.close)));
+    return `<g data-i="${i}"><line x1="${cx(i)}" x2="${cx(i)}" y1="${y1(d.high)}" y2="${y1(d.low)}" style="stroke:${color}"
+        stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+      <rect x="${cx(i) - bw / 2}" y="${top}" width="${bw}" height="${h}" style="fill:${up ? "var(--card)" : color};stroke:${color}"
+        stroke-width="1.5" vector-effect="non-scaling-stroke"/></g>`;
+  }).join("");
+  const turns = days.map((d, i) => d.turn && d.high != null
+    ? `<div class="mood-turn" style="left:${cx(i) / W * 100}%;top:${y1(d.high) / H1 * 100}%">拐</div>` : "").join("");
+  const maxv = Math.max(1, ...days.map((d) => Math.max(d.limit_up || 0, d.limit_down || 0)));
+  const mid = H2 / 2, yb = (v) => (v / maxv) * (mid - 14);      // 下沿留出日期标签的位置
+  const bars = days.map((d, i) => `<rect x="${cx(i) - bw / 2}" y="${mid - yb(d.limit_up || 0)}" width="${bw}" height="${yb(d.limit_up || 0)}" style="fill:var(--up)" fill-opacity=".75"/>
+      <rect x="${cx(i) - bw / 2}" y="${mid}" width="${bw}" height="${yb(d.limit_down || 0)}" style="fill:var(--down)" fill-opacity=".75"/>`).join("");
+  const every = Math.max(1, Math.ceil(n / 8));
+  const xlabs = days.map((d, i) => (i % every === 0 || i === n - 1)
+    ? `<div class="xlab" style="left:${cx(i) / W * 100}%">${esc(d.date.slice(5))}</div>` : "").join("");
+  const last = days[n - 1];
+  const head = `<div class="mood-head"><b>${esc(last.date)}　${esc(last.label || "未判")}</b>
+    <span class="tag">情绪分 开 ${esc(moodLabel(last.open))} → 收 ${esc(moodLabel(last.close))}</span>
+    <span class="tag">涨停 <b class="up">${esc(last.limit_up ?? "–")}</b>　跌停 <b class="down">${esc(last.limit_down ?? "–")}</b>
+    　炸板率 ${last.break_rate == null ? "–" : fmt(last.break_rate, 1) + "%"}　最高 ${esc(last.max_board ?? "–")} 板</span>
+    ${last.turn ? `<span class="tag">情绪拐点 <b>${esc(last.turn)}</b></span>` : ""}</div>`;
+  return head + `<div class="chart mood" id="moodChart">${ylabs}<div class="plot" id="moodPlot">
+      <svg viewBox="0 0 ${W} ${H1}" preserveAspectRatio="none">${grid}${candles}
+        <line class="cross" id="moodCross" x1="0" x2="0" y1="0" y2="${H1}" vector-effect="non-scaling-stroke" visibility="hidden"/></svg>
+      ${turns}<div class="tip" id="moodTip" hidden></div></div></div>
+    <div class="chart mood-bars"><div class="ylab" style="top:12%">涨停</div><div class="ylab" style="top:88%">跌停</div>
+      <div class="plot"><svg viewBox="0 0 ${W} ${H2}" preserveAspectRatio="none">
+        <line class="zero" x1="0" x2="${W}" y1="${mid}" y2="${mid}" vector-effect="non-scaling-stroke"/>${bars}</svg>${xlabs}</div></div>
+    <div class="tag">K 线是 Jev 判的短线情绪（空心红 = 当天转好，实心绿 = 当天转差）；「拐」= 当天确认了情绪拐点（恐慌后的修复）。
+      鼠标移到图上看明细，点某一天看当天每 10 分钟的判断</div><div id="moodDay"></div>`;
+}
+function moodDayHtml(d) {
+  if (!d) return "";
+  return `<h3>${esc(d.date)} 盘中情绪（${esc(d.n)} 次判断${d.turn ? `，${esc(d.turn)} 确认拐点` : ""}）</h3>` +
+    table(["时间", "Jev 情绪", "情绪分", "涨停", "跌停", "炸板率", "红盘", "绿盘", "成交额较昨日同期"],
+      d.points.map((p) => [esc(p.time), esc(p.label || "未判"), p.score == null ? "–" : fmt(p.score, 2),
+        esc(p.limit_up ?? "–"), esc(p.limit_down ?? "–"), p.break_rate == null ? "–" : fmt(p.break_rate, 1) + "%",
+        esc(p.up ?? "–"), esc(p.down ?? "–"), p.amount_ratio == null ? "–" : fmt(p.amount_ratio, 1) + "%"]));
+}
+function bindMood(body, data) {
+  const days = (data && data.days) || [];
+  const plot = body.querySelector("#moodPlot");
+  if (!plot) return;
+  const W = 1000, pad = 14, slot = (W - 2 * pad) / days.length;
+  const tip = body.querySelector("#moodTip"), cross = body.querySelector("#moodCross");
+  const pick = (ev) => {
+    const rect = plot.getBoundingClientRect();
+    const fx = ((ev.clientX - rect.left) / rect.width) * W;
+    return [Math.max(0, Math.min(days.length - 1, Math.floor((fx - pad) / slot))), rect];
+  };
+  const showDay = (date) => { body.querySelector("#moodDay").innerHTML = moodDayHtml(days.find((d) => d.date === date)); };
+  plot.onmousemove = (ev) => {
+    const [i, rect] = pick(ev), d = days[i], x = pad + slot * (i + 0.5);
+    cross.setAttribute("x1", x); cross.setAttribute("x2", x); cross.setAttribute("visibility", "visible");
+    tip.innerHTML = `<div class="d">${esc(d.date)}　${esc(d.label || "未判")}${d.turn ? `　拐点 ${esc(d.turn)}` : ""}</div>`
+      + [["开", moodLabel(d.open)], ["高", moodLabel(d.high)], ["低", moodLabel(d.low)], ["收", moodLabel(d.close)],
+         ["涨停 / 跌停", `${d.limit_up ?? "–"} / ${d.limit_down ?? "–"}`],
+         ["炸板率", d.break_rate == null ? "–" : fmt(d.break_rate, 1) + "%"], ["最高连板", d.max_board ?? "–"],
+         ["红盘 / 绿盘", `${d.up ?? "–"} / ${d.down ?? "–"}`], ["外围", d.overseas || "–"]]
+        .map(([k, v]) => `<div class="row"><span class="n">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("");
+    tip.hidden = false;
+    const left = (x / W) * rect.width;
+    tip.style.left = left > rect.width * 0.55 ? `${left - tip.offsetWidth - 12}px` : `${left + 12}px`;
+  };
+  plot.onmouseleave = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); };
+  plot.onclick = (ev) => { moodSel = days[pick(ev)[0]].date; showDay(moodSel); };
+  showDay(moodSel && days.some((d) => d.date === moodSel) ? moodSel : days[days.length - 1].date);
 }
 
 async function renderTab() {
@@ -870,6 +963,12 @@ async function renderTab() {
     if (expandBtn) expandBtn.onclick = () => { noticesExpanded = true; renderTab(); };
   } else if (tab === "own") {
     await renderOwnTab(body);
+  } else if (tab === "mood") {
+    let data;
+    try { data = await api.sentiment_board(60); } catch (e) { data = {days: []}; }
+    if (moved()) return;
+    body.innerHTML = moodHtml(data);
+    bindMood(body, data);
   } else if (tab === "candidates") {
     const data = await api.candidates();
     if (moved()) return;
@@ -1741,7 +1840,7 @@ async function refresh() {
   $("btnStop").disabled = !s.running;
   renderAccounts(s.accounts || []);
   renderCurve(await api.equity_curve());
-  if (tab !== "reports" && tab !== "rules" && tab !== "knowledge" && tab !== "own") await renderTab();   // 规则页是编辑器，定时刷新会冲掉正在编辑的内容；知识库有搜索框和展开状态
+  if (tab !== "reports" && tab !== "rules" && tab !== "knowledge" && tab !== "own" && tab !== "mood") await renderTab();   // 规则页是编辑器，定时刷新会冲掉正在编辑的内容；知识库有搜索框和展开状态
 }
 
 window.addEventListener("pywebviewready", async () => {

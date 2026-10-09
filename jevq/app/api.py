@@ -62,6 +62,13 @@ def builtin_summaries() -> list[dict]:
                  + "按近 5 日涨幅从低到高排序（跌得多的优先）"]},
              {"title": "买点", "lines": [
                  f"只看情绪：正常或火热时盘中可买（到 {hm(config.BUY_END)}），偏弱、冰点或情绪没判出来时不买（不看外围）",
+                 f"情绪拐点抄底：今天红盘占比最低到过 {config.TURN_PANIC_UP * 100:g}% 以下（恐慌），之后不再创新低满 "
+                 f"{config.TURN_LOW_AGE} 分钟、红盘回到 {config.TURN_UP_MIN * 100:g}% 以上且比最低多 {config.TURN_UP_GAIN * 100:g} 个点、"
+                 f"跌停降到 {config.TURN_LD_FLOOR} 家以内或最多时的 {config.TURN_LD_SHRINK * 100:g}%、成交额较昨日同期在放大，"
+                 + ("再经 Jev（看广度轨迹、外围、7x24 快讯、知识库经验）确认修复拐点" if config.TURN_JEV_REQUIRED
+                    else "规则满足就确认（Jev 的看法只记录）")
+                 + f" → 偏弱/冰点也立即盘中买，实盘跟（"
+                 f"{hm(config.TURN_START)}~{hm(config.TURN_END)}）",
                  "情绪判断会参考 hi189 当日市场解读文章（取不到时和以前一样）",
                  f"主账户经 Jev 公告排雷 + 消息面判断，每分钟最多检查 {config.MAX_CHECKS_PER_TICK} 只",
                  f"同一只票当天卖出后，现价要比卖出价低 {config.REBOUND_REBUY_DROP:g}% 以上才允许再买（防止卖出后原价买回）"]},
@@ -327,6 +334,18 @@ class Api:
         conn = db.connect_readonly(self._db_path)
         try:
             return candidates.latest(conn)
+        finally:
+            conn.close()
+
+    def sentiment_board(self, days: int = 60) -> dict:
+        """「情绪」页：每天一根情绪 K 线（Jev 情绪分的开高低收）+ 涨停/跌停/炸板率/拐点（只读）。"""
+        from jevq.app import sentiment_board
+        conn = db.connect_readonly(self._db_path)
+        try:
+            return sentiment_board.board(conn, int(days))
+        except Exception as e:
+            self._log(f"情绪面板读取失败：{e}")
+            return {"days": []}
         finally:
             conn.close()
 

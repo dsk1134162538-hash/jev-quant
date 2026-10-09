@@ -453,3 +453,17 @@ def test_main_without_trend_judge_still_confirms_then_sells():
                             enabled=False, trade_days=[PREV_DAY, TODAY])
     assert _sells(strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))) == []
     assert _sells(strat.on_minute(_q(at(10, 15), -2.1), at(10, 15))) == [("rebound_main", "止损")]
+
+
+def test_turn_lets_main_buy_on_weak_day_and_tags_the_reason():
+    """用户 2026-10-09：恐慌后情绪拐点确认 → 偏弱也立即盘中买（拐点抄底），实盘跟主账户。"""
+    strat, conn, ledger, state = make(sentiment="偏弱")
+    turn = {"on": False}
+    strat.turn_provider = lambda: turn["on"]
+    q = {"600002": -1.0}
+    assert strat.on_minute(_quotes(at(13, 9), **q), at(13, 9)) == []
+    turn["on"] = True
+    fills = strat.on_minute(_quotes(at(13, 10), **q), at(13, 10))
+    main = [f for f in fills if f.account == "rebound_main"]
+    assert len(fills) == 2 and main[0].reason.startswith("拐点抄底｜超跌")
+    assert strat.candidates_view(_quotes(at(13, 11), **q), at(13, 11))["mode"] == "turn"

@@ -30,8 +30,10 @@ class ReboundStrategy:
                  sentiment_provider: Callable[[], str | None], enabled: bool = True,
                  sentiment_trace_provider: Callable[[], dict | None] | None = None,
                  trade_days: list[date] | None = None, features: dict[str, dict] | None = None,
-                 trend_judge=None):
+                 trend_judge=None, turn_provider: Callable[[], bool] | None = None):
         self.conn, self.ledger = conn, ledger
+        # 今天是否已确认情绪拐点（Engine.turn_on）：是 → 偏弱/冰点也盘中买（拐点抄底）
+        self.turn_provider = turn_provider or (lambda: False)
         # 问 Jev 持仓票今天走向（jevq.judge.trend.TrendJudge）；None = 主账户止损只做 2 分钟确认、不问走向
         self.trend_judge = trend_judge
         # (账户, 代码) → (最近一次计数的分钟, 现价连续在止损线下的分钟数)
@@ -69,7 +71,7 @@ class ReboundStrategy:
         if not quotes or not self.enabled:
             return []
         sentiment = self.sentiment_provider()
-        mode = rebound_mode(sentiment)
+        mode = rebound_mode(sentiment, bool(self.turn_provider()))
         if not buy_window_open(mode, now.time()):
             return []
         ranked = rank_rebound(
@@ -82,7 +84,7 @@ class ReboundStrategy:
         """面板「候选」页：此刻满足选股条件的票，按买入优先顺序（同 buy_step 的 rank_rebound）。
         不看买入时段：没到买点时也列出来，window_open 标明现在能不能买。"""
         sentiment = self.sentiment_provider()
-        mode = rebound_mode(sentiment)
+        mode = rebound_mode(sentiment, bool(self.turn_provider()))
         info = {"sentiment": sentiment, "mode": mode, "window_open": buy_window_open(mode, now.time()),
                 "enabled": self.enabled, "items": []}
         if not self.enabled or not quotes:
@@ -238,7 +240,8 @@ class ReboundStrategy:
                 if verdict == "error":
                     errors += 1
                 continue
-            f = self.ledger.buy(main, q, now, f"超跌{q.pct}%｜5日{self.ret5[q.code]}%｜{why}")
+            tag = "拐点抄底｜" if mode == "turn" else ""
+            f = self.ledger.buy(main, q, now, f"{tag}超跌{q.pct}%｜5日{self.ret5[q.code]}%｜{why}")
             if f:
                 trace["outcome"] = {"bought": True, "shares": f.shares, "price": f.price}
                 fills.append(f)

@@ -3,9 +3,11 @@ import sqlite3
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
+from jevq import config
 from jevq.config import ACCOUNTS, SENTIMENT_REFRESH_MIN
 from jevq.ledger import Ledger
 from jevq.models import Fill, Quote
+from jevq.rules import turn as turn_rules
 
 
 class Engine:
@@ -15,8 +17,17 @@ class Engine:
     def __init__(self, conn: sqlite3.Connection, ledger: Ledger, market_judge, fetch_quotes, fetch_pools,
                  universe: dict[str, str], prev_day: date, overseas: str | None,
                  accounts_provider: Callable[[], tuple[str, ...]] | None = None,
-                 articles_provider: Callable[[datetime], list[dict]] | None = None):
+                 articles_provider: Callable[[datetime], list[dict]] | None = None,
+                 turn_judge=None, flash=None, overseas_pcts: dict | None = None):
         self.conn, self.ledger = conn, ledger
+        # 情绪拐点抄底（jevq.rules.turn + jevq.judge.turn.TurnJudge）：None = 不判拐点
+        self.turn_judge = turn_judge
+        self.flash = flash                             # 7x24 快讯（jevq.data.news7x24.Flash）；None = 不接
+        self.overseas_pcts = overseas_pcts or {}
+        self.breadth_series: list = []                 # 今天每分钟的全市场广度（turn_rules.Breadth）
+        self.turn_on = False                           # 今天 Jev 已确认情绪拐点 → 超跌反弹当天盘中可买
+        self.turn_detail: dict | None = None
+        self._turn_asked_at: datetime | None = None
         # 持仓代码（_fetch 用来决定该拉哪些行情）要看全部账户；默认取内置账户，
         # 自定义策略跑起来后由调用方注入一个能看到「今天在跑」账户全集的 provider（见 jevq.accounts.all_accounts）。
         self.accounts_provider = accounts_provider or (lambda: ACCOUNTS)
@@ -45,6 +56,7 @@ class Engine:
         self._fetched_minute = None
         if self._sentiment_at is None and self._restored_day != now.date():
             self._restore_sentiment(now.date())
+            self._restore_turn(now.date())
         quotes = self._fetch(now)
         if quotes is not None:
             self._fetched_minute = (now, quotes)
@@ -58,6 +70,7 @@ class Engine:
         quotes = self._fetched_minute[1]
         self._fetched_minute = None               # 每分钟只刷一轮
         self._sentiment(now, quotes)
+        self._turn_step(now)
         return []
 
     def _refresh_articles(self, now: datetime):
@@ -70,6 +83,15 @@ class Engine:
             self.sectors = sectors_of(self.articles)
         except Exception as e:
             print(f"[engine] hi189 文章刷新失败: {e!r}")
+
+    def _news(self, now: datetime) -> list[str]:
+        if self.flash is None:
+            return []
+        try:
+            return self.flash.recent(now, minutes=60, limit=20)
+        except Exception as e:
+            print(f"[engine] 7x24 快讯失败: {e!r}")
+            return []
 
     def _restore_sentiment(self, day: date):
         """重启后恢复当日最后一次情绪标签，只给卖出阶段（自定义退出条件）一个合理值；
@@ -103,7 +125,79 @@ class Engine:
         self.conn.execute("INSERT OR REPLACE INTO turnover VALUES (?, ?)",
                           (now.strftime("%Y-%m-%d %H:%M"), total))
         self.conn.commit()
+        try:            # 全市场广度（拐点判断、情绪面板用）：只记录，失败不影响行情
+            self._record_breadth(now, quotes, total)
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[engine] 广度记录失败: {e!r}")
         return quotes
+
+    def _record_breadth(self, now: datetime, quotes: dict[str, Quote], total: float):
+        prev = self.conn.execute("SELECT amount FROM turnover WHERE ts=?",
+                                 (f"{self.prev_day.isoformat()} {now:%H:%M}",)).fetchone()
+        ratio = round((total / prev[0] - 1) * 100, 1) if prev and prev[0] > 0 else None
+        b = turn_rules.breadth(quotes, self.universe, now, ratio)
+        if not b.total:
+            return
+        if self.breadth_series and self.breadth_series[-1].ts.date() != now.date():
+            self.breadth_series = []
+        if self.breadth_series and self.breadth_series[-1].ts == b.ts:
+            self.breadth_series[-1] = b
+        else:
+            self.breadth_series.append(b)
+        self.conn.execute("INSERT OR REPLACE INTO market_breadth VALUES (?, ?, ?, ?, ?, ?, ?)",
+                          (b.ts.strftime("%Y-%m-%d %H:%M"), b.up, b.down, b.total, b.limit_up, b.limit_down,
+                           b.amount_ratio))
+        self.conn.commit()
+
+    def _restore_turn(self, day: date):
+        """重启后恢复今天的广度序列和「已确认拐点」，拐点规则要看今天最低点、跌停最多是多少。"""
+        try:
+            rows = self.conn.execute(
+                "SELECT ts, up, down, total, limit_up, limit_down, amount_ratio FROM market_breadth "
+                "WHERE substr(ts, 1, 10) = ? ORDER BY ts", (day.isoformat(),)).fetchall()
+            self.breadth_series = [turn_rules.Breadth(datetime.strptime(ts, "%Y-%m-%d %H:%M"), *rest)
+                                   for ts, *rest in rows]
+            row = self.conn.execute(
+                "SELECT detail FROM decisions WHERE verdict='turn' AND strategy='market' AND substr(ts, 1, 10) = ? "
+                "ORDER BY ts DESC, rowid DESC LIMIT 1", (day.isoformat(),)).fetchone()
+            detail = json.loads(row[0]) if row else None
+        except Exception as e:
+            print(f"[engine] 恢复今日广度/拐点失败: {e!r}")
+            return
+        if detail and detail.get("confirmed"):
+            self.turn_on, self.turn_detail = True, detail
+
+    def _turn_step(self, now: datetime):
+        """规则看到恐慌后的修复 → 确认，当天锁定 turn_on。TURN_JEV_REQUIRED=True 时还要 Jev 确认：没确认、规则
+        还满足时每 TURN_JEV_RETRY 分钟再问，Jev 没答上下一分钟就再问；False 时 Jev 照问一次但只记录。
+        每次问都记一条 decisions。"""
+        if self.turn_on or self.turn_judge is None or self.halted:
+            return
+        ok, detail = turn_rules.turn_check(self.breadth_series, now)
+        if not ok:
+            return
+        if self._turn_asked_at and now - self._turn_asked_at < timedelta(minutes=config.TURN_JEV_RETRY):
+            return
+        try:
+            prob = self.turn_judge.confirm(self.breadth_series, detail, now, self.sentiment_label,
+                                           self.overseas_pcts)
+        except Exception as e:
+            print(f"[engine] 拐点确认异常: {e!r}")
+            prob = None
+        self._turn_asked_at = None if prob is None else now
+        jev_ok = prob is not None and prob >= config.TURN_JEV_MIN
+        confirmed = jev_ok if config.TURN_JEV_REQUIRED else True
+        record = {"confirmed": confirmed, "prob": prob, "by": "规则+Jev" if config.TURN_JEV_REQUIRED else "规则",
+                  "jev_agrees": jev_ok, "text": turn_rules.describe(detail), "rules": detail}
+        trace = getattr(self.turn_judge, "last_trace", None)
+        self.conn.execute(
+            "INSERT INTO decisions(ts, code, verdict, detail, trace, strategy) VALUES (?, '', 'turn', ?, ?, 'market')",
+            (now.isoformat(timespec="seconds"), json.dumps(record, ensure_ascii=False),
+             None if trace is None else json.dumps(trace, ensure_ascii=False)))
+        self.conn.commit()
+        if confirmed:
+            self.turn_on, self.turn_detail = True, record
 
     def _sentiment(self, now: datetime, quotes: dict[str, Quote]):
         fresh = self._sentiment_at and now - self._sentiment_at < timedelta(minutes=SENTIMENT_REFRESH_MIN)
@@ -114,8 +208,12 @@ class Engine:
                 try:
                     from jevq.data.hi189 import for_judge
                     judged = for_judge(self.articles)         # 中报在演练期只记录，不交给 Jev
-                    self.sentiment_label = (self.market_judge.sentiment(stats, judged) if judged
-                                            else self.market_judge.sentiment(stats))
+                    news = self._news(now)
+                    if news:
+                        self.sentiment_label = self.market_judge.sentiment(stats, judged or None, news=news)
+                    else:
+                        self.sentiment_label = (self.market_judge.sentiment(stats, judged) if judged
+                                                else self.market_judge.sentiment(stats))
                     self.sentiment_trace = getattr(self.market_judge, "sentiment_trace", None)
                 except Exception as e:
                     print(f"[engine] 情绪判断异常: {e!r}")
