@@ -227,3 +227,81 @@ def test_engine_with_only_midday_report_while_switch_off_judges_on_stats_only(mo
     eng.articles_provider = lambda now: [{"title": "x-(中) y", "link": "m", "published": "2026-09-23T13:20", "text": "t"}]
     eng.tick(at(10, 0))
     assert market.calls[0][1] is None
+
+
+# ---- 情绪迟滞 + 开盘未定（用户 2026-10-09 同意）----
+
+class ProbMarket:
+    """按顺序回答带概率的情绪；label = 概率最大的一档。"""
+    LV = ["冰点", "偏弱", "正常", "火热"]
+
+    def __init__(self, *probs):
+        self.probs, self.sentiment_trace = list(probs), None
+
+    def sentiment(self, stats, *a, **k):
+        p = self.probs.pop(0)
+        label = max(p, key=p.get)
+        self.sentiment_trace = {"label": label, "probabilities": p}
+        return label
+
+
+def _ask(eng, t):
+    eng.sell_step(t)
+    eng.buy_step(t)
+    return eng.sentiment_label
+
+
+def _rows(eng):
+    return [json.loads(d) for (d,) in eng.conn.execute(
+        "SELECT detail FROM decisions WHERE verdict='sentiment' ORDER BY id")]
+
+
+def test_hysteresis_keeps_label_when_jev_wobbles_around_a_boundary():
+    """09-29 那种：正常、偏弱每 10 分钟来回翻，其实分数一直在 1.5 上下。"""
+    m = ProbMarket({"偏弱": 0.3, "正常": 0.5, "火热": 0.2},          # 1.90 → 正常
+                   {"偏弱": 0.45, "正常": 0.40, "火热": 0.15},        # 1.70：argmax 偏弱，但没跌破 1.35 → 还是正常
+                   {"偏弱": 0.6, "正常": 0.35, "火热": 0.05})         # 1.45：没跌破 1.35 → 还是正常
+    eng, _, _ = make(qs(**{"600001": -1.0}), market=m)
+    assert [_ask(eng, at(10, 0 + 10 * i)) for i in range(3)] == ["正常", "正常", "正常"]
+    rows = _rows(eng)
+    assert [r["raw_label"] for r in rows] == ["正常", "偏弱", "偏弱"] and rows[1]["held"] == "迟滞"
+    assert rows[1]["score"] == 1.7
+
+
+def test_hysteresis_switches_at_once_on_a_clear_move():
+    """10-09 13:41：从偏弱，概率 偏弱 0.30 / 正常 0.39 / 火热 0.31，分数 2.01 → 立刻转正常，不拖慢。"""
+    m = ProbMarket({"冰点": 0.1, "偏弱": 0.8, "正常": 0.1}, {"偏弱": 0.30, "正常": 0.39, "火热": 0.31},
+                   {"冰点": 0.9, "偏弱": 0.1})
+    eng, _, _ = make(qs(**{"600001": -1.0}), market=m)
+    assert [_ask(eng, at(13, 21 + 10 * i)) for i in range(3)] == ["偏弱", "正常", "冰点"]   # 0.1 直接掉两档
+
+
+def test_open_holds_previous_close_label_until_0945():
+    conn = db.connect(":memory:")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES "
+                 "('2026-09-22T14:56:00', '', 'sentiment', '{\"label\": \"火热\"}', 'market')")
+    m = ProbMarket({"冰点": 0.9, "偏弱": 0.1}, {"冰点": 0.9, "偏弱": 0.1})
+    eng, _, _ = make(qs(**{"600001": -1.0}), market=m, conn=conn)
+    assert _ask(eng, at(9, 30)) == "火热"
+    r = _rows(eng)[-1]
+    assert r["raw_label"] == "冰点" and r["held"] == "开盘未定" and r["label"] == "火热"
+    assert _ask(eng, at(9, 45)) == "冰点"
+
+
+def test_open_without_previous_close_uses_jev_label():
+    m = ProbMarket({"偏弱": 0.7, "正常": 0.3})
+    eng, _, _ = make(qs(**{"600001": -1.0}), market=m)
+    assert _ask(eng, at(9, 30)) == "偏弱"
+
+
+def test_jev_failure_gives_none_but_keeps_the_level_for_next_time():
+    class Flaky(ProbMarket):
+        def sentiment(self, stats, *a, **k):
+            if self.probs[0] is None:
+                self.probs.pop(0)
+                self.sentiment_trace = None
+                return None
+            return ProbMarket.sentiment(self, stats)
+    m = Flaky({"偏弱": 0.3, "正常": 0.5, "火热": 0.2}, None, {"偏弱": 0.45, "正常": 0.40, "火热": 0.15})
+    eng, _, _ = make(qs(**{"600001": -1.0}), market=m)
+    assert [_ask(eng, at(10, 10 * i)) for i in range(3)] == ["正常", None, "正常"]

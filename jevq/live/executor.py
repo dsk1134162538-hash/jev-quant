@@ -73,6 +73,7 @@ class Executor:
             self._while_paused(now)
             return   # 暂停中零 broker 调用
 
+        self._gateway_precheck(now)
         self._self_check(now)
         self._note_sell_intents(now)
         self._align_sells(now)
@@ -773,6 +774,49 @@ class Executor:
     def _label(self, code: str) -> str:
         name = self._name(code)
         return code if name == code else f"{name}({code})"
+
+    def _gateway_precheck(self, now: datetime) -> None:
+        """开盘前（LIVE_GATEWAY_PRECHECKS，09:05 自检之前）查网关 /health：只问网关自己，不读客户端、不弹验证码。
+        任务卡死、同花顺没登录、下单程序没开、连不上 → 推送「网关异常」，让人赶在开盘前重启网关
+        （2026-10-08 夜里一次持仓读取卡死，第二天 09:05 自检才发现）。前一次异常、这次正常 → 推「已恢复」。
+        broker 没有 health（easytrader）就跳过；暂停中不走到这里（暂停中零 broker 调用）。"""
+        health = getattr(self.broker, "health", None)
+        if health is None or now.time() >= config.LIVE_SELF_CHECK:
+            return
+        today = now.date().isoformat()
+        due = [s for s in config.LIVE_GATEWAY_PRECHECKS
+               if now.time() >= s and live_store.get_state(self.conn, f"gw_precheck:{s:%H%M}") != today]
+        if not due:
+            return
+        for s in due:                       # 错过的时点一起记成已查，只查这一次
+            live_store.set_state(self.conn, f"gw_precheck:{s:%H%M}", today)
+        problem = self._gateway_problem(health)
+        was_bad = live_store.get_state(self.conn, "gw_precheck_bad") == today
+        if problem:
+            live_store.set_state(self.conn, "gw_precheck_bad", today)
+            self._notify("网关异常", f"{problem}。请关掉网关窗口，看一眼同花顺有没有残留弹窗，"
+                                     "再双击桌面「xiadan网关」重开；09:05 自检前要恢复")
+        elif was_bad:
+            live_store.set_state(self.conn, "gw_precheck_bad", "")
+            self._notify("网关已恢复", "开盘前检查正常")
+
+    @staticmethod
+    def _gateway_problem(health) -> str | None:
+        try:
+            d = health() or {}
+        except Exception as e:
+            return f"连不上网关：{e}"
+        q = d.get("queue_status") or {}
+        if q.get("is_zombie"):
+            mins = (q.get("current_task_duration") or 0) / 60
+            return f"网关任务卡死：{q.get('current_task') or '?'} 已跑 {mins:.0f} 分钟，后面排着 {q.get('queue_size', '?')} 个"
+        if q.get("worker_alive") is False:
+            return "网关任务线程停了"
+        if d.get("xiadan_running") is False:
+            return "同花顺下单程序没开"
+        if d.get("logged_in") is False:
+            return "同花顺没登录"
+        return None
 
     def _self_check(self, now: datetime) -> None:
         """每个交易日 LIVE_SELF_CHECK 之后的第一轮：读资金和客户端持仓确认在线，通过也发通知。

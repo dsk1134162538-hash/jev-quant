@@ -7,6 +7,7 @@ from jevq import config
 from jevq.config import ACCOUNTS, SENTIMENT_REFRESH_MIN
 from jevq.ledger import Ledger
 from jevq.models import Fill, Quote
+from jevq.judge.market import SENTIMENT_LEVELS
 from jevq.rules import turn as turn_rules
 
 
@@ -28,6 +29,7 @@ class Engine:
         self.turn_on = False                           # 今天 Jev 已确认情绪拐点 → 超跌反弹当天盘中可买
         self.turn_detail: dict | None = None
         self._turn_asked_at: datetime | None = None
+        self._level: int | None = None                 # 迟滞后的情绪档位（SENTIMENT_LEVELS 下标）
         # 持仓代码（_fetch 用来决定该拉哪些行情）要看全部账户；默认取内置账户，
         # 自定义策略跑起来后由调用方注入一个能看到「今天在跑」账户全集的 provider（见 jevq.accounts.all_accounts）。
         self.accounts_provider = accounts_provider or (lambda: ACCOUNTS)
@@ -84,6 +86,45 @@ class Engine:
         except Exception as e:
             print(f"[engine] hi189 文章刷新失败: {e!r}")
 
+    def _settle(self, now: datetime, raw: str | None, trace: dict | None) -> tuple[str | None, float | None, str | None]:
+        """Jev 原始标签 → 各策略用的情绪。返回（标签, 期望分, 为什么没跟 Jev：开盘未定/迟滞/None）。
+        - 开盘未定（SENTIMENT_SETTLE 之前）：沿用上一交易日最后一次的情绪，没有就用 Jev 的。
+        - 迟滞：期望分越过档位分界再多 SENTIMENT_HYSTERESIS 才换档；明显的变化（一次跨过）立刻换，不拖慢。
+        - Jev 没判出来 → None（各策略照旧按「未知」处理），档位留着，下次接着比。"""
+        from jevq.app.sentiment_board import score as expected
+        if raw is None:
+            return None, None, None
+        s = expected(raw, (trace or {}).get("probabilities"))
+        if now.time() < config.SENTIMENT_SETTLE:
+            carried = self._prev_close_label()
+            if carried in SENTIMENT_LEVELS:
+                self._level = SENTIMENT_LEVELS.index(carried)
+                return carried, s, "开盘未定"
+            self._level = SENTIMENT_LEVELS.index(raw) if raw in SENTIMENT_LEVELS else None
+            return raw, s, None
+        if s is None:
+            return raw, None, None
+        if self._level is None:
+            self._level = max(0, min(3, int(s + 0.5)))
+        else:
+            d = config.SENTIMENT_HYSTERESIS
+            while self._level < 3 and s >= self._level + 0.5 + d:
+                self._level += 1
+            while self._level > 0 and s <= self._level - 0.5 - d:
+                self._level -= 1
+        label = SENTIMENT_LEVELS[self._level]
+        return label, s, (None if label == raw else "迟滞")
+
+    def _prev_close_label(self) -> str | None:
+        try:
+            row = self.conn.execute(
+                "SELECT detail FROM decisions WHERE verdict='sentiment' "
+                "AND (strategy IN ('lowbuy', 'market') OR strategy IS NULL) AND substr(ts, 1, 10) = ? "
+                "ORDER BY ts DESC, rowid DESC LIMIT 1", (self.prev_day.isoformat(),)).fetchone()
+            return json.loads(row[0]).get("label") if row else None
+        except Exception:
+            return None
+
     def _news(self, now: datetime) -> list[str]:
         if self.flash is None:
             return []
@@ -107,6 +148,8 @@ class Engine:
             print(f"[engine] 恢复当日情绪失败: {e!r}")
             return
         self.sentiment_label = label if isinstance(label, str) else None
+        if self.sentiment_label in SENTIMENT_LEVELS:          # 迟滞从恢复的档位接着比
+            self._level = SENTIMENT_LEVELS.index(self.sentiment_label)
 
     def _fetch(self, now: datetime) -> dict[str, Quote] | None:
         held = {p.code for a in self.accounts_provider() for p in self.ledger.positions(a)}
@@ -210,22 +253,22 @@ class Engine:
                     judged = for_judge(self.articles)         # 中报在演练期只记录，不交给 Jev
                     news = self._news(now)
                     if news:
-                        self.sentiment_label = self.market_judge.sentiment(stats, judged or None, news=news)
+                        raw = self.market_judge.sentiment(stats, judged or None, news=news)
                     else:
-                        self.sentiment_label = (self.market_judge.sentiment(stats, judged) if judged
-                                                else self.market_judge.sentiment(stats))
+                        raw = (self.market_judge.sentiment(stats, judged) if judged
+                               else self.market_judge.sentiment(stats))
                     self.sentiment_trace = getattr(self.market_judge, "sentiment_trace", None)
                 except Exception as e:
                     print(f"[engine] 情绪判断异常: {e!r}")
-                    self.sentiment_label = None
-                    self.sentiment_trace = None
+                    raw, self.sentiment_trace = None, None
             else:
-                self.sentiment_label = None
-                self.sentiment_trace = None
+                raw, self.sentiment_trace = None, None
+            self.sentiment_label, score, held = self._settle(now, raw, self.sentiment_trace)
             self._sentiment_at = now
             # 外围一起记下：面板试跑（后台 daemon 在交易、面板自己没跑时）从这一行读最近的情绪与外围
-            detail = json.dumps({"stats": stats, "label": self.sentiment_label, "overseas": self.overseas},
-                                ensure_ascii=False)
+            # label = 迟滞/开盘未定之后各策略实际用的情绪；raw_label = Jev 这一次判的
+            detail = json.dumps({"stats": stats, "label": self.sentiment_label, "overseas": self.overseas,
+                                 "raw_label": raw, "score": score, "held": held}, ensure_ascii=False)
             trace = None if self.sentiment_trace is None else json.dumps(self.sentiment_trace, ensure_ascii=False)
             self.conn.execute(
                 "INSERT INTO decisions(ts, code, verdict, detail, trace, strategy) "

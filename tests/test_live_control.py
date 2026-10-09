@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from factories import quote
 from jevq import config, db
 from jevq.live import store as live_store
+from jevq.live.broker import BrokerError
 from jevq.live.executor import Executor
 from jevq.live.store import LivePosition
 from jevq.models import Fill
@@ -877,3 +878,72 @@ def test_holding_read_failure_also_retries_after_one_minute():
     clock.t = datetime(2026, 9, 29, 9, 41, 0)
     ex.step()
     assert names(broker).count("positions") == 3
+
+
+# ---- 开盘前网关预警（用户 2026-10-09：网关夜里卡死，09:05 自检才发现）----
+
+def _healthy(**over):
+    d = {"logged_in": True, "xiadan_running": True,
+         "queue_status": {"current_task": None, "current_task_duration": None, "is_zombie": False,
+                          "worker_alive": True, "queue_size": 0}}
+    d.update(over)
+    return d
+
+
+def _with_health(broker, value):
+    def health():
+        broker.calls.append(("health",))
+        if isinstance(value, Exception):
+            raise value
+        return value
+    broker.health = health
+
+
+def test_gateway_precheck_warns_about_a_zombie_task_before_self_check():
+    c, clock, broker, notifier, ex = env(at=datetime(2026, 10, 12, 8, 51), checked=False)
+    zombie = _healthy(queue_status={"current_task": "get_position", "current_task_duration": 49003.0,
+                                    "is_zombie": True, "worker_alive": True, "queue_size": 3})
+    _with_health(broker, zombie)
+    ex.step()
+    assert broker.calls == []                                     # 08:52 之前不查
+    clock.t = datetime(2026, 10, 12, 8, 52)
+    ex.step()
+    assert names(broker) == ["health"]                            # 只查 /health，不读客户端
+    [text] = texts(notifier, "网关异常")
+    assert "get_position" in text and "817 分钟" in text and "xiadan网关" in text
+    ex.step()
+    assert names(broker) == ["health"]                            # 同一时点只查一次
+
+
+def test_gateway_precheck_reports_recovery_at_0900_and_is_quiet_when_healthy():
+    c, clock, broker, notifier, ex = env(at=datetime(2026, 10, 12, 8, 52), checked=False)
+    _with_health(broker, BrokerError("连接被拒绝", "UNREACHABLE"))
+    ex.step()
+    assert "连不上网关" in texts(notifier, "网关异常")[0]
+    _with_health(broker, _healthy())
+    clock.t = datetime(2026, 10, 12, 9, 0)
+    ex.step()
+    assert texts(notifier, "网关已恢复")
+    c2, clock2, broker2, notifier2, ex2 = env(at=datetime(2026, 10, 12, 8, 52), checked=False)
+    _with_health(broker2, _healthy())
+    ex2.step()
+    clock2.t = datetime(2026, 10, 12, 9, 0)
+    ex2.step()
+    assert names(broker2) == ["health", "health"] and notifier2.sent == []
+
+
+def test_gateway_precheck_flags_not_logged_in_and_skips_after_self_check_time():
+    c, clock, broker, notifier, ex = env(at=datetime(2026, 10, 12, 8, 52), checked=False)
+    _with_health(broker, _healthy(logged_in=False))
+    ex.step()
+    assert "同花顺没登录" in texts(notifier, "网关异常")[0]
+    c2, clock2, broker2, notifier2, ex2 = env(at=datetime(2026, 10, 12, 10, 0))   # 盘中重启：不补查
+    _with_health(broker2, _healthy(logged_in=False))
+    ex2.step()
+    assert ("health",) not in broker2.calls
+
+
+def test_gateway_precheck_needs_a_health_endpoint():
+    c, clock, broker, notifier, ex = env(at=datetime(2026, 10, 12, 8, 52), checked=False)
+    ex.step()                                                     # FakeBroker 默认没有 health：跳过，不报错
+    assert broker.calls == [] and notifier.sent == []

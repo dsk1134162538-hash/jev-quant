@@ -62,6 +62,8 @@ def builtin_summaries() -> list[dict]:
                  + "按近 5 日涨幅从低到高排序（跌得多的优先）"]},
              {"title": "买点", "lines": [
                  f"只看情绪：正常或火热时盘中可买（到 {hm(config.BUY_END)}），偏弱、冰点或情绪没判出来时不买（不看外围）",
+                 f"情绪有迟滞：Jev 四档概率的期望分要越过档位分界再多 {config.SENTIMENT_HYSTERESIS:g} 才换档（防来回翻）；"
+                 f"{hm(config.SENTIMENT_SETTLE)} 前开盘未定，沿用上一交易日收盘的情绪",
                  f"情绪拐点抄底：今天红盘占比最低到过 {config.TURN_PANIC_UP * 100:g}% 以下（恐慌），之后不再创新低满 "
                  f"{config.TURN_LOW_AGE} 分钟、红盘回到 {config.TURN_UP_MIN * 100:g}% 以上且比最低多 {config.TURN_UP_GAIN * 100:g} 个点、"
                  f"跌停降到 {config.TURN_LD_FLOOR} 家以内或最多时的 {config.TURN_LD_SHRINK * 100:g}%、成交额较昨日同期在放大，"

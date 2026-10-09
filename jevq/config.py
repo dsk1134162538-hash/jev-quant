@@ -60,6 +60,8 @@ TAIL_BUY_START = time(14, 50)
 BUY_END = time(14, 57)
 EOD_SELL = time(14, 55)
 SENTIMENT_REFRESH_MIN = 10
+SENTIMENT_SETTLE = time(9, 45)  # 这之前「开盘未定」：沿用上一交易日收盘的情绪（Jev 照判，只记录）
+SENTIMENT_HYSTERESIS = 0.15     # 情绪迟滞：Jev 四档概率的期望分（冰点 0~火热 3）越过档位分界 0.5/1.5/2.5 再多这么多才换档
 
 # hi189「股票期货」文章（docs/specs/2026-10-04-hi189-articles-design.md）
 HI189_ENABLED = True             # 总开关：False = 完全等同没接文章
@@ -170,6 +172,7 @@ LIVE_RESTART_CHECK = time(15, 10)     # 之后若 git rev-parse HEAD 和启动�
 LIVE_RESTART_UNTIL = time(17, 0)      # 自我重启检查的截止（15:10–17:00 之间反复查）
 LIVE_RESTART_EVERY = 300              # 秒：自我重启检查的间隔（deploy 先跑测试，rebase 常常晚于 15:10）
 LIVE_SELF_CHECK = time(9, 5)
+LIVE_GATEWAY_PRECHECKS = (time(8, 52), time(9, 0))   # 开盘前查网关 /health（不读客户端）：卡死/没登录/连不上就推送
 LIVE_CLOSE_SUMMARY = time(15, 2)
 LIVE_CLOSE_SUMMARY_LATEST = time(15, 10)   # 收盘后结算一直读不到时，小结最晚这个点照发（注明有卖单没结算）
 LIVE_WATCHDOG_STALE = 120       # 秒：心跳多久没更新算断
