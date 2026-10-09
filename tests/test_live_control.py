@@ -741,6 +741,27 @@ def test_startup_reconciles_even_with_nothing_to_verify():
     assert pending(c)["shares"] == 300               # 第一次读到少：只记下，不减
 
 
+def test_startup_outside_trading_hours_does_not_read_the_client():
+    """10-09 晚连续部署几次，每次启动都读客户端（窗口不在前台），三次失败就自动暂停了。"""
+    for at in (datetime(2026, 9, 29, 21, 30), datetime(2026, 9, 29, 12, 0), datetime(2026, 9, 29, 8, 50)):
+        c, clock, broker, notifier, ex = env(at=at, holdings={"600001": [300, 300]})
+        hold(c, shares=500)
+        ex.startup()
+        assert broker.calls == [] and live_store.paused(c) is None, at
+    c, clock, broker, notifier, ex = env(at=datetime(2026, 10, 10, 10, 0))          # 周末：没有 trading_day 标记
+    live_store.set_state(c, "trading_day", "2026-10-09")
+    ex.startup()
+    assert broker.calls == []
+
+
+def test_startup_after_hours_still_verifies_todays_open_orders():
+    c, clock, broker, notifier, ex = env(at=datetime(2026, 9, 29, 15, 20))
+    fake_order(broker, "buy", "600002", 10.0, 100)
+    live_store.add_order(c, None, datetime(2026, 9, 29, 14, 50), "buy", "600002", 10.0, 100, "sending")
+    ex.startup()
+    assert ("orders_today",) in broker.calls
+
+
 def test_startup_in_dryrun_reads_positions_but_leaves_the_books():
     c, clock, broker, notifier, ex = env(mode="dryrun", holdings={})
     hold(c, shares=500)

@@ -50,6 +50,13 @@ class Executor:
         spec「防重复下单」，不论模式），再对账（模式不是 off）。更早日期遗留的行不动，它们的成交以对账为准。"""
         if self._paused():
             return
+        now = self.clock()
+        trading_now = (live_store.get_state(self.conn, "trading_day") == now.date().isoformat()
+                       and self._in_sell_window(now))
+        if not trading_now and not live_store.open_orders(self.conn):
+            # 晚上/周末/午休重启（比如部署新代码）：不读客户端。读一次就弹验证码，窗口不在前台还会失败，
+            # 连着几次就自动暂停（2026-10-09 晚连续部署几次后就这样暂停了）。开盘后的定时对账照常。
+            return
         self._reconcile_sending_orders()
         if self._paused() or live_store.mode(self.conn) == "off":
             return   # 核对读不到/对不上已经自动暂停：不再碰券商
