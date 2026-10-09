@@ -365,3 +365,14 @@ def test_own_sectors_page_renders_escapes_and_empty(tmp_path):
     assert "<script>" not in full and "&lt;script&gt;" in full
     assert "Jev 火热" in full and "晚报点名" in full and "待确认成员 1 个" in full
     assert 'data-own-review="confirm"' in full and 'data-own-decide="activate"' in full and "商业航天" in full
+
+
+def test_quiet_sector_with_members_still_gets_jev_strength():
+    """用户 2026-10-09：板块情绪每个板块每天都记（冷清的日子也要有，才能对比），没有成员/行情的才不问。"""
+    conn = make()
+    _core(conn, "electronic_cloth", "600003", 0.9)          # 当天只涨一点，不强势、晚报也没点名
+    jev = FakeJev(level="偏弱")
+    os_.snapshot_day(conn, TODAY, _quotes(), {}, UNIVERSE, OwnSectorJudge(jev), art_sectors=[])
+    d = json.loads(conn.execute("SELECT data FROM own_sector_daily WHERE sector_id='electronic_cloth'").fetchone()[0])
+    assert d["strong"] == 0 and d["jev_strength"] == "偏弱"
+    assert sum(1 for s, _ in jev.calls if "板块" in s) == 1     # 没成员的板块照旧不问

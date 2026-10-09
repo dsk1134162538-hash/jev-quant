@@ -354,7 +354,7 @@ def snapshot_day(conn: sqlite3.Connection, day: date, quotes: dict, ret5: dict[s
                 "amount": sum(q.amount for q in qs), "max_board": max([l["board"] for l in leaders], default=0),
                 "leaders": leaders, "article_mentioned": mentioned_name,
                 "jev_strength": None, "jev_probs": None, "jev_confidence": None}
-        if judge is not None and qs and (strong >= config.OWN_SECTORS_JEV_MIN_STRONG or mentioned_name):
+        if judge is not None and qs and (strong >= config.OWN_SECTORS_JEV_MIN_STRONG or mentioned_name):   # 线为 0 = 有行情就问
             res = judge.strength(s, {k: data[k] for k in ("members", "strong", "limit_up", "avg_pct", "amount",
                                                           "max_board")} | {"晚报点名": bool(mentioned_name)})
             if res:
