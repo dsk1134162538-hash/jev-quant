@@ -33,23 +33,57 @@ def builtin_summaries() -> list[dict]:
     hm = lambda t: t.strftime("%H:%M")      # noqa: E731
     windows = "、".join(f"{hm(a)}~{hm(b)}" for a, b in board_rules.SCAN_WINDOWS)
     return [
+        {"id": "sentiment", "name": "大盘情绪（各策略共用）", "accounts": [],
+         "sections": [
+             {"title": "怎么判", "lines": [
+                 f"后台每 {config.SENTIMENT_REFRESH_MIN} 分钟让 Jev 判一次，四档：冰点 / 偏弱 / 正常 / 火热",
+                 "参考：涨停家数、跌停家数、炸板率、最高连板、红盘/绿盘家数、成交额较昨日同期、hi189 早报/晚报、7x24 快讯",
+                 "四档概率折成情绪分（冰点 0、偏弱 1、正常 2、火热 3），面板「情绪」页每天画一根情绪 K 线"]},
+             {"title": "防来回翻", "lines": [
+                 f"迟滞：情绪分要越过档位分界（0.5 / 1.5 / 2.5）再多 {config.SENTIMENT_HYSTERESIS:g} 才换档；"
+                 "一次跨过的明显变化立刻换，不拖慢",
+                 f"开盘未定：{hm(config.SENTIMENT_SETTLE)} 前沿用上一交易日收盘时的情绪（开盘几分钟的统计没意义），Jev 照判只记录",
+                 "Jev 没判出来 = 情绪未知，按最保守处理（超跌、低吸、轮动都不在盘中买）"]},
+             {"title": "情绪拐点（恐慌后的修复）", "lines": [
+                 f"每分钟用股票池行情算全市场广度，{hm(config.TURN_START)}~{hm(config.TURN_END)} 之间七条全满足才算：",
+                 f"今天红盘占比最低到过 {config.TURN_PANIC_UP * 100:g}% 以下；那之后 {config.TURN_LOW_AGE} 个交易分钟没再创新低",
+                 f"现在红盘占比 ≥ {config.TURN_UP_MIN * 100:g}%，且比最低多 {config.TURN_UP_GAIN * 100:g} 个点",
+                 f"跌停降到 {config.TURN_LD_FLOOR} 家以内或今天最多时的 {config.TURN_LD_SHRINK * 100:g}% 以内；"
+                 f"成交额较昨日同期比 {config.TURN_VOL_LOOKBACK} 分钟前放大",
+                 "确认后当天锁定，推送「💡 情绪拐点」；Jev 的看法只记录（实测像掷硬币，不当门槛）"]},
+             {"title": "各策略怎么用", "lines": [
+                 "扫首板：不看情绪（每天记一条「情绪闸门」只做对比）",
+                 "超跌反弹：正常/火热盘中买；偏弱/冰点/未知不买；确认拐点后偏弱/冰点也盘中买",
+                 "低吸：偏弱/冰点/未知或外围偏弱只在尾盘买；否则盘中买",
+                 "情绪轮动（实盘跟它）：火热跟扫首板；正常 10:30 前跟扫首板、之后跟低吸；偏弱跟低吸；冰点不买；拐点时超跌优先",
+                 "各策略的卖出都不看情绪"]}]},
         {"id": "board", "name": STRATEGIES["board"]["name"], "accounts": list(STRATEGIES["board"]["accounts"]),
          "sections": [
-             {"title": "选股", "lines": [
-                 f"题材内至少 {board_rules.HOT_MIN} 只涨超 {board_rules.HOT_PCT:g}%",
+             {"title": "选股（只做主线的首板）", "lines": [
+                 f"主线题材：题材内当天涨超 {board_rules.HOT_PCT:g}% 的 ≥ {board_rules.MAINLINE_MIN} 只，"
+                 f"或 hi189 早报/晚报点名且 ≥ {board_rules.HOT_MIN} 只",
+                 "每个主线题材取龙头（当日涨幅、成交额、近 5 日涨幅三项名次相加最小）",
                  f"首板（昨日未涨停），涨幅 ≥ {board_rules.ENTER_PCT:g}% 进观察池，最多 {board_rules.WATCH_MAX} 只，"
-                 f"跌破 {board_rules.EXIT_PCT:g}% 移出",
-                 "hi189 晚报点名的热门题材排在前面（只调顺序，不降门槛）"]},
+                 f"跌破 {board_rules.EXIT_PCT:g}% 移出；近 10 日涨停过的龙头整题材跳过",
+                 "文章点名的题材排在前面"]},
              {"title": "买点", "lines": [
-                 f"扫描窗口 {windows} 内每 3 秒检查，涨幅到 {board_rules.TRIGGER_PCT:g}% 触发",
-                 "主账户经 Jev 排雷，影子账户不拦截",
-                 f"情绪闸门（试验中，只记录不拦截）：上一交易日收盘前炸板率高于 {board_rules.GATE_BREAK_RATE:g}%、"
-                 f"跌停多于 {board_rules.GATE_LIMIT_DOWN} 家或最高连板不到 {board_rules.GATE_MIN_BOARD} 板时，"
-                 "当天记为「会拦」，买卖照旧"]},
-             {"title": "卖出（次日起）", "lines": [
-                 f"跌到 {board_sell.STOP:g}% 止损；封死涨停继续持有",
-                 f"炸板卖；冲高回落 {board_sell.PULLBACK:g} 点卖",
-                 f"{hm(config.EOD_SELL)} 尾盘清仓"]}]},
+                 f"扫描窗口 {windows} 内每 3 秒检查，涨幅到 {board_rules.TRIGGER_PCT:g}% 触发；已封死涨停视为排队买不到",
+                 f"放量：触发那一刻的累计成交量 ÷ 前几天同一时刻的平均累计量 < {board_rules.VOLUME_MIN:g} 倍算缩量板，不扫"
+                 "（上限暂不设，倍数记在成交理由里攒数据）",
+                 "主账户经 Jev 公告排雷 + 消息面，影子账户不拦截"]},
+             {"title": "卖出（次日起，相对昨收）", "lines": [
+                 "封死涨停继续拿",
+                 f"开盘在 {board_sell.LOW_OPEN:g}% ~ +{board_sell.WEAK_OPEN_HIGH:g}%：竞价不及预期，开盘就卖",
+                 f"大低开（≤ {board_sell.LOW_OPEN:g}%）：不在开盘止损，从开盘拉起 {board_sell.LOW_OPEN_BOUNCE:g} 点卖，"
+                 f"{hm(board_sell.LOW_OPEN_DEADLINE)} 还没反抽也卖，跌到 {board_sell.HARD_STOP:g}% 止损",
+                 f"高开 > +{board_sell.WEAK_OPEN_HIGH:g}%：跌到 {board_sell.STOP:g}% 止损；炸板卖；"
+                 f"冲高回落 {board_sell.PULLBACK:g} 点卖；{hm(config.EOD_SELL)} 尾盘清仓",
+                 "依据：162 只首板次日——开盘 -3%~+3% 的收盘平均比开盘再低 1.2~1.3 点，大低开的平均从开盘反抽 1.75 点"]},
+             {"title": "情绪", "lines": [
+                 "买卖都不看情绪",
+                 f"情绪闸门（只记录不拦截）：上一交易日收盘前炸板率高于 {board_rules.GATE_BREAK_RATE:g}%、"
+                 f"跌停多于 {board_rules.GATE_LIMIT_DOWN} 家或最高连板不到 {board_rules.GATE_MIN_BOARD} 板，当天记为「会拦」",
+                 "情绪轮动只在火热、正常（10:30 前）时跟它"]}]},
         {"id": "rebound", "name": STRATEGIES["rebound"]["name"], "accounts": list(STRATEGIES["rebound"]["accounts"]),
          "sections": [
              {"title": "选股", "lines": [
@@ -82,24 +116,37 @@ def builtin_summaries() -> list[dict]:
                  + "」先留着，下一分钟再看；Jev 没答上照卖。影子账户不问，当对照组",
                  f"当天最高盈利到 +{config.REBOUND_TRAIL_START:g}% 后，从最高回落 {config.REBOUND_TRAIL_PULLBACK:g} 个点卖；"
                  f"最近 {config.REBOUND_FLOW_MINUTES} 分钟主买大于主卖时先留着，跌回成本价必卖",
-                 f"最多拿 {config.REBOUND_MAX_HOLD_DAYS} 个交易日，最后一天 {hm(config.EOD_SELL)} 清仓"]}]},
+                 f"最多拿 {config.REBOUND_MAX_HOLD_DAYS} 个交易日，最后一天 {hm(config.EOD_SELL)} 清仓"]},
+             {"title": "情绪", "lines": [
+                 "正常、火热：盘中可买",
+                 "偏弱、冰点、情绪没判出来：不买",
+                 "当天确认了情绪拐点：偏弱、冰点也立即盘中买（买入理由前缀「拐点抄底｜」）",
+                 "卖出不看情绪；情绪轮动只在确认拐点时优先跟它"]}]},
         {"id": "lowbuy", "name": STRATEGIES["lowbuy"]["name"], "accounts": list(STRATEGIES["lowbuy"]["accounts"]),
          "sections": [
-             {"title": "选股", "lines": [
-                 f"当前涨幅在 {config.BUY_ZONE_LOW:g}% ~ {config.BUY_ZONE_HIGH:g}% 之间（强势股回调）",
-                 "按近 5 日涨幅从高到低排序（涨得多的优先）"]},
+             {"title": "选股（主线里缩量回调的强势股）", "lines": [
+                 f"当前涨幅在 {config.BUY_ZONE_LOW:g}% ~ {config.BUY_ZONE_HIGH:g}% 之间",
+                 f"近 5 日涨幅在 +{config.LOWBUY_RET5_LOW:g}% ~ +{config.LOWBUY_RET5_HIGH:g}%（强势股，太高的多是高位滞涨）",
+                 "缩量：今天的量（盘中按已开盘分钟折算）比昨天小；09:45 前量能判断不了，不买",
+                 "属于今天的主线题材（同扫首板：强势 ≥5 只或早报/晚报点名）",
+                 "按近 5 日涨幅从高到低"]},
              {"title": "买点", "lines": [
-                 f"情绪偏弱/冰点/未知或外围偏弱：只在尾盘 {hm(config.TAIL_BUY_START)}~{hm(config.BUY_END)} 买；否则盘中可买",
-                 f"主账户经 Jev 公告排雷 + 消息面判断，每分钟最多检查 {config.MAX_CHECKS_PER_TICK} 只；影子账户不拦截"]},
-             {"title": "卖出（次日起，相对昨收）", "lines": [
-                 f"当前或开盘跌到 {config.LOWBUY_STOP:g}% 止损",
-                 f"开盘 ≥ +{config.LOWBUY_TAKE_PROFIT:g}% 高开止盈；平开时盘中摸到 +{config.LOWBUY_TAKE_PROFIT:g}% 卖",
+                 f"主账户经 Jev 公告排雷 + 消息面，每分钟最多检查 {config.MAX_CHECKS_PER_TICK} 只；影子账户不拦截"]},
+             {"title": "卖出（次日起）", "lines": [
+                 f"当前或开盘跌到 {config.LOWBUY_STOP:g}%（相对昨收）止损",
                  f"开盘 ≤ {config.LOWBUY_LOW_OPEN:g}%：回到 {config.LOWBUY_ZERO_LINE:g}% 以上或从当天最低反弹 "
                  f"{config.LOWBUY_BOUNCE:g} 个点卖",
-                 f"{hm(config.EOD_SELL)} 还没卖就清仓，不隔第二夜"]}]},
+                 f"当天最高相对买入价到 +{config.LOWBUY_TRAIL_START:g}% 后，从最高回落 {config.LOWBUY_TRAIL_PULLBACK:g} 个点卖，"
+                 "跌回成本价必卖（10-09 改，原来摸到 +1% 就卖，容易卖飞）",
+                 f"{hm(config.EOD_SELL)} 还没卖就清仓，不隔第二夜"]},
+             {"title": "情绪", "lines": [
+                 f"情绪偏弱、冰点、没判出来，或外围偏弱：只在尾盘 {hm(config.TAIL_BUY_START)}~{hm(config.BUY_END)} 买"
+                 "（知识库：买在修复日前一天的尾盘）",
+                 "其他情况盘中可买；卖出不看情绪",
+                 "情绪轮动在偏弱、正常（10:30 后）时跟它"]}]},
         {"id": "regime", "name": STRATEGIES["regime"]["name"], "accounts": list(STRATEGIES["regime"]["accounts"]),
          "sections": [
-             {"title": "跟谁（按大盘情绪）", "lines": [
+             {"title": "情绪 → 跟谁", "lines": [
                  "火热：扫首板",
                  f"正常：{hm(config.REGIME_BOARD_FIRST_UNTIL)} 前只等扫首板，之后没买到再跟低吸",
                  "偏弱：低吸（不打板）",

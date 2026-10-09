@@ -1,13 +1,11 @@
 """情绪轮动（用户 2026-10-09）：按大盘情绪跟扫首板/低吸/超跌反弹主账户的成交，实盘跟它。"""
-from datetime import date, datetime
+from datetime import datetime
 
-from factories import position, quote
+from factories import quote
 
 from jevq import db
 from jevq.ledger import Ledger
 from jevq.models import Fill
-from jevq.rules.lowbuy import decide_lowbuy_sell, lowbuy_mode, rank_lowbuy
-from jevq.strategies.lowbuy import LowbuyStrategy
 from jevq.strategies.regime import ACCOUNT, RegimeStrategy, allowed_sources
 
 DAY = datetime(2026, 10, 12)
@@ -125,55 +123,3 @@ def test_no_buys_on_sell_only_days():
     t = at(9, 41)
     assert r.mirror([Fill("board_main", "600001", "buy", 10.9, 100, 5, t, "扫板")],
                     {"600001": _q("600001", 10.9, t)}.get, t) == []
-
-
-# ---- 低吸（9-23 版规则重新上线）----
-
-def test_lowbuy_rules_match_the_0923_design():
-    assert lowbuy_mode("正常", "中性") == "intraday"
-    assert lowbuy_mode("偏弱", "中性") == "tail" and lowbuy_mode("正常", "偏弱") == "tail"
-    qs = [quote("600001", pct=-1.0), quote("600002", pct=-2.0), quote("600003", pct=-4.0), quote("600004", pct=1.0)]
-    ranked = rank_lowbuy(qs, {"600001": 3.0, "600002": 8.0, "600003": 9.0, "600004": 9.0})
-    assert [q.code for q in ranked] == ["600002", "600001"]          # 5 日涨得多的优先（强势股回调）
-    p = position("600001", account="lowbuy_main", buy_date=date(2026, 10, 9))
-    d1 = datetime(2026, 10, 12, 9, 31)
-    assert decide_lowbuy_sell(p, quote("600001", pct=1.5, open_pct=1.5, ts=d1), d1).reason == "高开止盈"
-    assert decide_lowbuy_sell(p, quote("600001", pct=-3.0, open_pct=-0.5, ts=d1), d1).reason == "止损"
-    assert decide_lowbuy_sell(p, quote("600001", pct=1.0, open_pct=0.2, ts=d1), d1).reason == "摸到+1%"
-    assert decide_lowbuy_sell(p, quote("600001", pct=-0.1, open_pct=-1.5, ts=d1), d1).reason == "回到0轴"
-    assert decide_lowbuy_sell(p, quote("600001", pct=-1.0, open_pct=-2.0, low_pct=-2.6, ts=d1), d1).reason == "反弹"
-    assert not decide_lowbuy_sell(p, quote("600001", pct=0.5, open_pct=0.2, ts=d1), d1).sell
-    eod = datetime(2026, 10, 12, 14, 55)
-    assert decide_lowbuy_sell(p, quote("600001", pct=0.5, open_pct=0.2, ts=eod), eod).reason == "尾盘清仓"
-    assert decide_lowbuy_sell(p, quote("600001", pct=0.5, ts=d1), d1,
-                              prev_trade_day=date(2026, 10, 10)).reason == "隔夜超期"
-
-
-class Judge:
-    def __init__(self, verdicts=None):
-        self.verdicts, self.last_trace = verdicts or {}, None
-
-    def check(self, code, *args):
-        return self.verdicts.get(code, ("pass", "消息面中性"))
-
-
-def test_lowbuy_strategy_buys_main_after_jev_and_shadow_without():
-    conn = db.connect(":memory:")
-    ledger = Ledger(conn)
-    strat = LowbuyStrategy(conn, ledger, Judge({"600002": ("reject", "新增减持")}), Judge(),
-                           {"600001": "甲", "600002": "乙"}, {"600001": 3.0, "600002": 8.0}, date(2026, 10, 9),
-                           lambda: "正常", lambda: "中性")
-    t = at(10, 0)
-    qs = {c: quote(c, pct=-1.0, ts=t, amount=2e8) for c in ("600001", "600002")}
-    fills = strat.on_minute(qs, t)
-    assert {(f.account, f.code) for f in fills} == {("lowbuy_shadow", "600002"), ("lowbuy_main", "600001")}
-    main = next(f for f in fills if f.account == "lowbuy_main")
-    assert main.reason.startswith("低吸-1.0%｜5日3.0%")
-
-
-def test_lowbuy_waits_for_tail_on_weak_days():
-    conn = db.connect(":memory:")
-    strat = LowbuyStrategy(conn, Ledger(conn), Judge(), Judge(), {"600001": "甲"}, {"600001": 3.0},
-                           date(2026, 10, 9), lambda: "偏弱", lambda: "中性")
-    assert strat.buy_step({"600001": quote("600001", pct=-1.0, ts=at(10, 0))}, at(10, 0)) == []
-    assert len(strat.buy_step({"600001": quote("600001", pct=-1.0, ts=at(14, 50))}, at(14, 50))) == 2

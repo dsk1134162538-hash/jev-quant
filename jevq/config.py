@@ -25,6 +25,12 @@ LOWBUY_TAKE_PROFIT = 1.0       # 卖出：开盘 ≥ 这个值高开止盈；平
 LOWBUY_LOW_OPEN = -1.0         # 卖出：开盘 ≤ 这个值算低开（之后回到 0 轴或从低点反弹就卖）
 LOWBUY_ZERO_LINE = -0.2        # 卖出：低开后回到这个涨幅以上算回到 0 轴
 LOWBUY_BOUNCE = 1.5            # 卖出：低开后从当天最低反弹这么多个点卖
+# 低吸 2026-10-09 细化（用户同意）：选股收窄 + 跟踪止盈替代「高开止盈 / 摸到 +1%」
+LOWBUY_RET5_LOW = 5.0          # 买入：近 5 日涨幅下限（%）——强势股
+LOWBUY_RET5_HIGH = 20.0        # 买入：近 5 日涨幅上限（%）——太高的多是高位放量滞涨
+LOWBUY_MIN_SHRINK_DAYS = 1     # 买入：今天量（盘中折算）比昨天小 = 缩量回调；量能判断不了（09:45 前等）不买
+LOWBUY_TRAIL_START = 1.0       # 卖出：当天最高相对买入价到 +1% 后启动跟踪止盈
+LOWBUY_TRAIL_PULLBACK = 0.8    # 卖出：从当天最高回落这么多个点（相对买入价）卖；跌回成本价也卖
 # 情绪轮动：各情绪下用哪个策略（按顺序 = 优先级）；拐点确认后另外允许超跌反弹（拐点抄底）
 REGIME_SOURCES = {"火热": ("board",), "正常": ("board", "lowbuy"), "偏弱": ("lowbuy",), "冰点": ()}
 REGIME_BOARD_FIRST_UNTIL = time(10, 30)   # 正常：这之前只等扫首板（扫板窗口），之后没买到再做低吸
@@ -148,6 +154,7 @@ def builtin_accounts() -> tuple[str, ...]:
 
 
 # 自定义策略
+CUSTOM_PURGE_WHEN_FLAT = ("c2", "c3")   # 收盘后清了仓就删（用户 2026-10-09；c1 当晚已删）
 MAX_CUSTOM_ENABLED = 5
 
 # 每日 GitHub 同步 + 收盘后自动上线

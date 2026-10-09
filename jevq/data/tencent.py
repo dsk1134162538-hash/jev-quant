@@ -7,6 +7,7 @@ from jevq.models import Quote
 QT_URL = "https://qt.gtimg.cn/q="
 KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 MINUTE_URL = "https://web.ifzq.gtimg.cn/appstock/app/minute/query"
+DAY_MINUTE_URL = "https://web.ifzq.gtimg.cn/appstock/app/day/query"   # 最近 5 个交易日的分时
 SINA_A50_URL = "https://hq.sinajs.cn/list=hf_CHA50CFD"
 OVERSEAS = {"usDJI": "道琼斯", "usIXIC": "纳斯达克", "usINX": "标普500",
             "usHXC": "中概金龙", "hkHSI": "恒生指数"}
@@ -109,6 +110,34 @@ def fetch_minutes(code: str, timeout: float = 5.0, session=None) -> list[tuple[s
     r = s.get(MINUTE_URL, params={"code": sym}, timeout=timeout)
     r.raise_for_status()
     return parse_minutes(r.json(), sym)
+
+
+def parse_day_minutes(body: dict, sym: str) -> dict[str, dict[str, int]]:
+    """5 日分时 → {"YYYY-MM-DD": {"HHMM": 累计成交量(手)}}；坏行跳过。"""
+    days = ((body.get("data") or {}).get(sym) or {}).get("data") or []
+    out: dict[str, dict[str, int]] = {}
+    for d in days:
+        raw = str(d.get("date") or "")
+        if len(raw) != 8:
+            continue
+        curve = {}
+        for row in d.get("data") or []:
+            f = str(row).split()
+            try:
+                curve[f[0]] = int(float(f[2]))
+            except (ValueError, IndexError):
+                continue
+        out[f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"] = curve
+    return out
+
+
+def fetch_day_minutes(code: str, timeout: float = 4.0, session=None) -> dict[str, dict[str, int]]:
+    """一只股票最近 5 个交易日（含今天）的逐分钟累计成交量；扫首板算「同时段放量倍数」用。"""
+    s = session or requests.Session()
+    sym = symbol(code)
+    r = s.get(DAY_MINUTE_URL, params={"code": sym}, timeout=timeout)
+    r.raise_for_status()
+    return parse_day_minutes(r.json(), sym)
 
 
 def parse_index_pcts(text: str) -> dict[str, float]:

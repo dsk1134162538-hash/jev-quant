@@ -181,3 +181,32 @@ def test_save_with_unknown_sid_is_rejected():
     assert sid is None
     assert errors
     assert conn.execute("SELECT COUNT(*) FROM custom_strategies").fetchone()[0] == 0
+
+
+def test_purge_removes_definition_and_cash_but_keeps_history_and_never_reuses_the_id():
+    from jevq.data.custom_store import next_id, purge
+    conn = db.connect(":memory:")
+    conn.execute("INSERT INTO custom_strategies VALUES ('c1', 1, '123', '{}', '2026-10-01', '2026-10-02', 0)")
+    conn.execute("INSERT INTO cash VALUES ('c1_main', 30000), ('c1_shadow', 30000)")
+    conn.execute("INSERT INTO fills(account, code, side, price, shares, fee, ts, reason) "
+                 "VALUES ('c1_main', '600001', 'buy', 10, 100, 5, '2026-10-02T10:00:00', 'x')")
+    conn.execute("INSERT INTO positions VALUES ('c1_main', '600001', 100, 1005, 10, '2026-10-02')")
+    assert purge(conn, "c1") == (False, "c1 还有 1 只持仓，卖完再删")
+    conn.execute("DELETE FROM positions")
+    assert purge(conn, "c1") == (True, "已删除 c1")
+    assert conn.execute("SELECT COUNT(*) FROM custom_strategies").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM cash WHERE account LIKE 'c1_%'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 1          # 历史成交保留
+    assert next_id(conn) == "c2"                                                     # 编号不复用
+    assert purge(conn, "c9") == (False, "没有策略 c9")
+
+
+def test_purge_when_flat_waits_for_the_positions_to_be_sold():
+    from jevq.data.custom_store import purge_when_flat
+    conn = db.connect(":memory:")
+    for sid in ("c2", "c3"):
+        conn.execute("INSERT INTO custom_strategies VALUES (?, 1, 'x', '{}', '2026-10-08', '2026-10-09', 1)", (sid,))
+    conn.execute("INSERT INTO positions VALUES ('c3_main', '002803', 1500, 28515, 19.01, '2026-10-09')")
+    logs = []
+    assert purge_when_flat(conn, ("c2", "c3", "c4"), logs.append) == ["c2"]
+    assert any("c3 还有 1 只持仓" in x for x in logs)

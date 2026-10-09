@@ -293,7 +293,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         board = BoardStrategy(conn, ledger, notice_judge, news_judge, tencent.fetch_quotes, universe, ret5,
                               concept_map, prev_prev_closes, prev_day, enabled=board_enabled,
                               recent_limit_ups=recent_limit_ups,
-                              sectors_provider=lambda: engine.sectors)
+                              sectors_provider=lambda: engine.sectors,
+                              fetch_day_minutes=tencent.fetch_day_minutes)
         # 「隔夜超期」只管 runner 错过了上一交易日的情况：昨天跑过，说明持仓昨天已经按规则处理过
         # （封死涨停隔夜的票就是规则允许留下的），今天照常按同一套规则判断，不在开盘一刀切卖掉。
         try:
@@ -307,7 +308,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if rebound is not None:
         rebound.turn_provider = lambda: bool(getattr(engine, "turn_on", False))
     lowbuy = None if late else _load_lowbuy(conn, ledger, universe, ret5, sell_only, notice_judge, news_judge,
-                                            engine, prev_day, log)
+                                            engine, prev_day, log, concept_map=concept_map,
+                                            features=getattr(rebound, "features", None), today=today)
     # 情绪轮动（实盘跟它）：只跟各策略主账户的成交，晚启动不跑；只卖日照样跟卖
     regime = None if late else RegimeStrategy(conn, ledger, lambda: engine.sentiment_label,
                                               lambda: bool(getattr(engine, "turn_on", False)),
@@ -442,6 +444,11 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if universe:        # 自建板块（只记录）：报告之后慢慢刷新成员（有时间预算），下个交易日的快照用
         stats = own_sectors.refresh_step(conn, today, universe, own_judge, budget=config.OWN_SECTORS_BUDGET, log=log)
         log(f"自建板块成员刷新：{stats}")
+    try:
+        custom_store.purge_when_flat(conn, config.CUSTOM_PURGE_WHEN_FLAT, log)
+    except Exception as e:
+        conn.rollback()
+        log(f"自定义策略清理失败：{e!r}")
     if after_close is not None:
         after_close(conn, today)
     return path
@@ -737,13 +744,22 @@ def _follow(regime: RegimeStrategy, fills: list, engine: Engine, t: datetime, co
 
 
 def _load_lowbuy(conn, ledger: Ledger, universe: dict, ret5: dict, sell_only: bool, notice_judge, news_judge,
-                 engine: Engine, prev_day: date, log: Callable[[str], None]) -> LowbuyStrategy | None:
-    """低吸（10-09 重新上线）：只卖日 / 股票池或 5 日涨幅为空 → 只卖不买。"""
+                 engine: Engine, prev_day: date, log: Callable[[str], None], concept_map: dict | None = None,
+                 features: dict | None = None, today: date | None = None) -> LowbuyStrategy | None:
+    """低吸（10-09 重新上线）：只卖日 / 股票池或 5 日涨幅为空 → 只卖不买。缩量回调要成交量历史（超跌反弹
+    算好的那份，没有就自己算一遍；算不出来只卖不买），主线要题材表。"""
     enabled = not sell_only and bool(universe) and bool(ret5)
+    if enabled and features is None:
+        try:
+            features = history_features(conn, sorted(universe), today or now().date())
+        except Exception as e:
+            log(f"低吸成交量历史计算失败，今日只卖不买：{e!r}")
+            enabled = False
     try:
         strat = LowbuyStrategy(conn, ledger, notice_judge, news_judge, dict(universe), ret5, prev_day,
                                lambda: engine.sentiment_label, lambda: getattr(engine, "overseas", None),
-                               enabled=enabled)
+                               enabled=enabled, features=features if features is not None else {},
+                               concept_map=concept_map or {}, sectors_provider=lambda: getattr(engine, "sectors", None))
     except Exception as e:
         conn.rollback()
         log(f"低吸加载失败：{e!r}")

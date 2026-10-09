@@ -12,7 +12,9 @@ from jevq.config import MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE,
 from jevq.ledger import Ledger, affordable_shares
 from jevq.models import Fill, Quote
 from jevq.rules.buy import buy_window_open
+from jevq.rules.board import mainline_concepts
 from jevq.rules.lowbuy import decide_lowbuy_sell, lowbuy_mode, rank_lowbuy
+from jevq.rules.metrics import shrink_days
 
 SID = "lowbuy"
 
@@ -21,7 +23,8 @@ class LowbuyStrategy:
     def __init__(self, conn: sqlite3.Connection, ledger: Ledger, notice_judge, news_judge,
                  universe: dict[str, str], ret5: dict[str, float], prev_day: date,
                  sentiment_provider: Callable[[], str | None], overseas_provider: Callable[[], str | None],
-                 enabled: bool = True):
+                 enabled: bool = True, features: dict[str, dict] | None = None,
+                 concept_map: dict[str, list[str]] | None = None, sectors_provider=None):
         self.conn, self.ledger = conn, ledger
         self.accounts = STRATEGIES[SID]["accounts"]
         self.notice_judge, self.news_judge = notice_judge, news_judge
@@ -30,6 +33,9 @@ class LowbuyStrategy:
         self.enabled = enabled
         self.rejected: set[str] = set()
         self._rejected_day: date | None = None
+        # 缩量回调、主线两条选股条件的数据：None = 不看这一条（只有测试不传）
+        self.features, self.concept_map = features, concept_map
+        self.sectors_provider = sectors_provider     # () -> hi189 文章板块，主线判断「文章点名」用
 
     def sell_step(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         if self._rejected_day != now.date():
@@ -54,12 +60,30 @@ class LowbuyStrategy:
         mode = lowbuy_mode(sentiment, self.overseas_provider())
         if not buy_window_open(mode, now.time()):
             return []
-        ranked = rank_lowbuy((q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()),
-                             self.ret5)
+        today_quotes = {c: q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()}
+        ranked = rank_lowbuy(today_quotes.values(), self.ret5,
+                             shrink=None if self.features is None else (
+                                 lambda q: shrink_days(self.features.get(q.code) or {}, q, now.time())),
+                             mainline=self._mainline(today_quotes, now))
         return self._buy_shadow(ranked, now) + self._buy_main(ranked, now, mode, sentiment, deadline)
 
     def on_minute(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         return self.sell_step(quotes, now) + self.buy_step(quotes, now)
+
+    def _mainline(self, quotes: dict[str, Quote], now: datetime):
+        """今天主线题材的成员判定函数；没有题材表 → None（不看这一条）。"""
+        if self.concept_map is None:
+            return None
+        article_hot = None
+        try:
+            sectors = self.sectors_provider() if self.sectors_provider else None
+            if sectors:
+                from jevq.data.hi189 import article_hot as hot
+                article_hot = lambda concept, members: hot(concept, members, self.universe, sectors)   # noqa: E731
+        except Exception as e:
+            print(f"[lowbuy] 读取文章板块出错: {e!r}")
+        lines = mainline_concepts(quotes, self.concept_map, now.date(), article_hot)
+        return lambda code: any(c in lines for c in self.concept_map.get(code, []))
 
     def _restore_rejected(self, day: date):
         rows = self.conn.execute(

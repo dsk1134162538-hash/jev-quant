@@ -20,9 +20,26 @@ DEFAULT_CAPITAL = 30000      # 与 rules.custom.validate 对缺省资金的放�
 
 
 def next_id(conn: sqlite3.Connection) -> str:
-    rows = conn.execute("SELECT DISTINCT id FROM custom_strategies").fetchall()
-    nums = [int(sid[1:]) for (sid,) in rows if sid.startswith("c") and sid[1:].isdigit()]
+    """下一个 c{n}。删掉的策略（purge）成交记录还在库里，编号不能复用，所以也看历史成交和净值里的账户名。"""
+    ids = {sid for (sid,) in conn.execute("SELECT DISTINCT id FROM custom_strategies")}
+    for table in ("fills", "equity", "cash"):
+        ids |= {a.rsplit("_", 1)[0] for (a,) in conn.execute(f"SELECT DISTINCT account FROM {table}")
+                if a.endswith(("_main", "_shadow"))}
+    nums = [int(sid[1:]) for sid in ids if sid.startswith("c") and sid[1:].isdigit()]
     return f"c{max(nums, default=0) + 1}"
+
+
+def purge(conn: sqlite3.Connection, sid: str) -> tuple[bool, str]:
+    """删除一个自定义策略（用户 2026-10-09 要求删 c1~c3）：策略定义和两个账户的现金行删掉，面板上不再出现；
+    成交、净值、决策记录留在库里（不显示，编号也不再复用）。账户里还有持仓就不删，返回 (False, 原因)。"""
+    accounts = (f"{sid}_main", f"{sid}_shadow")
+    held = conn.execute("SELECT COUNT(*) FROM positions WHERE account IN (?, ?)", accounts).fetchone()[0]
+    if held:
+        return False, f"{sid} 还有 {held} 只持仓，卖完再删"
+    n = conn.execute("DELETE FROM custom_strategies WHERE id=?", (sid,)).rowcount
+    conn.execute("DELETE FROM cash WHERE account IN (?, ?)", accounts)
+    conn.commit()
+    return (True, f"已删除 {sid}") if n else (False, f"没有策略 {sid}")
 
 
 def _next_trade_day(today: date, trade_days) -> date:
@@ -184,3 +201,16 @@ def disable(conn: sqlite3.Connection, sid: str, today: date, trade_days):
         conn.rollback()
         return None, [str(e)]
     return new_version, []
+
+
+def purge_when_flat(conn: sqlite3.Connection, sids, log=print) -> list[str]:
+    """收盘后：名单里还在库里、而且已经清仓的策略删掉（用户 2026-10-09：c2/c3 卖完就删）。返回删掉的。"""
+    done = []
+    for sid in sids:
+        if not conn.execute("SELECT 1 FROM custom_strategies WHERE id=?", (sid,)).fetchone():
+            continue
+        ok, msg = purge(conn, sid)
+        log(f"自定义策略清理：{msg}")
+        if ok:
+            done.append(sid)
+    return done

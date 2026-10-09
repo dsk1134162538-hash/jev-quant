@@ -1,6 +1,8 @@
 import json
 from datetime import date, datetime
 
+import pytest
+
 from factories import quote
 
 from jevq import db
@@ -11,6 +13,12 @@ from jevq.strategies.board import BoardStrategy
 
 DAY = datetime(2026, 9, 23)
 PREV_DAY = date(2026, 9, 22)
+
+
+@pytest.fixture(autouse=True)
+def _legacy_hot_line(monkeypatch):
+    """这些用例写于「只做主线」之前（题材 ≥3 只强势就算热点）：默认把主线线放回 3，主线规则在专门的用例里测。"""
+    monkeypatch.setattr("jevq.rules.board.MAINLINE_MIN", 3)
 
 
 def at(h, m, d=DAY):

@@ -1,11 +1,19 @@
 from datetime import date, datetime, time
 
+import pytest
+
 from factories import quote
 from jevq.rules.board import (Candidate, hot_concepts, in_scan_window, is_first_board, leader, limit_price,
                               scan_trigger, watch_candidates)
 
 TODAY = date(2026, 9, 24)
 TS = datetime(2026, 9, 24, 10, 0)
+
+
+@pytest.fixture(autouse=True)
+def _legacy_hot_line(monkeypatch):
+    """这些用例写于「只做主线」之前（题材 ≥3 只强势就算热点）：默认把主线线放回 3，主线规则在专门的用例里测。"""
+    monkeypatch.setattr("jevq.rules.board.MAINLINE_MIN", 3)
 
 
 def q(code, pct, amount=1e8, **kw):

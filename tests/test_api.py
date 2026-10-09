@@ -350,15 +350,21 @@ def test_rules_list_includes_builtin_readonly_summaries(paths):
     result = make_api(paths).rules_list()
     assert result["ok"] and result["rules"] == []
     builtin = {b["id"]: b for b in result["builtin"]}
-    assert set(builtin) == {"board", "rebound", "lowbuy", "regime"}       # 10-09 低吸重新上线 + 情绪轮动
+    assert set(builtin) == {"sentiment", "board", "rebound", "lowbuy", "regime"}   # 10-09 低吸重新上线 + 情绪轮动 + 情绪说明
+    sentiment_lines = [line for s in builtin["sentiment"]["sections"] for line in s["lines"]]
+    assert builtin["sentiment"]["accounts"] == [] and any("迟滞" in x for x in sentiment_lines)
+    assert any("情绪拐点" in s["title"] for s in builtin["sentiment"]["sections"])
+    for sid in ("board", "rebound", "lowbuy"):                                   # 每个策略都有「情绪」一节
+        assert any(s["title"] == "情绪" for s in builtin[sid]["sections"]), sid
     regime_lines = [line for s in builtin["regime"]["sections"] for line in s["lines"]]
     assert builtin["regime"]["accounts"] == ["regime_main"] and any("偏弱：低吸" in x for x in regime_lines)
     titles = [s["title"] for s in builtin["board"]["sections"]]
-    assert titles[0] == "选股" and all(s["lines"] for s in builtin["board"]["sections"])
+    assert titles[0].startswith("选股") and all(s["lines"] for s in builtin["board"]["sections"])
     board_lines = [line for s in builtin["board"]["sections"] for line in s["lines"]]
     assert any("情绪闸门" in line and "只记录不拦截" in line and "30%" in line and "10 家" in line and "3 板" in line
                for line in board_lines)
-    assert any("hi189" in line and "只调顺序" in line for line in board_lines)
+    assert any("主线" in line and "早报/晚报点名" in line for line in board_lines)
+    assert any("缩量板" in line for line in board_lines) and any("竞价不及预期" in line for line in board_lines)
     rebound_lines = [line for s in builtin["rebound"]["sections"] for line in s["lines"]]
     assert builtin["rebound"]["accounts"] == ["rebound_main", "rebound_shadow"]
     assert any("hi189" in line for line in rebound_lines)

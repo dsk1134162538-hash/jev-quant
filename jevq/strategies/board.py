@@ -3,11 +3,12 @@ from datetime import date, datetime
 from time import monotonic
 
 from jevq.models import Fill, Quote
-from jevq.rules.board import (EXIT_PCT, SCAN_WINDOWS, WATCH_MAX, Candidate, in_scan_window, scan_trigger,
-                              sentiment_gate, watch_candidates)
+from jevq.rules.board import (EXIT_PCT, SCAN_WINDOWS, VOLUME_MIN, WATCH_MAX, Candidate, in_scan_window,
+                              same_time_ratio, scan_trigger, sentiment_gate, watch_candidates)
 from jevq.rules.board_sell import decide_board_sell
 
 SEALED_SKIP = "快照已封死，视为排队未买到"
+SHRINK_SKIP = "缩量板不扫"
 GATE_PREFIX = "情绪闸门（只记录不拦截）："
 
 
@@ -21,7 +22,7 @@ class BoardStrategy:
                  prev_prev_closes: dict[str, float | None], prev_day: date,
                  accounts: tuple[str, str] = ("board_main", "board_shadow"),
                  windows: list = SCAN_WINDOWS, enabled: bool = True,
-                 recent_limit_ups: set[str] = frozenset(), sectors_provider=None):
+                 recent_limit_ups: set[str] = frozenset(), sectors_provider=None, fetch_day_minutes=None):
         self.conn, self.ledger = conn, ledger
         self.notice_judge, self.news_judge = notice_judge, news_judge
         self.fetch_quotes = fetch_quotes
@@ -37,6 +38,10 @@ class BoardStrategy:
         self.sealed_logged: set[str] = set()     # 当日已记过「快照已封死」的票，每只每天只记一次
         self._rejected_day: date | None = None
         self._gate_day: date | None = None
+        # 5 日分时（同时段放量倍数用）：None = 不看量能（测试默认）；code → {日期: {HHMM: 累计量}}，取不到记 {}
+        self.fetch_day_minutes = fetch_day_minutes
+        self._curves: dict[str, dict] = {}
+        self.shrink_logged: set[str] = set()
 
     def has_watch(self) -> bool:
         return bool(self.watch)
@@ -116,15 +121,21 @@ class BoardStrategy:
                 sealed = q.price >= q.limit_up
                 triggered = scan_trigger(q, now, self.windows)
                 entry = self.verdicts.get(code)
+                ratio = self._volume_ratio(code, q, now) if triggered else None
+                if triggered and ratio is not None and ratio < VOLUME_MIN:
+                    self._note_shrink(code, q, now, entry, ratio)
+                    triggered = False
+                tag = f"扫板{q.pct}%" + (f"｜量{ratio:g}倍" if ratio is not None else "")
 
                 try:
                     if entry and entry[0] == "pass" and triggered and self.ledger.free_slots(main) > 0 \
                             and not self.ledger.holds(main, code):
-                        if f := self.ledger.buy(main, q, now, f"扫板{q.pct}%"):
+                        if f := self.ledger.buy(main, q, now, tag):
                             fills.append(f)
                             trace = entry[2]
                             trace["outcome"] = {"bought": True, "shares": f.shares, "price": f.price}
-                            detail = f"扫板 {q.pct}%"
+                            trace["volume_ratio"] = ratio
+                            detail = f"扫板 {q.pct}%" + (f"，同时段放量 {ratio:g} 倍" if ratio is not None else "")
                             self.verdicts[code] = ("pass", detail, trace)
                             self._log(now, code, "pass", detail, trace)
                 except Exception as e:
@@ -133,7 +144,7 @@ class BoardStrategy:
 
                 try:
                     if triggered and self.ledger.free_slots(shadow) > 0 and not self.ledger.holds(shadow, code):
-                        if f := self.ledger.buy(shadow, q, now, f"影子｜扫板{q.pct}%"):
+                        if f := self.ledger.buy(shadow, q, now, f"影子｜{tag}"):
                             fills.append(f)
                 except Exception as e:
                     self.conn.rollback()
@@ -178,6 +189,7 @@ class BoardStrategy:
                 if cand.code in self.watch or cand.code in self.rejected:
                     continue
                 self.watch[cand.code] = cand
+                self._prefetch_curve(cand.code)
         # 未判断过的观察池票：扫板窗口内、主账户有空位才补判断（无论是新进的、之前满仓时跳过的，
         # 还是窗口外进池的）。窗口外买不了，问 Jev 只是白花调用；进窗口的第一分钟会补上。
         if in_scan_window(now.time(), self.windows) and self.ledger.free_slots(self.accounts[0]) > 0:
@@ -194,6 +206,32 @@ class BoardStrategy:
                 except Exception as e:
                     self.conn.rollback()
                     print(f"[board] {now:%H:%M} 判断 {code} 出错: {e!r}")
+
+    def _prefetch_curve(self, code: str):
+        """进观察池时先把前几天的分时取好，扫板那一刻不再联网。取不到记 {}（到时候不判断量能，照常扫）。"""
+        if self.fetch_day_minutes is None or code in self._curves:
+            return
+        try:
+            self._curves[code] = self.fetch_day_minutes(code) or {}
+        except Exception as e:
+            print(f"[board] 取 {code} 5 日分时失败: {e!r}")
+            self._curves[code] = {}
+
+    def _volume_ratio(self, code: str, q: Quote, now: datetime) -> float | None:
+        if self.fetch_day_minutes is None:
+            return None
+        self._prefetch_curve(code)
+        return same_time_ratio(q.volume, self._curves.get(code) or {}, now.date().isoformat(), now.strftime("%H%M"))
+
+    def _note_shrink(self, code: str, q: Quote, now: datetime, entry, ratio: float):
+        """涨到扫板线但同时段缩量：不扫，记一条 skip（每只每天一次）。"""
+        if code in self.shrink_logged:
+            return
+        cand = self.watch.get(code) or Candidate(code, "", 0, 0, {})
+        trace = entry[2] if entry is not None else self._trace(cand, q)
+        trace["volume_ratio"] = ratio
+        self._log(now, code, "skip", f"{SHRINK_SKIP}：同时段 {ratio:g} 倍（< {VOLUME_MIN:g}）", trace)
+        self.shrink_logged.add(code)
 
     def candidates_view(self, quotes: dict[str, Quote]) -> list[dict]:
         """面板「候选」页：当前观察池按优先顺序（文章点名 → 热度 → 龙头分，同 watch_candidates）。"""
