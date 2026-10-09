@@ -173,3 +173,23 @@ def test_midday_report_not_judged_while_switch_off_but_morning_and_evening_are(m
     assert hi189.in_judgement(arts[1]) is False
     monkeypatch.setattr(hi189, "HI189_MIDDAY_JUDGE", True)
     assert hi189.for_judge(arts) == arts and hi189.in_judgement(arts[1]) is True
+
+
+def test_fetch_feed_and_page_report_captcha_challenge_without_bypass(capsys):
+    class Resp:
+        status_code = 202
+        text = '<meta http-equiv="refresh" content="0;/.well-known/sgcaptcha/?r=%2Ffeed">'
+        headers = {"sg-captcha": "challenge"}
+
+        def raise_for_status(self):
+            pass
+
+    class Sess:
+        calls = 0
+
+        def get(self, *a, **k):
+            Sess.calls += 1
+            return Resp()
+
+    assert hi189.fetch_feed(Sess()) == [] and hi189.fetch_page_text("https://hi189.com/1.html", Sess()) == ""
+    assert Sess.calls == 2 and "验证码" in capsys.readouterr().out      # 各只请求一次，不重试、不绕过

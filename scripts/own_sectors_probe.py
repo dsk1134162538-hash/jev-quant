@@ -44,12 +44,13 @@ def show_products(code: str, df, full: bool):
     latest = df["报告日期"].max()
     cur = df[df["报告日期"] == latest]
     prod = cur[cur["分类类型"] == "按产品分类"]
+    top = prod[~prod["主营构成"].astype(str).str.startswith("其中")]      # 「其中:xx」是上一行的细分，不能重复相加
     print(f"  构成：共 {len(df)} 行，最近报告期 {latest}，其中按产品 {len(prod)} 行")
     for _, r in prod.iterrows():
         print(f"    {str(r['主营构成'])[:24]:<24} 收入 {r['主营收入']:>16,.0f}  收入比例 {r['收入比例']}")
-    total = prod["收入比例"].sum()
+    total = top["收入比例"].sum()
     if len(prod):
-        print(f"  按产品的收入比例之和 = {total:.4f}")
+        print(f"  按产品的收入比例之和（不含「其中:」细分行）= {total:.4f}")
     if full:
         print(cur.to_string())
     return total if len(prod) else None

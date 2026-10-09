@@ -106,3 +106,9 @@ class ReadOnlyApi(Api):
 
     def rule_disable(self, sid: str) -> dict:
         return {"ok": False, "errors": [BLOCKED_MSG]}
+
+    def own_sector_review(self, sector_id: str, code: str, decision: str) -> dict:
+        return {"ok": False, "errors": [BLOCKED_MSG]}
+
+    def own_sector_decide(self, sector_id: str, decision: str, product_def: str = "") -> dict:
+        return {"ok": False, "errors": [BLOCKED_MSG]}

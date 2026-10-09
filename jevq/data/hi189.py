@@ -68,6 +68,9 @@ def fetch_feed(session=None) -> list[Article]:
     try:
         r = (session or requests).get(HI189_FEED_URL, timeout=HI189_TIMEOUT, headers=_UA)
         r.raise_for_status()
+        if r.status_code != 200 or "sgcaptcha" in r.text[:2000] or r.headers.get("sg-captcha"):
+            print("[hi189] RSS 被站点的验证码拦截（反爬），本次不取文章；不会尝试绕过")
+            return []
         return parse_feed(r.text)
     except Exception as e:
         print(f"[hi189] 抓取 RSS 失败: {e!r}")
@@ -78,6 +81,9 @@ def fetch_page_text(link: str, session=None) -> str:
     try:
         r = (session or requests).get(link, timeout=HI189_TIMEOUT, headers=_UA)
         r.raise_for_status()
+        if r.status_code != 200 or "sgcaptcha" in r.text[:2000] or r.headers.get("sg-captcha"):
+            print(f"[hi189] 文章页被站点的验证码拦截（反爬）{link}；不会尝试绕过")
+            return ""
         page = r.text
         m = re.search(r"(?is)<article\b.*?</article>", page)
         return html_to_text(m.group(0) if m else page)

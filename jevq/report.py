@@ -183,6 +183,12 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
               f"| {names.get(code, '')} | {VERDICT_LABELS.get(verdict, verdict)} | {detail} |"
               for ts, sid, code, verdict, detail in rows]
 
+    try:
+        from jevq.data import own_sectors
+        lines += own_sectors.report_lines(conn, day, names)
+    except Exception as e:      # 自建板块只是记录，报告不能因它失败
+        print(f"[report] 自建板块一节生成失败：{e!r}")
+
     st = notice_risk_stats(conn, day)
     lines += ["", "## 公告风险统计", "",
               f"细判 {st['judged']} 条｜否决：高风险 {st['reject']}、拿不准 {st['unsure']}｜未读到正文 {st['unread']}", ""]

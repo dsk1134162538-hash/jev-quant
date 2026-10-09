@@ -10,14 +10,15 @@ from time import monotonic
 from jevq import accounts as accounts_mod
 from jevq import config, db, notify_content
 from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
-from jevq.data import (akdata, board_events, candidates, closes, concepts, custom_store, hi189, sell_followups,
-                       tencent)
+from jevq.data import (akdata, board_events, candidates, closes, concepts, custom_store, hi189, own_sectors,
+                       sell_followups, tencent)
 from jevq.data.features import history_features
 from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
 from jevq.engine import Engine
 from jevq.judge.jev import JevClient
 from jevq.judge.market import MarketJudge
+from jevq.judge.own_sectors import OwnSectorJudge
 from jevq.judge.news import NewsJudge
 from jevq.judge.notices import NoticeJudge
 from jevq.judge.trend import TrendJudge
@@ -392,6 +393,11 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         log(f"封板统计记录 {recorded} 只首板")
     except Exception as e:
         log(f"封板统计记录失败：{e!r}")
+    own_judge = OwnSectorJudge(jev)
+    own_quotes = {c: q for c, q in quotes.items() if c in universe and q.ts.date() == today}
+    if own_quotes:      # 自建板块（只记录）：日快照要赶在报告之前；失败只记日志
+        snaps = own_sectors.snapshot_step(conn, today, universe, own_quotes, ret5, own_judge, log=log)
+        log(f"自建板块日快照 {snaps} 个板块")
     try:
         path = write_report(conn, ledger, today, prices, overseas, engine.sentiment_label,
                             out_dir=REPORT_DIR, names=names, articles=hi189.cached(conn, today))
@@ -403,6 +409,9 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     report_accounts = accounts_mod.all_accounts(conn, today)
     log(f"复盘报告 {path}；" + "，".join(f"{a} {ledger.equity(a, prices):,.2f}" for a in report_accounts))
     _notify_close_summary(notifier, ledger, today, prices, log, conn)
+    if universe:        # 自建板块（只记录）：报告之后慢慢刷新成员（有时间预算），下个交易日的快照用
+        stats = own_sectors.refresh_step(conn, today, universe, own_judge, budget=config.OWN_SECTORS_BUDGET, log=log)
+        log(f"自建板块成员刷新：{stats}")
     if after_close is not None:
         after_close(conn, today)
     return path

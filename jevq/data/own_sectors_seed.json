@@ -1,0 +1,20 @@
+{
+  "note": "自建板块种子清单（首版整理自 2026-09-30 晚报，待用户审）。product_def 写具体：成员的产品收入占比 >= 50% 才进 core。aliases 用来和新浪题材、晚报板块名对号。",
+  "sectors": [
+    {"id": "innovative_drug", "name": "创新药", "product_def": "创新药、生物药、创新药研发与授权（不含仿制药、中药、医疗器械、CRO 服务）", "aliases": ["创新药", "生物医药", "医药"]},
+    {"id": "humanoid_robot", "name": "人形机器人", "product_def": "人形机器人整机与核心零部件（减速器、丝杠、灵巧手、轴承、传感器）", "aliases": ["人形机器人", "机器人", "减速器"]},
+    {"id": "solid_state_battery", "name": "固态电池", "product_def": "固态电池及其专用材料与设备（电解质、锂金属负极、硫化物材料）", "aliases": ["固态电池", "锂电池", "电池"]},
+    {"id": "auto_parts", "name": "汽车零部件", "product_def": "整车配套的汽车零部件与智能驾驶部件（不含整车销售）", "aliases": ["汽车", "汽车零部件", "智能驾驶", "无人驾驶"]},
+    {"id": "ai_application", "name": "AI应用", "product_def": "AI 应用软件、AI 内容与传媒（以 AI 产品/内容为主要收入）", "aliases": ["AI应用", "AI 应用", "人工智能", "传媒"]},
+    {"id": "dairy", "name": "乳业", "product_def": "乳制品与奶源（液态奶、奶粉、奶酪、牧业）", "aliases": ["乳业", "乳制品", "奶业"]},
+    {"id": "liquor", "name": "白酒", "product_def": "白酒及黄酒等酒类的生产与销售", "aliases": ["白酒", "酿酒", "饮料制造"]},
+    {"id": "power", "name": "电力", "product_def": "发电、售电、热电联产与电网信息化", "aliases": ["电力", "热电", "电网"]},
+    {"id": "real_estate", "name": "房地产", "product_def": "住宅与商业地产开发销售、物业与园区开发", "aliases": ["房地产", "地产", "物业"]},
+    {"id": "agriculture_seed", "name": "农业种业", "product_def": "种子、育种、农作物种植与天然橡胶、糖业等农业初级产品", "aliases": ["农业", "种业", "农林牧渔"]},
+    {"id": "dye", "name": "分散染料", "product_def": "分散染料、活性染料及染料中间体（H 酸等）", "aliases": ["分散染料", "染料", "化工染料"]},
+    {"id": "glass_substrate", "name": "玻璃基板", "product_def": "玻璃基板、玻璃芯载板、TGV 及相关激光设备（收入主要来自该类产品）", "aliases": ["玻璃基板", "TGV", "先进封装"]},
+    {"id": "solar", "name": "光伏", "product_def": "光伏组件、电池片、硅料硅片、光伏玻璃与光伏设备", "aliases": ["光伏", "太阳能", "硅料"]},
+    {"id": "wind_power_equipment", "name": "风电设备", "product_def": "风电塔筒、叶片、齿轮箱、海上风电装备", "aliases": ["风电设备", "风电", "海上风电"]},
+    {"id": "electronic_cloth", "name": "电子布", "product_def": "用于 PCB 的玻纤电子布、电子纱（含特种布、低介电布）", "aliases": ["电子布", "玻纤", "玻璃纤维", "覆铜板"]}
+  ]
+}

@@ -330,6 +330,60 @@ class Api:
         finally:
             conn.close()
 
+    def own_sectors(self) -> dict:
+        """「自建板块」页（只记录，不参与交易）：每个板块最近一天快照 + 成员（含依据、待确认）。"""
+        from jevq.data import own_sectors
+        conn = db.connect_readonly(self._db_path)
+        try:
+            return own_sectors.overview(conn)
+        except Exception as e:      # 库里还没有这些表（后台没升级到新代码）→ 空页面，不让面板报错
+            self._log(f"自建板块读取失败：{e}")
+            return {"date": None, "sectors": []}
+        finally:
+            conn.close()
+
+    def own_sector_review(self, sector_id: str, code: str, decision: str) -> dict:
+        """确认/驳回一个成员（pending 或 auto）。只改自建板块自己的表；驳回的以后不会再被自动加入。"""
+        status = {"confirm": "confirmed", "reject": "rejected"}.get(decision)
+        if status is None:
+            return {"ok": False, "errors": ["decision 只能是 confirm 或 reject"]}
+        conn = None
+        try:
+            conn = db.connect(self._db_path)
+            cur = conn.execute("UPDATE own_members SET status=? WHERE sector_id=? AND code=?",
+                               (status, str(sector_id), str(code)))
+            conn.commit()
+            return {"ok": cur.rowcount == 1, "errors": [] if cur.rowcount == 1 else ["没有这个成员"]}
+        except Exception as e:
+            return {"ok": False, "errors": [str(e)]}
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def own_sector_decide(self, sector_id: str, decision: str, product_def: str = "") -> dict:
+        """处理晚报提议的新板块：activate（可同时补上产品定义）/ reject。"""
+        status = {"activate": "active", "reject": "rejected"}.get(decision)
+        if status is None:
+            return {"ok": False, "errors": ["decision 只能是 activate 或 reject"]}
+        if status == "active" and len(str(product_def).strip()) < 6:
+            return {"ok": False, "errors": ["启用新板块必须写清楚产品定义（至少几个字，说明核心产品是什么）"]}
+        conn = None
+        try:
+            conn = db.connect(self._db_path)
+            if status == "active":
+                cur = conn.execute("UPDATE own_sectors SET status='active', product_def=? WHERE id=? "
+                                   "AND status='proposed'", (str(product_def).strip(), str(sector_id)))
+            else:
+                cur = conn.execute("UPDATE own_sectors SET status='rejected' WHERE id=? AND status='proposed'",
+                                   (str(sector_id),))
+            conn.commit()
+            return {"ok": cur.rowcount == 1, "errors": [] if cur.rowcount == 1 else ["没有这个待确认板块"]}
+        except Exception as e:
+            return {"ok": False, "errors": [str(e)]}
+        finally:
+            if conn is not None:
+                conn.close()
+
     def knowledge(self) -> dict:
         """知识库（专题手册 + 文章索引）：只读，内容整份放在 knowledge.json，要改就改那个文件。"""
         return json.loads(KNOWLEDGE_PATH.read_text(encoding="utf-8"))
