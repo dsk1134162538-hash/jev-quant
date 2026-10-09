@@ -475,7 +475,7 @@ function candidatesHtml(d) {
     : '<div class="empty">观察池为空（开盘后涨幅进入热门题材的首板才会进来）</div>');
   html += "<h3>超跌反弹 · 入选名单</h3>";
   if (!rb) return html + '<div class="empty">超跌反弹未运行</div>';
-  const mode = rb.mode === "tail" ? "偏弱/冰点/未知，只在尾盘买" : "盘中可买";
+  const mode = rb.mode === "none" ? "偏弱/冰点/未知，不买" : rb.mode === "tail" ? "偏弱/冰点/未知，只在尾盘买" : "盘中可买";
   html += `<div class="muted">情绪 ${esc(rb.sentiment || "未知")}（${esc(mode)}）；${rb.window_open ? "现在在买入时段内" : "现在不在买入时段"}${rb.enabled ? "" : "；今天只卖不买"}${rb.total > (rb.items || []).length ? `；共 ${esc(rb.total)} 只，只列前 ${esc((rb.items || []).length)} 只` : ""}</div>`;
   html += (rb.items || []).length ? table(["#", "代码", "名称", "涨幅", "现价", "近5日", "缩量天数", "Jev"],
     rb.items.map((r) => [esc(r.rank), esc(r.code), esc(r.name), pct(r.pct), fmt(r.price), pct(r.ret5),
@@ -738,7 +738,7 @@ function renderTrace(d) {
   }
   if (t.strategy === "rebound") {        // 超跌反弹只看情绪，不看外围；扫首板和自定义策略不显示市场
     const m = t.market || {};
-    parts.push(`<h4>当时市场：${m.mode === "tail" ? "只在尾盘买" : "盘中可买"}</h4>`);
+    parts.push(`<h4>当时市场：${m.mode === "none" ? "情绪不好，不买" : m.mode === "tail" ? "只在尾盘买" : "盘中可买"}</h4>`);
     parts.push(marketBlock("市场情绪", m.sentiment, m.sentiment_trace));
   }
   const o = t.outcome || {};

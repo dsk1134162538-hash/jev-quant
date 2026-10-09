@@ -55,7 +55,7 @@ def test_rebound_candidates_view_ranks_and_reports_window():
     info = r.candidates_view(quotes, NOW)
     assert [i["code"] for i in info["items"]] == ["600002", "600001"]       # 跌得多的优先
     assert info["items"][0]["verdict"] == "reject" and info["items"][1]["verdict"] == ""
-    assert info["mode"] == "tail" and info["window_open"] is True and info["total"] == 2
+    assert info["mode"] == "none" and info["window_open"] is False and info["total"] == 2   # 偏弱不买，候选照列
     assert r.candidates_view({}, NOW)["items"] == []
     r.enabled = False
     assert r.candidates_view(quotes, NOW)["items"] == []

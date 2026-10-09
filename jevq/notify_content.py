@@ -160,7 +160,7 @@ def buy_push_content(conn, f: Fill, stock_name: str) -> str:
     if strategy == "rebound":      # 超跌反弹的买入时机只看情绪，不看外围
         try:
             market = trace.get("market") or {}
-            mode_label = "盘中可买" if market.get("mode") == "intraday" else "只在尾盘买"
+            mode_label = {"intraday": "盘中可买", "none": "情绪不好，不买"}.get(market.get("mode"), "只在尾盘买")
             trace_s = market.get("sentiment_trace")
             sent = fmt_judge_label(market.get("sentiment"), trace_s) if trace_s else (market.get("sentiment") or "未知")
             lines.append(f"▍当时市场：{mode_label}｜情绪 {sent}")

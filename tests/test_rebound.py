@@ -121,9 +121,9 @@ def test_rank_rebound_min_shrink_days_zero_turns_the_volume_rule_off(monkeypatch
 def test_rebound_mode_only_looks_at_sentiment():
     assert rebound_mode("正常") == "intraday"
     assert rebound_mode("火热") == "intraday"
-    assert rebound_mode("偏弱") == "tail"
-    assert rebound_mode("冰点") == "tail"
-    assert rebound_mode(None) == "tail"
+    assert rebound_mode("偏弱") == "none"
+    assert rebound_mode("冰点") == "none"
+    assert rebound_mode(None) == "none"     # 情绪没判出来：保守，不买
 
 
 # ---- 运行时 ----
@@ -177,11 +177,14 @@ def test_intraday_buy_picks_deepest_five_day_drop():
     assert trace["market"]["mode"] == "intraday" and "overseas" not in trace["market"]
 
 
-def test_weak_sentiment_waits_for_tail():
+def test_weak_sentiment_does_not_buy_even_at_tail():
+    """用户 2026-10-09：偏弱/冰点不买（原来是等尾盘买）；盘中情绪转好就照常买。"""
     strat, conn, ledger, state = make(sentiment="偏弱")
     q = {"600002": -1.0}
     assert strat.on_minute(_quotes(at(10, 0), **q), at(10, 0)) == []
-    assert len(strat.on_minute(_quotes(at(14, 50), **q), at(14, 50))) == 2
+    assert strat.on_minute(_quotes(at(14, 50), **q), at(14, 50)) == []
+    state["sentiment"] = "正常"
+    assert len(strat.on_minute(_quotes(at(14, 51), **q), at(14, 51))) == 2
 
 
 def test_jev_reject_only_blocks_main():
@@ -312,12 +315,12 @@ def test_no_buy_when_volume_history_is_missing_or_today_not_projectable():
     assert strat.on_minute(_quotes(at(9, 40), **{"600002": -1.0}), at(9, 40)) == []   # 09:45 前不折算全天量
 
 
-def test_weak_market_tail_buy_uses_almost_full_day_volume():
-    strat, *_ = make(sentiment="偏弱", features={"600002": SHRINK4})
+def test_tail_buy_uses_almost_full_day_volume():
+    strat, *_ = make(sentiment="正常", features={"600002": SHRINK4})
     fills = strat.on_minute(_quotes(at(14, 50), **{"600002": -1.0}), at(14, 50))
     assert _bought(fills) == {("rebound_main", "600002"), ("rebound_shadow", "600002")}
     # 尾盘量已经基本走完：成交 200 手折算 ≈ 209 手 ≥ 昨天 150 手，不算缩量，不买
-    strat, *_ = make(sentiment="偏弱", features={"600002": SHRINK4})
+    strat, *_ = make(sentiment="正常", features={"600002": SHRINK4})
     heavy = {"600002": quote("600002", pct=-1.0, amount=2e8, ts=at(14, 50), volume=200)}
     assert strat.on_minute(heavy, at(14, 50)) == []
 

@@ -20,6 +20,6 @@ def test_windows():
     assert buy_window_open("intraday", time(9, 30))
     assert buy_window_open("intraday", time(14, 56))
     assert not buy_window_open("intraday", time(14, 57))
-    assert not buy_window_open("tail", time(10, 0))
-    assert buy_window_open("tail", time(14, 50))
-    assert not buy_window_open("tail", time(14, 57))
+    # 用户 2026-10-09：情绪偏弱/冰点/未知不买，不再尾盘买
+    assert not buy_window_open("none", time(10, 0))
+    assert not buy_window_open("none", time(14, 50))

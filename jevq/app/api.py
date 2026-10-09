@@ -61,7 +61,7 @@ def builtin_summaries() -> list[dict]:
                  ("同档内" if config.REBOUND_MIN_SHRINK_DAYS > 0 else "")
                  + "按近 5 日涨幅从低到高排序（跌得多的优先）"]},
              {"title": "买点", "lines": [
-                 f"只看情绪：偏弱或冰点时只在尾盘 {hm(config.TAIL_BUY_START)}~{hm(config.BUY_END)} 买，否则盘中可买（不看外围）",
+                 f"只看情绪：正常或火热时盘中可买（到 {hm(config.BUY_END)}），偏弱、冰点或情绪没判出来时不买（不看外围）",
                  "情绪判断会参考 hi189 当日市场解读文章（取不到时和以前一样）",
                  f"主账户经 Jev 公告排雷 + 消息面判断，每分钟最多检查 {config.MAX_CHECKS_PER_TICK} 只",
                  f"同一只票当天卖出后，现价要比卖出价低 {config.REBOUND_REBUY_DROP:g}% 以上才允许再买（防止卖出后原价买回）"]},

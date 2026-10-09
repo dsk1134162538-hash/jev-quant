@@ -15,14 +15,18 @@ def in_buy_zone(q: Quote) -> bool:
 
 
 def buy_window_open(mode: str, t: time) -> bool:
+    """mode "none"（情绪偏弱/冰点/未知）不买；"tail" 只是旧决策记录里的值，不再产生。"""
+    if mode == "none":
+        return False
     start = TAIL_BUY_START if mode == "tail" else MARKET_OPEN
     return start <= t < BUY_END
 
 
 def rebound_mode(sentiment: str | None) -> str:
-    """超跌反弹的买入时机只看情绪（不看外围）：正常/火热 → 盘中；偏弱/冰点/未知 → 尾盘。"""
+    """超跌反弹的买入时机只看情绪（不看外围）：正常/火热 → 盘中可买；偏弱/冰点/未知 → 不买
+    （用户 2026-10-09 定，原来是等尾盘买）。情绪每 10 分钟刷新，盘中转好就恢复买。"""
     if sentiment is None or sentiment in WEAK_SENTIMENT:
-        return "tail"
+        return "none"
     return "intraday"
 
 
