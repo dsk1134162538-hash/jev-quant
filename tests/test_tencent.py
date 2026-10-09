@@ -152,3 +152,16 @@ def test_fetch_overseas_prints_a50_failure(capsys):
 
     assert fetch_overseas(session=S()) == {}
     assert "a50 down" in capsys.readouterr().out
+
+
+def test_parse_minutes_reads_time_price_and_cumulative_volume():
+    from jevq.data.tencent import parse_minutes
+    body = {"code": 0, "data": {"sz002658": {"data": {
+        "date": "20261009",
+        "data": ["0930 7.13 288 205344.00", "0931 7.13 873 622810.00", "1023 7.02 16433 11590599", "bad"]}}}}
+    assert parse_minutes(body, "sz002658") == [("09:30", 7.13, 288), ("09:31", 7.13, 873), ("10:23", 7.02, 16433)]
+
+
+def test_parse_minutes_missing_symbol_is_empty():
+    from jevq.data.tencent import parse_minutes
+    assert parse_minutes({"data": {}}, "sz002658") == []

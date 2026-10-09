@@ -20,6 +20,7 @@ from jevq.judge.jev import JevClient
 from jevq.judge.market import MarketJudge
 from jevq.judge.news import NewsJudge
 from jevq.judge.notices import NoticeJudge
+from jevq.judge.trend import TrendJudge
 from jevq.ledger import Ledger
 from jevq.live import store as live_store
 from jevq.notify import Notifier, notifier_from_env
@@ -291,7 +292,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         except Exception as e:
             log(f"读取昨日运行记录失败，扫首板保留「隔夜超期」规则：{e!r}")
     rebound = None if late else _load_rebound(conn, ledger, today, universe, ret5, sell_only, notice_judge,
-                                              news_judge, engine, prev_day, log, trade_days=days)
+                                              news_judge, engine, prev_day, log, trade_days=days,
+                                              trend_judge=TrendJudge(jev))
     if calendar_fallback:
         if board is not None:
             board.stale_before = None
@@ -567,7 +569,7 @@ def _load_customs(conn, ledger: Ledger, today: date, universe: dict, ret5: dict,
 
 def _load_rebound(conn, ledger: Ledger, today: date, universe: dict, ret5: dict, sell_only: bool,
                   notice_judge, news_judge, engine: Engine, prev_day: date,
-                  log: Callable[[str], None], trade_days=None) -> ReboundStrategy | None:
+                  log: Callable[[str], None], trade_days=None, trend_judge=None) -> ReboundStrategy | None:
     """盘前构造超跌反弹。只卖日 / 股票池或 5 日涨幅为空 / 连板排除算不出来 → 只卖不买（排除是安全过滤，宁可不买）。
     情绪直接读引擎在买入阶段刷新的结果，不另问 Jev。"""
     enabled = not sell_only and bool(universe) and bool(ret5)
@@ -597,7 +599,7 @@ def _load_rebound(conn, ledger: Ledger, today: date, universe: dict, ret5: dict,
         strat = ReboundStrategy(conn, ledger, notice_judge, news_judge, dict(universe), ret5, excluded, prev_day,
                                 lambda: engine.sentiment_label, enabled=enabled,
                                 sentiment_trace_provider=lambda: engine.sentiment_trace, trade_days=trade_days,
-                                features=features)
+                                features=features, trend_judge=trend_judge)
     except Exception as e:
         conn.rollback()
         log(f"超跌反弹加载失败：{e!r}")

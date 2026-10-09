@@ -103,3 +103,80 @@ def test_unknown_hold_days_clears_at_eod():
     """交易日历不可用（hold_days=None）：保守处理，当天尾盘清仓。"""
     assert decide_rebound_sell(pos(), q(10.05), datetime(2026, 9, 24, 14, 55), hold_days=None).sell
     assert not decide_rebound_sell(pos(), q(10.05), datetime(2026, 9, 24, 10, 0), hold_days=None).sell
+
+
+# ---- 主账户（实盘跟的账户）：止损要连续 2 分钟确认 + 问 Jev 今天走向；-3.5% 硬止损（用户 2026-10-09 定的）----
+
+class Trend:
+    """假的「问 Jev 今天走向」：记调用次数。"""
+    def __init__(self, label):
+        self.label, self.calls = label, 0
+
+    def __call__(self):
+        self.calls += 1
+        return self.label
+
+
+def test_stop_waits_for_second_minute_below_line():
+    """10-09 雪迪龙：买 7.13，10:14 瞬间 6.98（-2.1%），下一分钟回到 6.99：第一分钟不卖、不问 Jev。"""
+    t = Trend("单边下跌")
+    d = decide_rebound_sell(pos(), q(9.80), D1, hold_days=1, stop_minutes=1, trend=t)
+    assert not d.sell and "待确认" in d.reason
+    assert t.calls == 0
+
+
+def test_confirmed_stop_sells_when_jev_sees_no_rebound():
+    t = Trend("单边下跌")
+    d = decide_rebound_sell(pos(), q(9.80), D1, hold_days=1, stop_minutes=2, trend=t)
+    assert d.sell and d.reason == "止损（单边下跌）"
+    assert t.calls == 1
+
+
+def test_confirmed_stop_holds_when_jev_sees_rebound():
+    for label in ("探底回升", "低开高走"):
+        d = decide_rebound_sell(pos(), q(9.80), D1, hold_days=1, stop_minutes=3, trend=Trend(label))
+        assert not d.sell and d.reason == f"止损暂缓（{label}）"
+
+
+def test_confirmed_stop_sells_when_jev_fails():
+    """Jev 超时/出错（返回 None）→ 照原规则卖，宁可卖错不能拿着亏。"""
+    d = decide_rebound_sell(pos(), q(9.80), D1, hold_days=1, stop_minutes=2, trend=Trend(None))
+    assert d.sell and d.reason == "止损（Jev 没判出来）"
+
+
+def test_hard_stop_sells_at_once_without_asking_jev():
+    t = Trend("探底回升")
+    d = decide_rebound_sell(pos(), q(9.65), D1, hold_days=1, stop_minutes=1, trend=t)
+    assert d.sell and d.reason == "硬止损"
+    assert t.calls == 0
+    assert not decide_rebound_sell(pos(), q(9.66), D1, hold_days=1, stop_minutes=3, trend=Trend("探底回升")).sell
+
+
+def test_low_open_bounce_holds_when_jev_sees_rising_day():
+    d = decide_rebound_sell(pos(9.80), q(9.73, open_=9.63, pre_close=9.78), D1, hold_days=1,
+                            stop_minutes=0, trend=Trend("低开高走"))
+    assert not d.sell and d.reason == "低开反抽暂缓（低开高走）"
+    d = decide_rebound_sell(pos(9.80), q(9.73, open_=9.63, pre_close=9.78), D1, hold_days=1,
+                            stop_minutes=0, trend=Trend("冲高回落"))
+    assert d.sell and d.reason == "低开反抽（冲高回落）"
+
+
+def test_jev_asked_once_when_stop_and_low_open_both_apply():
+    # 买 10.0，昨收 10.0，开 9.80（-2%），最低 9.70，现价 9.79（拉起 0.9 点，持仓 -2.1%）
+    qq = q(9.79, open_=9.80, pre_close=10.0)
+    qq = type(qq)(**{**qq.__dict__, "low": 9.70})
+    t = Trend("探底回升")
+    d = decide_rebound_sell(pos(), qq, D1, hold_days=1, stop_minutes=2, trend=t)
+    assert not d.sell and t.calls == 1
+
+
+def test_eod_clear_still_sells_while_stop_is_held():
+    eod = datetime(2026, 9, 25, 14, 55)
+    d = decide_rebound_sell(pos(), q(9.80, ts=eod), eod, hold_days=2, stop_minutes=5, trend=Trend("探底回升"))
+    assert d.sell and d.reason == "到期清仓"
+
+
+def test_back_to_cost_is_not_held_by_jev():
+    t = Trend("探底回升")
+    d = decide_rebound_sell(pos(), q(10.0, high=10.25), D1, hold_days=1, stop_minutes=0, trend=t)
+    assert d.sell and d.reason == "回到成本" and t.calls == 0

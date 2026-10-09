@@ -32,7 +32,13 @@ REBOUND_TRAIL_PULLBACK = 0.8   # 卖出：从当天最高回落这么多个点�
 REBOUND_MAX_HOLD_DAYS = 2      # 卖出：最多拿几个交易日，最后一天 14:55 清仓
 REBOUND_LOW_OPEN = -1.5        # 卖出：开盘相对昨收 ≤ 这个值算低开（%）
 REBOUND_LOW_OPEN_BOUNCE = 0.8  # 卖出：低开后从当天最低拉起这么多个点（相对昨收）必须卖
-REBOUND_FLOW_MINUTES = 3       # 卖出：跟踪止盈触发时看最近几分钟的主买/主卖增量，主买多先留着
+REBOUND_STOP_CONFIRM = 2       # 卖出（主账户）：现价连续几分钟在止损线下才算止损，防瞬间下探（用户 2026-10-09 定）
+REBOUND_HARD_STOP = -3.5       # 卖出（主账户）：硬止损（%），到了直接卖，不等确认、不问 Jev
+# 卖出（主账户）：止损确认后、低开反抽触发时问 Jev 今天走向；判成这些就先留着，下一分钟再看
+TREND_LEVELS = ["冲高回落", "高开低走", "单边下跌", "震荡", "探底回升", "低开高走"]
+REBOUND_TREND_HOLD = ("探底回升", "低开高走")
+REBOUND_TREND_BUDGET = 8.0     # 秒：一次走向判断（拉分时 + 问 Jev，含重试）的总时限，到点没问完按原规则卖
+REBOUND_FLOW_MINUTES = 3      # 卖出：跟踪止盈触发时看最近几分钟的主买/主卖增量，主买多先留着
 
 # 时间
 MARKET_OPEN = time(9, 30)

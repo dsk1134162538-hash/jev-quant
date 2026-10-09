@@ -1,7 +1,8 @@
 """超跌反弹：近 5 日跌了 0~20%、近两个月没连板过的票，当日回调到 0~-3% 区间时买入赌反弹。
 
 买入时机只看情绪（正常/火热盘中买，偏弱/冰点尾盘买）；卖出见 rules.rebound_sell（相对买入价止损、
-跟踪止盈、最多拿 2 个交易日）。
+跟踪止盈、最多拿 2 个交易日）。主账户（实盘跟的）止损要连续 2 分钟确认，止损/低开反抽前问 Jev 今天走向
+（trend_judge），影子账户照旧规则当对照组。
 行情与情绪都由共用的 Engine 每分钟取好、刷新好传进来，本策略不自己拉行情、不自己问情绪。
 """
 import json
@@ -28,8 +29,13 @@ class ReboundStrategy:
                  universe: dict[str, str], ret5: dict[str, float], excluded: set[str], prev_day: date,
                  sentiment_provider: Callable[[], str | None], enabled: bool = True,
                  sentiment_trace_provider: Callable[[], dict | None] | None = None,
-                 trade_days: list[date] | None = None, features: dict[str, dict] | None = None):
+                 trade_days: list[date] | None = None, features: dict[str, dict] | None = None,
+                 trend_judge=None):
         self.conn, self.ledger = conn, ledger
+        # 问 Jev 持仓票今天走向（jevq.judge.trend.TrendJudge）；None = 主账户止损只做 2 分钟确认、不问走向
+        self.trend_judge = trend_judge
+        # (账户, 代码) → (最近一次计数的分钟, 现价连续在止损线下的分钟数)
+        self._below_stop: dict[tuple[str, str], tuple[str, int]] = {}
         # 历史成交量特征（history_features 的 vols/vols_until），成交量条件用；None = 不看成交量（只有测试不传）
         self.features = features
         self.accounts = STRATEGIES[SID]["accounts"]
@@ -121,16 +127,46 @@ class ReboundStrategy:
 
     def _sells(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         fills = []
+        main = self.accounts[0]
         for account in self.accounts:
             for pos in self.ledger.positions(account):
                 q = quotes.get(pos.code)
                 if q is None or q.ts.date() < now.date():
                     continue
+                extra = {}
+                if account == main:      # 影子账户不传：旧规则，当对照组
+                    asked: list[bool] = []
+                    extra = {"stop_minutes": self._stop_minutes(account, pos.buy_price, q, now),
+                             "trend": None if self.trend_judge is None
+                             else (lambda pos=pos, q=q, asked=asked: asked.append(True) or self._trend(pos, q, now))}
                 d = decide_rebound_sell(pos, q, now, self._hold_days(pos.buy_date, now.date()),
-                                        buy_pressure=self._buy_pressure(q, now))
+                                        buy_pressure=self._buy_pressure(q, now), **extra)
+                if account == main and extra.get("trend") is not None and asked:
+                    self._log(now, pos.code, "trend", d.reason, {"strategy": SID, "account": account,
+                                                                 "trend": self.trend_judge.last_trace})
                 if d.sell and (f := self.ledger.sell(account, pos, q, now, d.reason)):
                     fills.append(f)
         return fills
+
+    def _stop_minutes(self, account: str, buy_price: float, q: Quote, now: datetime) -> int:
+        """现价连续几分钟（含这一分钟）在止损线下；同一分钟重复调用不重复计数，回到线上清零。
+        只在内存里：重启后从 0 重新数（多等一两分钟，不会提前卖）。"""
+        minute = now.strftime("%Y-%m-%d %H:%M")
+        key = (account, q.code)
+        last, n = self._below_stop.get(key, ("", 0))
+        if last == minute:
+            return n
+        below = round((q.price / buy_price - 1) * 100, 2) <= config.REBOUND_STOP
+        n = n + 1 if below else 0
+        self._below_stop[key] = (minute, n)
+        return n
+
+    def _trend(self, pos, q: Quote, now: datetime) -> str | None:
+        try:
+            return self.trend_judge.judge(pos, q, now)
+        except Exception as e:
+            self.trend_judge.last_trace = {"label": None, "note": f"走向判断异常：{e!r}"}
+            return None
 
     def _buy_pressure(self, q: Quote, now: datetime) -> bool:
         """最近 REBOUND_FLOW_MINUTES 分钟外盘（主动买）增量是否大于内盘（主动卖）增量。

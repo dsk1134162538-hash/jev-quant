@@ -200,7 +200,7 @@ def test_disabled_only_sells():
                  (p.account, p.code, p.shares, p.cost, p.buy_price, p.buy_date.isoformat()))
     conn.commit()
     fills = strat.on_minute(_quotes(at(10, 0), **{"600001": -3.5, "600002": -1.0}), at(10, 0))
-    assert [(f.side, f.reason) for f in fills] == [("sell", "止损")]
+    assert [(f.side, f.reason) for f in fills] == [("sell", "硬止损")]   # 主账户 -3.5% 不等确认
 
 
 def test_stale_quotes_are_ignored():
@@ -374,3 +374,79 @@ def test_stock_sold_on_an_earlier_day_can_be_bought_again():
         ledger.sell(account, pos, quote("600002", pct=-1.0, ts=yesterday), yesterday, "止损")
     fills = strat.on_minute(_quotes(at(10, 0), **{"600002": -1.0}), at(10, 0))
     assert _bought(fills) == {("rebound_main", "600002"), ("rebound_shadow", "600002")}
+
+
+# ---- 主账户止损：连续 2 分钟确认 + 问 Jev 走向；影子账户照旧（对照组）----
+
+class FakeTrend:
+    def __init__(self, label):
+        self.label, self.calls, self.last_trace = label, [], None
+
+    def judge(self, pos, q, now):
+        self.calls.append((pos.account, pos.code, now))
+        self.last_trace = {"inputs": {"现价": q.price}, "label": self.label}
+        return self.label
+
+
+def _stop_strat(label):
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    _hold_both(conn)
+    trend = FakeTrend(label)
+    strat = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {}, set(), PREV_DAY, lambda: "正常",
+                            enabled=False, trade_days=[PREV_DAY, TODAY], trend_judge=trend)
+    return strat, conn, trend
+
+
+def _sells(fills):
+    return [(f.account, f.reason) for f in fills if f.side == "sell"]
+
+
+def _q(t, pct):
+    return {"600002": quote("600002", pct=pct, amount=2e8, ts=t, volume=10)}
+
+
+def test_main_stop_needs_two_minutes_shadow_sells_at_once():
+    strat, conn, trend = _stop_strat("单边下跌")
+    assert _sells(strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))) == [("rebound_shadow", "止损")]
+    assert trend.calls == []
+    assert _sells(strat.on_minute(_q(at(10, 15), -2.1), at(10, 15))) == [("rebound_main", "止损（单边下跌）")]
+    assert [c[0] for c in trend.calls] == ["rebound_main"]
+    rows = conn.execute("SELECT code, verdict, detail, strategy FROM decisions WHERE verdict = 'trend'").fetchall()
+    assert rows == [("600002", "trend", "止损（单边下跌）", "rebound")]
+
+
+def test_minute_back_above_line_resets_the_count():
+    """10-09 雪迪龙那种：10:14 瞬间跌破，10:15 回到线上，10:16 再跌破 → 还是第 1 分钟，不卖。"""
+    strat, conn, trend = _stop_strat("单边下跌")
+    strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))
+    strat.on_minute(_q(at(10, 15), -1.9), at(10, 15))
+    assert _sells(strat.on_minute(_q(at(10, 16), -2.1), at(10, 16))) == []
+    assert trend.calls == []
+
+
+def test_same_minute_twice_does_not_count_as_two():
+    strat, conn, trend = _stop_strat("单边下跌")
+    strat.sell_step(_q(at(10, 14), -2.1), at(10, 14))
+    assert _sells(strat.sell_step(_q(at(10, 14), -2.1), at(10, 14))) == []
+
+
+def test_main_holds_when_jev_sees_rebound_and_logs_why():
+    strat, conn, trend = _stop_strat("探底回升")
+    strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))
+    assert _sells(strat.on_minute(_q(at(10, 15), -2.1), at(10, 15))) == []
+    assert conn.execute("SELECT detail FROM decisions WHERE verdict = 'trend'").fetchone() == ("止损暂缓（探底回升）",)
+    # 再跌到 -3.5% 硬止损：不问 Jev 直接卖
+    n = len(trend.calls)
+    assert _sells(strat.on_minute(_q(at(10, 16), -3.5), at(10, 16))) == [("rebound_main", "硬止损")]
+    assert len(trend.calls) == n
+
+
+def test_main_without_trend_judge_still_confirms_then_sells():
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    _hold(conn)
+    strat = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {}, set(), PREV_DAY, lambda: "正常",
+                            enabled=False, trade_days=[PREV_DAY, TODAY])
+    assert _sells(strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))) == []
+    assert _sells(strat.on_minute(_q(at(10, 15), -2.1), at(10, 15))) == [("rebound_main", "止损")]

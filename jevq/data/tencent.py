@@ -6,6 +6,7 @@ from jevq.models import Quote
 
 QT_URL = "https://qt.gtimg.cn/q="
 KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+MINUTE_URL = "https://web.ifzq.gtimg.cn/appstock/app/minute/query"
 SINA_A50_URL = "https://hq.sinajs.cn/list=hf_CHA50CFD"
 OVERSEAS = {"usDJI": "道琼斯", "usIXIC": "纳斯达克", "usINX": "标普500",
             "usHXC": "中概金龙", "hkHSI": "恒生指数"}
@@ -86,6 +87,28 @@ def fetch_kline(code: str, session=None) -> list[tuple[str, float]]:
     data = r.json()["data"][sym]
     rows = data.get("qfqday") or data.get("day") or []
     return [(row[0], float(row[2])) for row in rows]
+
+
+def parse_minutes(body: dict, sym: str) -> list[tuple[str, float, int]]:
+    """分时接口的当日数据 → [("HH:MM", 价格, 累计成交量(手))]；坏行跳过。"""
+    rows = (((body.get("data") or {}).get(sym) or {}).get("data") or {}).get("data") or []
+    out = []
+    for row in rows:
+        f = str(row).split()
+        try:
+            out.append((f"{f[0][:2]}:{f[0][2:4]}", float(f[1]), int(float(f[2]))))
+        except (ValueError, IndexError):
+            continue
+    return out
+
+
+def fetch_minutes(code: str, timeout: float = 5.0, session=None) -> list[tuple[str, float, int]]:
+    """一只股票今天到现在的分时（逐分钟）。只在持仓票要止损/低开反抽时拉一次，不进每分钟的行情批量。"""
+    s = session or requests.Session()
+    sym = symbol(code)
+    r = s.get(MINUTE_URL, params={"code": sym}, timeout=timeout)
+    r.raise_for_status()
+    return parse_minutes(r.json(), sym)
 
 
 def parse_index_pcts(text: str) -> dict[str, float]:

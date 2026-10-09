@@ -66,8 +66,11 @@ def builtin_summaries() -> list[dict]:
                  f"主账户经 Jev 公告排雷 + 消息面判断，每分钟最多检查 {config.MAX_CHECKS_PER_TICK} 只",
                  f"同一只票当天卖出后，现价要比卖出价低 {config.REBOUND_REBUY_DROP:g}% 以上才允许再买（防止卖出后原价买回）"]},
              {"title": "卖出（次日起）", "lines": [
-                 f"相对买入价亏到 {config.REBOUND_STOP:g}% 止损",
+                 f"相对买入价亏到 {config.REBOUND_STOP:g}% 止损；主账户要连续 {config.REBOUND_STOP_CONFIRM} 分钟在线下才算，"
+                 f"亏到 {config.REBOUND_HARD_STOP:g}% 直接卖（硬止损）",
                  f"开盘 ≤ {config.REBOUND_LOW_OPEN:g}% 时，从当天最低拉起 {config.REBOUND_LOW_OPEN_BOUNCE:g} 个点必须卖",
+                 "主账户止损、低开反抽前先问 Jev 今天走向：判「" + "/".join(config.REBOUND_TREND_HOLD)
+                 + "」先留着，下一分钟再看；Jev 没答上照卖。影子账户不问，当对照组",
                  f"当天最高盈利到 +{config.REBOUND_TRAIL_START:g}% 后，从最高回落 {config.REBOUND_TRAIL_PULLBACK:g} 个点卖；"
                  f"最近 {config.REBOUND_FLOW_MINUTES} 分钟主买大于主卖时先留着，跌回成本价必卖",
                  f"最多拿 {config.REBOUND_MAX_HOLD_DAYS} 个交易日，最后一天 {hm(config.EOD_SELL)} 清仓"]}]},
