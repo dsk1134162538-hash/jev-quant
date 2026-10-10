@@ -161,6 +161,13 @@ MAX_CUSTOM_ENABLED = 5
 SYNC_ENABLED = True
 DEPLOY_ENABLED = True
 
+# 收盘后导出到 Vibe-Research（jevq/sync/vibe.py；dj 2026-10-10 要自动导出导入）
+VIBE_ENABLED = True
+VIBE_DIR = r"E:\vibe-research-agent"
+VIBE_PORT = 8765
+VIBE_OUT_DIR = "data/vibe"        # data/ 不进 git：复盘、文章、实盘成交都不能进公开仓库
+VIBE_START_TIMEOUT = 60           # 秒：临时起 Vibe API 等它就绪的上限
+
 # 实盘跟单（docs/specs/2026-09-29-live-trading-design.md）
 LIVE_ACCOUNT = "regime_main"     # 2026-10-09 起实盘跟情绪轮动（原来跟 rebound_main）
 LIVE_BUDGET = None               # 实盘单笔最多用多少资金；None = 全部可用资金（2026-10-08 用户允许用全部资金，原来是 2 万）

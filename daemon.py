@@ -10,11 +10,12 @@ ROOT = Path(__file__).resolve().parent
 
 import run  # noqa: E402
 from jevq import db  # noqa: E402
-from jevq.config import DB_PATH, LIVE_LOCK_NAME, SYNC_ENABLED, DEPLOY_ENABLED  # noqa: E402
+from jevq.config import DB_PATH, LIVE_LOCK_NAME, SYNC_ENABLED, DEPLOY_ENABLED, VIBE_ENABLED  # noqa: E402
 from jevq.live.watchdog import Watchdog, kill_pid, pid_alive, spawn_live  # noqa: E402
 from jevq.notify import notifier_from_env  # noqa: E402
 from jevq.runlock import DAEMON_LOCK_NAME, HELD_MSG, hold_run_lock, is_held  # noqa: E402
 from jevq.sync import export as sync_export  # noqa: E402
+from jevq.sync import vibe  # noqa: E402
 from jevq.sync.deploy import sync_and_deploy as real_sync_and_deploy  # noqa: E402
 
 START = time(8, 50)
@@ -117,13 +118,18 @@ def _real_watchdog_start(stop: threading.Event, notifier, repo: Path, python_exe
 
 
 def _default_after_close(conn, today) -> None:
-    if not SYNC_ENABLED:
-        return
-    try:
-        written = sync_export.export_day(conn, today)
-        file_log(f"每日导出 {len(written)} 个文件")
-    except Exception as e:
-        file_log(f"每日导出失败：{e!r}")
+    if SYNC_ENABLED:
+        try:
+            written = sync_export.export_day(conn, today)
+            file_log(f"每日导出 {len(written)} 个文件")
+        except Exception as e:
+            file_log(f"每日导出失败：{e!r}")
+    if VIBE_ENABLED:
+        try:
+            stats = vibe.sync_day(conn, today, kb=vibe.load_kb())
+            file_log(f"Vibe 导出：{stats}")
+        except Exception as e:
+            file_log(f"Vibe 导出失败：{e!r}")
 
 
 def _default_runner(stop, log):
