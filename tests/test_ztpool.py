@@ -69,3 +69,19 @@ def test_reason_sectors_match_concepts_through_article_hot():
     from jevq.data.hi189 import article_hot
     sectors = ztpool.reason_sectors([{"name": "A", "reason": "PCB"}, {"name": "B", "reason": "PCB"}], min_count=2)
     assert article_hot("PCB概念", ["000001"], {}, sectors) == "板块：涨停原因·PCB"
+
+
+def test_reason_sectors_name_match_only_by_topic_not_by_stock_names():
+    """bug A：涨停股本身就是强势成员、又属于十几个概念，按个股名比对会把几乎所有概念都判成「点名」。
+    涨停原因板块只按题材名比对。"""
+    from jevq.data.hi189 import Sector, article_hot
+    sectors = ztpool.reason_sectors([{"name": "甲", "reason": "固态电池"}, {"name": "乙", "reason": "固态电池"}], min_count=2)
+    assert article_hot("锂电池", ["000001"], {"000001": "甲"}, sectors) == ""        # 甲在里面，但题材名对不上
+    assert article_hot("固态电池", ["000001"], {"000001": "甲"}, sectors) == "板块：涨停原因·固态电池"
+    article = [Sector("晚报板块", [], ["甲"])]                                       # 文章点名的个股照常比对
+    assert article_hot("锂电池", ["000001"], {"000001": "甲"}, article) == "个股：甲"
+
+
+def test_fetch_yesterday_skips_malformed_rows():
+    s = Session({"data": {"pool": [{"c": "000001", "n": "甲"}, {"c": "000002", "n": "乙", "zdp": 1.0, "ylbc": 1}]}})
+    assert [r["code"] for r in ztpool.fetch_yesterday(date(2026, 10, 9), session=s)] == ["000002"]

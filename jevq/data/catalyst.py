@@ -67,17 +67,21 @@ def _hit(term: str, text: str) -> bool:
 
 
 def digest(items: list[dict], terms: dict[str, set[str]]) -> list[dict]:
-    """[{topic, count, news: [{title, source, link, published}]（新的在前）}]，按新闻数从多到少。"""
-    hits: dict[str, list[dict]] = {}
-    for it in items:
+    """[{topic, topics, count, news: [{title, source, link, published}]（新的在前）}]，按新闻数从多到少。
+    匹配到完全同一批新闻的题材（「光伏 / 光伏概念」）合并成一条，topics 列出合并了哪几个。"""
+    hits: dict[str, list[int]] = {}
+    for i, it in enumerate(items):
         text = f"{it.get('title', '')} {it.get('summary', '')}".lower()
         for topic, words in terms.items():
             if any(_hit(w, text) for w in words):
-                hits.setdefault(topic, []).append(it)
+                hits.setdefault(topic, []).append(i)
+    groups: dict[tuple, list[str]] = {}
+    for topic in sorted(hits):
+        groups.setdefault(tuple(hits[topic]), []).append(topic)
     out = []
-    for topic, news in hits.items():
-        news = sorted(news, key=lambda x: x["published"], reverse=True)
-        out.append({"topic": topic, "count": len(news),
+    for idx, topics in groups.items():
+        news = sorted((items[i] for i in idx), key=lambda x: x["published"], reverse=True)
+        out.append({"topic": " / ".join(topics), "topics": topics, "count": len(news),
                     "news": [{"title": n["title"], "source": n.get("source", ""), "link": n.get("link", ""),
                               "published": n["published"].strftime("%m-%d %H:%M")} for n in news[:5]]})
     return sorted(out, key=lambda t: (-t["count"], t["topic"]))
@@ -95,10 +99,11 @@ def cached(conn, day: date) -> dict | None:
     return json.loads(row[0]) if row else None
 
 
-def run(conn, day: date, start: datetime, end: datetime, fetch=None) -> dict:
-    """抓新闻 → 匹配 → 存库，返回摘要（题材数、源成功/失败数）。"""
+def run(conn, day: date, start: datetime, end: datetime, fetch=None, budget: float | None = None) -> dict:
+    """抓新闻 → 匹配 → 存库，返回摘要（题材数、源成功/失败数）。budget：抓取总时限（秒），None = 默认。"""
     from jevq.data import rss_news
-    res = (fetch or rss_news.fetch_all)(rss_news.load_sources(), start, end)
+    kwargs = {} if budget is None else {"budget": budget}
+    res = (fetch or rss_news.fetch_all)(rss_news.load_sources(), start, end, **kwargs)
     topics = digest(res["items"], topic_terms(conn))
     record(conn, day, {"window": [start.strftime("%Y-%m-%d %H:%M"), end.strftime("%Y-%m-%d %H:%M")],
                        "ok": res["ok"], "failed": res["failed"], "news": len(res["items"]), "topics": topics})
@@ -121,5 +126,6 @@ def report_lines(conn, day: date) -> list[str]:
     lines += ["| 题材 | 新闻数 | 今日首板 | 代表新闻 |", "|---|---|---|---|"]
     for t in topics:
         news = "；".join(f"{n['title'][:40]}（{n['source']}）" for n in t["news"][:2])
-        lines.append(f"| {t['topic']} | {t['count']} | {boards.get(t['topic'], 0)} | {news} |")
+        n_boards = sum(boards.get(name, 0) for name in t.get("topics") or [t["topic"]])
+        lines.append(f"| {t['topic']} | {t['count']} | {n_boards} | {news} |")
     return lines

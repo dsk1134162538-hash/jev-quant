@@ -331,9 +331,10 @@ def test_notice_sync_failure_is_logged_and_day_continues(env, monkeypatch):
 def test_premarket_catalyst_window_starts_prev_close_and_extra_snapshot_before_report(env, monkeypatch):
     calls = []
     monkeypatch.setattr(run.config, "CATALYST_ENABLED", True)
+    monkeypatch.setattr(run.config, "CATALYST_DEADLINE", time(23, 0))     # 测试时钟 09:29 起，放宽到不跳过
     monkeypatch.setattr(run.config, "MARKET_EXTRA_ENABLED", True)
-    monkeypatch.setattr(run.catalyst, "run", lambda conn, day, start, end: calls.append(("catalyst", day, start)) or {})
-    monkeypatch.setattr(run.market_extra, "snapshot", lambda conn, day: calls.append(("extra", day)) or {})
+    monkeypatch.setattr(run.catalyst, "run", lambda conn, day, start, end, **k: calls.append(("catalyst", day, start)) or {})
+    monkeypatch.setattr(run.market_extra, "snapshot", lambda conn, day, **k: calls.append(("extra", day)) or {})
     real_report = run.write_report
     monkeypatch.setattr(run, "write_report", lambda *a, **k: calls.append(("report",)) or real_report(*a, **k))
     env.run()
@@ -344,6 +345,7 @@ def test_premarket_catalyst_window_starts_prev_close_and_extra_snapshot_before_r
 
 def test_catalyst_failure_does_not_stop_the_day(env, monkeypatch):
     monkeypatch.setattr(run.config, "CATALYST_ENABLED", True)
+    monkeypatch.setattr(run.config, "CATALYST_DEADLINE", time(23, 0))
 
     def boom(*a, **k):
         raise RuntimeError("rss down")
@@ -1550,3 +1552,13 @@ def test_custom_strategy_reads_sentiment_from_engine(env, fake_custom):
     FakeEngine.instances[0].sentiment_label = "火热"
     assert strat.env_provider() == {"sentiment": "火热", "overseas": "中性"}
 
+
+
+def test_catalyst_skipped_when_started_after_deadline(env, monkeypatch):
+    """bug B：盘中重启不抓新闻，交易循环不能等它。"""
+    calls = []
+    monkeypatch.setattr(run.config, "CATALYST_ENABLED", True)
+    monkeypatch.setattr(run.config, "CATALYST_DEADLINE", time(0, 0))
+    monkeypatch.setattr(run.catalyst, "run", lambda *a, **k: calls.append(a) or {})
+    env.run()
+    assert calls == [] and "隔夜消息催化跳过" in env.log_text()

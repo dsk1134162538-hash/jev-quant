@@ -163,7 +163,7 @@ DEPLOY_ENABLED = True
 
 # 涨停补充数据（jevq/data/ztpool.py；dj 2026-10-10 要接）
 ZT_EXTRA_ENABLED = True
-ZT_EXTRA_TIMEOUT = 8.0            # 秒
+ZT_EXTRA_TIMEOUT = 5.0            # 秒
 ZT_REASON_MIN = 2                 # 同一涨停原因题材 ≥ 这么多家涨停，算主线判断里的「点名」
 
 # 隔夜消息催化 + 人气与资金快照（jevq/data/catalyst.py、market_extra.py；dj 2026-10-10，只记录不进交易）
@@ -171,6 +171,8 @@ CATALYST_ENABLED = True
 MARKET_EXTRA_ENABLED = True
 RSS_TIMEOUT = 10.0                # 秒：每个新闻源
 RSS_WORKERS = 12
+RSS_BUDGET = 60.0                 # 秒：全部源的总时限（10-10 实测 21 秒抓完 106 个源）
+CATALYST_DEADLINE = time(9, 20)   # 过了这个时刻启动（盘中重启）就不抓隔夜新闻：交易循环不能等它
 CATALYST_REPORT_TOP = 15          # 复盘报告里列前几个题材
 # 题材关键词 → 额外匹配词（英文源、常见别称）。键是题材名里包含的字：「人形机器人」也作用于「人形机器人概念」
 CATALYST_ALIASES = {

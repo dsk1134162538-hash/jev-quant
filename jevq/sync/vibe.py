@@ -41,37 +41,36 @@ def trade_key(rec: dict) -> str | None:
 
 def live_trades(conn) -> list[dict]:
     """实盘真实成交（含部分成交），按时间排序。卖出超过程序买入的部分（实盘接管前就有的持仓，
-    例如 10-08 并入程序账的 2600 股雪迪龙）补一笔期初持仓，日期取这只票第一笔成交那天，
-    成本按第一笔买入均价估、没有买入就按卖出价——不补的话 Vibe 重放会报「卖出超过持有」。"""
+    例如 10-08 并入程序账的 2600 股雪迪龙）在那笔卖出前面补一笔期初持仓，日期 = 卖出那天，
+    成本按此前最近一笔买入均价估、没有买入就按卖出价——不补的话 Vibe 重放会报「卖出超过持有」。
+    去重标记：这只票第一次补的是 jev:opening:<代码>（10-10 已经按这个导进 Vibe，不能变），之后每次
+    jev:opening:<代码>:<卖出委托 id>。"""
     rows = conn.execute(
         "SELECT o.id, o.ts, o.side, o.code, o.filled, o.avg_price, i.name, i.reason FROM live_orders o "
         "LEFT JOIN live_intents i ON i.id = o.intent_id "
         "WHERE o.filled > 0 AND o.status IN ('filled', 'partial') ORDER BY o.ts, o.id").fetchall()
-    trades, held, first = [], {}, {}
-    openings: dict[str, dict] = {}
+    trades, held, names, last_buy, n_open = [], {}, {}, {}, {}
     for oid, ts, side, code, filled, avg, name, reason in rows:
         day = ts[:10]
-        first.setdefault(code, {"date": day, "buy": None, "name": name})
-        if side == "buy" and first[code]["buy"] is None:
-            first[code]["buy"] = avg
-        first[code]["name"] = first[code]["name"] or name
-        name = name or first[code]["name"]          # 卖出委托多半没有 intent，名字沿用买入那笔
+        names[code] = names.get(code) or name
+        name = name or names[code]                  # 卖出委托多半没有 intent，名字沿用买入那笔
         have = held.get(code, 0)
         if side == "sell" and filled > have:
-            o = openings.setdefault(code, {"shares": 0, "fallback": avg})
-            o["shares"] += filled - have
+            price = last_buy.get(code) or avg
+            k = n_open.get(code, 0)
+            n_open[code] = k + 1
+            trades.append({"symbol": code, "name": name or "", "account": ACCOUNT, "type": "opening", "date": day,
+                           "shares": filled - have, "price": price,
+                           "note": f"jev:opening:{code}{'' if k == 0 else f':{oid}'}{KEY_SEP}"
+                                   f"实盘接管前已有的持仓，成本按 {price:g} 估"})
             have = filled
+        if side == "buy":
+            last_buy[code] = avg
         held[code] = have + filled if side == "buy" else have - filled
         note = f"jev:live:{oid}" + (f"{KEY_SEP}{reason}" if reason else "")
         trades.append({"symbol": code, "name": name or "", "account": ACCOUNT, "type": side,
                        "date": day, "shares": filled, "price": avg, "note": note[:1000]})
-    out = []
-    for code, o in openings.items():
-        price = first[code]["buy"] or o["fallback"]
-        out.append({"symbol": code, "name": first[code]["name"] or "", "account": ACCOUNT, "type": "opening",
-                    "date": first[code]["date"], "shares": o["shares"], "price": price,
-                    "note": f"jev:opening:{code}{KEY_SEP}实盘接管前已有的持仓，成本按 {price:g} 估"})
-    return out + trades
+    return trades
 
 
 # ---- 实盘持仓 → 论点 + 判据（dj 10-10 要：Vibe 事件日历按到期日提醒，手机上看得到为什么买、什么时候必须走）----
@@ -244,7 +243,11 @@ class VibeClient:
     def __init__(self, base: str, token: str, session=None, timeout: float = 60):
         import requests
         self.base, self.timeout = base.rstrip("/"), timeout
-        self.session = session or requests.Session()
+        if session is None:
+            session = requests.Session()
+            # 只连本机：Windows 系统代理（VPN）的例外里没有 127.0.0.1，不关掉的话请求会被送进代理
+            session.trust_env = False
+        self.session = session
         self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     def _call(self, method: str, path: str, body=None):
@@ -317,15 +320,16 @@ def api_client(vibe_dir, port: int = config.VIBE_PORT, wait: float = config.VIBE
     """Vibe API 开着就用；没开就临时起一个，用完关掉。token 是 Vibe 自己生成的 .local/api.token。"""
     vibe_dir = Path(vibe_dir)
     token_file = vibe_dir / ".local" / "api.token"
-    proc = None
-    if not _port_open(port):
-        kwargs: dict = {"stdin": subprocess.DEVNULL, "cwd": vibe_dir}
-        if sys.platform == "win32":
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        log = open(Path(config.VIBE_OUT_DIR) / "api.log", "a", encoding="utf-8")
-        proc = subprocess.Popen(["node", "orchestrator/src/api.ts", "--port", str(port), "--host", "127.0.0.1"],
-                                stdout=log, stderr=log, **kwargs)
+    proc = log = None
     try:
+        if not _port_open(port):
+            kwargs: dict = {"stdin": subprocess.DEVNULL, "cwd": vibe_dir}
+            if sys.platform == "win32":
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            Path(config.VIBE_OUT_DIR).mkdir(parents=True, exist_ok=True)
+            log = open(Path(config.VIBE_OUT_DIR) / "api.log", "a", encoding="utf-8")
+            proc = subprocess.Popen(["node", "orchestrator/src/api.ts", "--port", str(port), "--host", "127.0.0.1"],
+                                    stdout=log, stderr=log, **kwargs)
         deadline = time.monotonic() + wait
         client = None
         while time.monotonic() < deadline:
@@ -333,11 +337,12 @@ def api_client(vibe_dir, port: int = config.VIBE_PORT, wait: float = config.VIBE
                 raise RuntimeError(f"Vibe API 启动失败，退出码 {proc.returncode}（见 {config.VIBE_OUT_DIR}/api.log）")
             if token_file.exists() and _port_open(port):
                 try:
-                    client = VibeClient(f"http://127.0.0.1:{port}", token_file.read_text(encoding="utf-8").strip())
-                    if client.health():
+                    c = VibeClient(f"http://127.0.0.1:{port}", token_file.read_text(encoding="utf-8").strip())
+                    if c.health():
+                        client = c
                         break
                 except Exception:
-                    client = None
+                    pass
             time.sleep(0.5)
         if client is None:
             raise RuntimeError(f"等 Vibe API 超过 {wait:g} 秒")
@@ -349,6 +354,8 @@ def api_client(vibe_dir, port: int = config.VIBE_PORT, wait: float = config.VIBE
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        if log is not None:
+            log.close()
 
 
 def installed(vibe_dir) -> bool:

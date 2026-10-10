@@ -6,7 +6,7 @@
 import json
 import re
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
@@ -81,24 +81,26 @@ def _get(url, timeout=None, headers=None):
 
 
 def fetch_all(sources: list[dict], start: datetime, end: datetime, get=_get,
-              timeout: float = config.RSS_TIMEOUT, workers: int = config.RSS_WORKERS) -> dict:
+              timeout: float = config.RSS_TIMEOUT, workers: int = config.RSS_WORKERS,
+              budget: float = config.RSS_BUDGET) -> dict:
     """抓所有源，只留发布时间在 [start, end] 之间的（没写时间的丢掉——分不清是不是旧闻）。
+    budget 秒是总时限：到点还没回来的源算失败、不再等（requests 的 timeout 只管单次读写，慢慢吐字节的源能拖很久）。
     返回 {items（新的在前）, ok, failed: [源名]}。"""
     def one(src):
-        try:
-            r = get(src["url"], timeout=timeout, headers={"User-Agent": UA, "Accept": "application/rss+xml, application/xml, */*"})
-            r.raise_for_status()
-            return src, parse_feed(r.content), None
-        except Exception as e:      # 单源失败不拖垮整体
-            return src, [], e
+        r = get(src["url"], timeout=timeout, headers={"User-Agent": UA, "Accept": "application/rss+xml, application/xml, */*"})
+        r.raise_for_status()
+        return parse_feed(r.content)
+    ex = ThreadPoolExecutor(max_workers=workers)
+    futs = {ex.submit(one, s): s for s in sources}
+    done, _ = wait(futs, timeout=budget)
+    ex.shutdown(wait=False, cancel_futures=True)        # 没回来的线程自己超时结束，不在这里等
     items, failed, ok = [], [], 0
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        for src, got, err in ex.map(one, sources):
-            if err is not None:
-                failed.append(src["name"])
-                continue
-            ok += 1
-            items += [{**it, "source": src["name"], "industry": src.get("hint", "")} for it in got
-                      if it["published"] and start <= it["published"] <= end]
+    for fut, src in futs.items():                        # 按清单顺序，结果稳定
+        if fut not in done or fut.exception() is not None:   # 单源失败不拖垮整体
+            failed.append(src["name"])
+            continue
+        ok += 1
+        items += [{**it, "source": src["name"], "industry": src.get("hint", "")} for it in fut.result()
+                  if it["published"] and start <= it["published"] <= end]
     items.sort(key=lambda x: x["published"], reverse=True)
     return {"items": items, "ok": ok, "failed": failed}

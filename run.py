@@ -252,12 +252,17 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             recent_limit_ups = set()
 
     if config.CATALYST_ENABLED and not late:      # 隔夜消息催化：只记录，不参与交易
-        state["phase"] = "抓隔夜新闻"
-        try:
-            got = catalyst.run(conn, today, datetime.combine(prev_day, time(15, 0)), now())
-            log(f"隔夜消息催化：{got}")
-        except Exception as e:
-            log(f"隔夜消息催化失败：{e!r}")
+        cutoff = datetime.combine(today, config.CATALYST_DEADLINE)
+        if now() >= cutoff:
+            log(f"隔夜消息催化跳过：已过 {config.CATALYST_DEADLINE:%H:%M}（盘中启动不让交易等它）")
+        else:
+            state["phase"] = "抓隔夜新闻"
+            try:
+                budget = min(config.RSS_BUDGET, (cutoff - now()).total_seconds())
+                got = catalyst.run(conn, today, datetime.combine(prev_day, time(15, 0)), now(), budget=budget)
+                log(f"隔夜消息催化：{got}")
+            except Exception as e:
+                log(f"隔夜消息催化失败：{e!r}")
 
     state["phase"] = "等待 09:15"
     if not once and not late and not wait_until(time(9, 15), stop):
@@ -443,7 +448,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         log(f"自建板块日快照 {snaps} 个板块")
     if config.MARKET_EXTRA_ENABLED:     # 人气榜 / 热榜 / 概念资金流 / 龙虎榜：只记录，赶在报告之前
         try:
-            log(f"人气与资金快照：{market_extra.snapshot(conn, today)}")
+            log(f"人气与资金快照：{market_extra.snapshot(conn, today, lhb_day=prev_day)}")
         except Exception as e:
             log(f"人气与资金快照失败：{e!r}")
     try:

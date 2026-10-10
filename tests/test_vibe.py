@@ -25,12 +25,12 @@ def _conn():
 
 def test_live_trades_only_filled_and_adds_opening_for_preexisting_shares():
     trades = vibe.live_trades(_conn())
-    assert [(t["type"], t["symbol"], t["shares"]) for t in trades] == [
-        ("opening", "002658", 2600), ("buy", "002658", 500), ("sell", "002658", 3100), ("buy", "600000", 300)]
-    opening = trades[0]
-    assert opening["date"] == "2026-10-08" and opening["price"] == 7.14     # 成本按第一笔买入估
-    assert opening["note"].startswith("jev:opening:002658")
-    assert trades[1]["note"].startswith("jev:live:1") and trades[1]["name"] == "雪迪龙"
+    assert [(t["type"], t["symbol"], t["shares"]) for t in trades] == [   # 期初持仓紧挨在那笔卖出前面
+        ("buy", "002658", 500), ("opening", "002658", 2600), ("sell", "002658", 3100), ("buy", "600000", 300)]
+    opening = trades[1]
+    assert opening["date"] == "2026-10-09" and opening["price"] == 7.14     # 成本按此前最近一笔买入估
+    assert vibe.trade_key(opening) == "jev:opening:002658" and opening["name"] == "雪迪龙"
+    assert trades[0]["note"].startswith("jev:live:1") and trades[0]["name"] == "雪迪龙"
     assert trades[2]["price"] == 6.98 and trades[2]["date"] == "2026-10-09"
     assert all(t["account"] == "实盘" for t in trades)
 
@@ -312,3 +312,57 @@ def test_sync_plans_leaves_user_theses_alone():
     fake.kinds["thesis"].append({"id": "u1", "title": "我自己的", "status": "active", "note": "dj 写的"})
     vibe.sync_plans(fake, _conn(), CAL)
     assert fake.kinds["thesis"] == [{"id": "u1", "title": "我自己的", "status": "active", "note": "dj 写的"}]
+
+
+def test_client_ignores_system_proxy_for_localhost():
+    """bug D：Windows 系统代理（VPN）例外里没有 127.0.0.1，requests 默认会把本机请求也送进代理。"""
+    c = vibe.VibeClient("http://127.0.0.1:8765", "t" * 20)
+    assert c.session.trust_env is False
+
+
+def test_second_opening_for_same_code_gets_its_own_key():
+    """bug E：同一只票第二次出现「接管前已有持仓」要单独补一笔，不能被第一笔的去重标记吞掉；
+    第一笔的标记保持 jev:opening:<代码>（已经导进 Vibe 的那条不能重复导）。"""
+    conn = db.connect(":memory:")
+    rows = [(1, "2026-10-08T10:00:00", "buy", 500), (2, "2026-10-09T10:00:00", "sell", 3100),
+            (3, "2026-10-20T10:00:00", "sell", 1000)]
+    for oid, ts, side, n in rows:
+        conn.execute("INSERT INTO live_orders(id, ts, side, code, price, shares, filled, avg_price, status) "
+                     "VALUES (?, ?, ?, '002658', 7, ?, ?, 7.0, 'filled')", (oid, ts, side, n, n))
+    openings = [t for t in vibe.live_trades(conn) if t["type"] == "opening"]
+    assert [(vibe.trade_key(t), t["shares"], t["date"]) for t in openings] == [
+        ("jev:opening:002658", 2600, "2026-10-09"), ("jev:opening:002658:3", 1000, "2026-10-20")]
+
+
+def test_api_client_closes_its_log_file(tmp_path, monkeypatch):
+    """F：临时起 Vibe 时打开的日志文件用完要关。"""
+    opened = []
+    real_open = open
+
+    def spy(*a, **k):
+        f = real_open(*a, **k)
+        opened.append(f)
+        return f
+    monkeypatch.setattr("builtins.open", spy)
+    monkeypatch.setattr(vibe.config, "VIBE_OUT_DIR", str(tmp_path))
+    monkeypatch.setattr(vibe, "_port_open", lambda port: False)
+
+    class Proc:
+        returncode = 1
+
+        def poll(self):
+            return 1
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            pass
+    monkeypatch.setattr(vibe.subprocess, "Popen", lambda *a, **k: Proc())
+    try:
+        with vibe.api_client(tmp_path, wait=1):
+            pass
+    except RuntimeError:
+        pass
+    logs = [f for f in opened if str(getattr(f, "name", "")).endswith("api.log")]
+    assert logs and all(f.closed for f in logs)

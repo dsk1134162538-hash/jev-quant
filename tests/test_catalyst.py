@@ -112,7 +112,7 @@ def test_report_lines_empty_when_not_recorded():
 def test_market_extra_snapshot_and_report(monkeypatch):
     conn = db.connect(":memory:")
     monkeypatch.setattr(market_extra, "FETCHERS", {
-        "em_hot": lambda d: [{"rank": 1, "code": "600418"}],
+        "em_hot": lambda d: [{"rank": 1, "code": "600418"}, {"rank": 2, "code": "600825"}],
         "ths_hot": lambda d: [{"rank": 1, "code": "600825", "name": "新华传媒", "pct": 10.0,
                                "concepts": ["上海国企"], "tag": "9天9板"}],
         "concept_flow": lambda d: [{"concept": "同花顺漂亮100", "pct": 0.9, "net": 92.4, "leader": "x"},
@@ -121,8 +121,56 @@ def test_market_extra_snapshot_and_report(monkeypatch):
         "lhb": lambda d: (_ for _ in ()).throw(RuntimeError("down")),
     })
     got = market_extra.snapshot(conn, date(2026, 10, 9))
-    assert got == {"em_hot": 1, "ths_hot": 1, "concept_flow": 3, "lhb": None}
+    assert got == {"em_hot": 2, "ths_hot": 1, "concept_flow": 3, "lhb": None}
     text = "\n".join(market_extra.report_lines(conn, date(2026, 10, 9), {"600418": "甲"}))
     assert "## 人气与资金" in text and "新华传媒" in text and "9天9板" in text and "AI视频" in text and "甲" in text
+    assert "600825 新华传媒" in text                              # 人气榜只有代码，名字借同花顺热榜的
     assert "白酒" in text                                         # 净流出也列
     assert "漂亮100" not in text                                  # 指数、标签类不是题材
+
+
+def test_fetch_all_stops_at_deadline_and_counts_unfinished_as_failed():
+    """bug B：总时限到了就收手，没回来的源算失败，不让盘前抓新闻拖住交易。"""
+    import threading
+    gate = threading.Event()
+
+    def get(url, timeout=None, headers=None):
+        if url == "slow":
+            gate.wait(5)
+        return Resp(RSS)
+    t0 = datetime.now()
+    res = rss_news.fetch_all([{"name": "快", "url": "fast"}, {"name": "慢", "url": "slow"}],
+                             start=datetime(2026, 10, 9, 15, 0), end=datetime(2026, 10, 10, 9, 0), get=get, budget=0.5)
+    gate.set()
+    assert (datetime.now() - t0).total_seconds() < 3
+    assert res["ok"] == 1 and res["failed"] == ["慢"]
+
+
+def test_market_extra_lhb_uses_previous_day_and_dedupes(monkeypatch):
+    """bug C：收盘后当天龙虎榜还没出，报告里放上一交易日的（傍晚已公布）；同一只票多条上榜理由只列一次。"""
+    conn = db.connect(":memory:")
+    asked = []
+    monkeypatch.setattr(market_extra, "FETCHERS", {
+        "em_hot": lambda d: [], "ths_hot": lambda d: [], "concept_flow": lambda d: [],
+        "lhb": lambda d: asked.append(d) or [{"code": "1", "name": "甲", "reason": "日涨幅偏离", "pct": 10.0, "net": 500.0},
+                                              {"code": "1", "name": "甲", "reason": "三日涨幅", "pct": 10.0, "net": 800.0},
+                                              {"code": "2", "name": "乙", "reason": "x", "pct": 5.0, "net": 100.0}]})
+    market_extra.snapshot(conn, date(2026, 10, 12), lhb_day=date(2026, 10, 9))
+    assert asked == [date(2026, 10, 9)]
+    text = "\n".join(market_extra.report_lines(conn, date(2026, 10, 12), {}, lhb_day=date(2026, 10, 9)))
+    assert "上一交易日（10-09）龙虎榜" in text and text.count("甲") == 1 and "+800" in text
+
+
+def test_digest_merges_topics_hit_by_exactly_the_same_news():
+    """「光伏 / 光伏概念」「华为汽车 / 华为海思 / 华为鸿蒙」匹配到的是同一批新闻，合并成一行；首板数按合并的几个题材加总。"""
+    items = [{"title": "光伏装机创新高", "summary": "", "source": "a", "link": "l1", "published": datetime(2026, 10, 9, 20)},
+             {"title": "光伏组件涨价", "summary": "", "source": "b", "link": "l2", "published": datetime(2026, 10, 9, 21)}]
+    terms = {"光伏": {"光伏"}, "光伏概念": {"光伏"}, "储能": {"储能"}}
+    d = catalyst.digest(items, terms)
+    assert [(t["topic"], t["topics"], t["count"]) for t in d] == [("光伏 / 光伏概念", ["光伏", "光伏概念"], 2)]
+    conn = _conn()
+    catalyst.record(conn, date(2026, 10, 12), {"window": ["a", "b"], "ok": 1, "failed": [], "news": 2, "topics": d})
+    conn.execute("INSERT INTO board_events(date, code, name, concept) VALUES ('2026-10-12', '1', '甲', '光伏概念')")
+    conn.execute("INSERT INTO board_events(date, code, name, concept) VALUES ('2026-10-12', '2', '乙', '光伏')")
+    conn.commit()
+    assert "| 光伏 / 光伏概念 | 2 | 2 |" in "\n".join(catalyst.report_lines(conn, date(2026, 10, 12)))

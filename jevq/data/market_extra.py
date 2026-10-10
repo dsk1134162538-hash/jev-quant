@@ -57,18 +57,20 @@ def lhb(d: date) -> list[dict]:
 FETCHERS = {"em_hot": em_hot, "ths_hot": ths_hot, "concept_flow": concept_flow, "lhb": lhb}
 
 
-def snapshot(conn, d: date) -> dict:
-    """每项取一次存库，返回 {种类: 条数 | None（失败）}。"""
+def snapshot(conn, d: date, lhb_day: date | None = None) -> dict:
+    """每项取一次存库，返回 {种类: 条数 | None（失败）}。
+    龙虎榜傍晚才公布，收盘后报告那会儿当天的还没有：lhb_day 传上一交易日，存在那一天名下。"""
     got = {}
     for kind, fn in FETCHERS.items():
+        day = (lhb_day or d) if kind == "lhb" else d
         try:
-            rows = fn(d)
+            rows = fn(day)
         except Exception as e:
             print(f"[market_extra] {kind} 失败: {e!r}")
             got[kind] = None
             continue
         conn.execute("INSERT OR REPLACE INTO day_cache(date, kind, key, value) VALUES (?, ?, ?, ?)",
-                     (d.isoformat(), KIND, kind, json.dumps(rows, ensure_ascii=False)))
+                     (day.isoformat(), KIND, kind, json.dumps(rows, ensure_ascii=False)))
         got[kind] = len(rows)
     conn.commit()
     return got
@@ -79,8 +81,17 @@ def cached(conn, d: date) -> dict[str, list]:
         "SELECT key, value FROM day_cache WHERE date=? AND kind=?", (d.isoformat(), KIND))}
 
 
-def report_lines(conn, d: date, names: dict[str, str] | None = None) -> list[str]:
+def _latest_lhb(conn, d: date) -> tuple[str, list] | None:
+    row = conn.execute("SELECT date, value FROM day_cache WHERE kind=? AND key='lhb' AND date<=? "
+                       "ORDER BY date DESC LIMIT 1", (KIND, d.isoformat())).fetchone()
+    return (row[0], json.loads(row[1])) if row else None
+
+
+def report_lines(conn, d: date, names: dict[str, str] | None = None, lhb_day: date | None = None) -> list[str]:
     data = cached(conn, d)
+    lhb_at = _latest_lhb(conn, lhb_day or d)
+    if lhb_at:
+        data["lhb"] = lhb_at[1]
     if not data:
         return []
     names = names or {}
@@ -90,7 +101,8 @@ def report_lines(conn, d: date, names: dict[str, str] | None = None) -> list[str
             f"{r['name']} {r['pct']:+.1f}%" + (f"｜{r['tag']}" if r["tag"] else "") +
             (f"｜{'、'.join(r['concepts'][:2])}" if r["concepts"] else "") for r in rows[:10] if r.get("pct") is not None), ""]
     if rows := data.get("em_hot"):
-        lines += ["**东财人气榜前 10**：" + "、".join(f"{r['code']} {names.get(r['code'], '')}".strip() for r in rows[:10]), ""]
+        known = {**{r["code"]: r["name"] for r in data.get("ths_hot", []) if r.get("name")}, **names}
+        lines += ["**东财人气榜前 10**：" + "、".join(f"{r['code']} {known.get(r['code'], '')}".strip() for r in rows[:10]), ""]
     if rows := data.get("concept_flow"):
         from jevq.data.catalyst import _NOT_TOPIC        # 指数、资金标签类不是题材
         inflow = sorted((r for r in rows if not _NOT_TOPIC.search(r["concept"])), key=lambda r: -r["net"])
@@ -98,7 +110,12 @@ def report_lines(conn, d: date, names: dict[str, str] | None = None) -> list[str
             f"{r['concept']} {r['net']:+.1f}（{r['pct']:+.1f}%，领涨 {r['leader']}）" for r in inflow[:8]), "",
                   "**净流出前 5**：" + "；".join(f"{r['concept']} {r['net']:+.1f}" for r in inflow[::-1][:5] if r["net"] < 0), ""]
     if rows := data.get("lhb"):
-        top = sorted(rows, key=lambda r: -r["net"])[:8]
-        lines += ["**龙虎榜净买入前 8**（万元）：" + "；".join(
+        best: dict[str, dict] = {}
+        for r in rows:                   # 同一只票几条上榜理由（日涨幅偏离、三日涨幅……）只留净买最大的一条
+            if r["code"] not in best or r["net"] > best[r["code"]]["net"]:
+                best[r["code"]] = r
+        top = sorted(best.values(), key=lambda r: -r["net"])[:8]
+        when = "今日" if lhb_at and lhb_at[0] == d.isoformat() else f"上一交易日（{lhb_at[0][5:]}）"
+        lines += [f"**{when}龙虎榜净买入前 8**（万元）：" + "；".join(
             f"{r['name']} {r['net']:+,.0f}（{r['pct']:+.1f}%，{r['reason'][:16]}）" for r in top), ""]
     return lines

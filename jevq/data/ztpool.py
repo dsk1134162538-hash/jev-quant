@@ -13,14 +13,14 @@ from collections import Counter
 from datetime import date
 
 from jevq import config
-from jevq.data.hi189 import Sector
+from jevq.data.hi189 import TOPIC_ONLY_PREFIX, Sector
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/117.0.0.0 Safari/537.36"
 YZT_URL = "https://push2ex.eastmoney.com/getYesterdayZTPool"
 YZT_UT = "7eea3edcaed734bea9cbfc24409ed989"
 THS_URL = "https://data.10jqka.com.cn/dataapi/limit_up/limit_up_pool"
 THS_FIELDS = "199112,10,9001,330323,330324,330325,9002,330329,133971,133970,1968584,3475914,9003,9004"
-REASON_PREFIX = "涨停原因·"
+REASON_PREFIX = TOPIC_ONLY_PREFIX
 _SPLIT = re.compile(r"[+＋、/]+")
 # 不是题材的原因词（业绩、分红这类个股事件），不算「点名」
 _NOT_THEME = re.compile(r"业绩|年报|季报|预增|扭亏|增长|分红|回购|全产业链|增持|中标")
@@ -42,7 +42,7 @@ def fetch_yesterday(d: date, session=None) -> list[dict]:
     r.raise_for_status()
     pool = (r.json().get("data") or {}).get("pool") or []
     return [{"code": p["c"], "name": p.get("n", ""), "pct": round(float(p["zdp"]), 2), "boards": int(p.get("ylbc") or 1)}
-            for p in pool]
+            for p in pool if p.get("c") and p.get("zdp") is not None]       # 缺字段的行跳过，不让整份作废
 
 
 def yesterday_stats(rows: list[dict]) -> dict:

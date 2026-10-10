@@ -15,6 +15,7 @@ import requests
 from jevq.config import HI189_ENABLED, HI189_FEED_URL, HI189_FETCH_UNTIL, HI189_MIDDAY_JUDGE, HI189_TIMEOUT
 
 KIND = "hi189"
+TOPIC_ONLY_PREFIX = "涨停原因·"     # 这个前缀的板块在 article_hot 里只按题材名比对，不按个股名
 CN_TZ = timezone(timedelta(hours=8))
 PUBLISHED_AFTER = time(15, 0)                 # 上一交易日 15:00 之后发布的才算（收盘后的晚报）
 PASSWORD_PREFIXES = ("密码保护：", "密码保护:", "Protected:")
@@ -242,7 +243,9 @@ def article_hot(concept: str, members: list[str], names: dict[str, str], sectors
         n = _norm(s.name)
         if len(c) >= 2 and len(n) >= 2 and (c in n or n in c):
             return f"板块：{s.name}"
-    mentioned = {x for s in sectors for x in (*s.limit_up, *s.strong)}
+    # 涨停原因板块（jevq.data.ztpool）只按题材名比：涨停股本来就是强势成员、又属于十几个概念，
+    # 按个股名比会把几乎所有概念都判成点名
+    mentioned = {x for s in sectors if not s.name.startswith(TOPIC_ONLY_PREFIX) for x in (*s.limit_up, *s.strong)}
     for code in members:
         if (nm := names.get(code)) and nm in mentioned:
             return f"个股：{nm}"
