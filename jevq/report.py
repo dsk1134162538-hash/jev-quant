@@ -189,6 +189,13 @@ def write_report(conn: sqlite3.Connection, ledger: Ledger, day: date, prices: di
     except Exception as e:      # 自建板块只是记录，报告不能因它失败
         print(f"[report] 自建板块一节生成失败：{e!r}")
 
+    try:                        # 隔夜消息催化、人气与资金：只记录，报告不能因它们失败
+        from jevq.data import catalyst, market_extra
+        lines += catalyst.report_lines(conn, day)
+        lines += market_extra.report_lines(conn, day, names)
+    except Exception as e:
+        print(f"[report] 消息催化/人气资金一节生成失败：{e!r}")
+
     st = notice_risk_stats(conn, day)
     lines += ["", "## 公告风险统计", "",
               f"细判 {st['judged']} 条｜否决：高风险 {st['reject']}、拿不准 {st['unsure']}｜未读到正文 {st['unread']}", ""]

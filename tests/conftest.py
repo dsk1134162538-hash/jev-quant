@@ -25,3 +25,11 @@ def _no_real_pushplus(monkeypatch):
         raise AssertionError("real network in tests")
 
     monkeypatch.setattr("jevq.notify.requests.post", _boom)
+
+
+@pytest.fixture(autouse=True)
+def _no_extra_market_data(monkeypatch):
+    """新闻催化、人气与资金、涨停补充数据都要联网：跑 run_day 的测试一律关掉，测这些功能的测试直接调模块函数。"""
+    monkeypatch.setattr("jevq.config.CATALYST_ENABLED", False)
+    monkeypatch.setattr("jevq.config.MARKET_EXTRA_ENABLED", False)
+    monkeypatch.setattr("jevq.config.ZT_EXTRA_ENABLED", False)

@@ -166,6 +166,51 @@ ZT_EXTRA_ENABLED = True
 ZT_EXTRA_TIMEOUT = 8.0            # 秒
 ZT_REASON_MIN = 2                 # 同一涨停原因题材 ≥ 这么多家涨停，算主线判断里的「点名」
 
+# 隔夜消息催化 + 人气与资金快照（jevq/data/catalyst.py、market_extra.py；dj 2026-10-10，只记录不进交易）
+CATALYST_ENABLED = True
+MARKET_EXTRA_ENABLED = True
+RSS_TIMEOUT = 10.0                # 秒：每个新闻源
+RSS_WORKERS = 12
+CATALYST_REPORT_TOP = 15          # 复盘报告里列前几个题材
+# 题材关键词 → 额外匹配词（英文源、常见别称）。键是题材名里包含的字：「人形机器人」也作用于「人形机器人概念」
+CATALYST_ALIASES = {
+    "人形机器人": ["humanoid", "optimus", "figure ai", "宇树", "具身智能"],
+    "机器人": ["robot", "robotics"],
+    "HBM": ["hbm", "high bandwidth memory"],
+    "存储": ["dram", "nand", "memory chip"],
+    "光模块": ["optical module", "transceiver", "cpo", "silicon photonics", "光通信"],
+    "CPO": ["cpo", "co-packaged optics"],
+    "算力": ["gpu", "nvidia", "ai chip", "data center", "datacenter", "英伟达", "智算"],
+    "芯片": ["semiconductor", "chipmaker", "tsmc", "台积电", "晶圆"],
+    "半导体": ["semiconductor", "tsmc", "asml", "台积电", "光刻"],
+    "PCB": ["pcb", "printed circuit"],
+    "固态电池": ["solid-state battery", "solid state battery"],
+    "锂电": ["lithium", "battery"],
+    "储能": ["energy storage", "battery storage"],
+    "核聚变": ["fusion", "tokamak", "可控核聚变"],
+    "核电": ["nuclear power", "nuclear reactor", "smr"],
+    "商业航天": ["spacex", "starship", "rocket launch", "satellite", "卫星", "火箭"],
+    "卫星": ["satellite", "starlink", "星链"],
+    "低空经济": ["evtol", "flying car", "drone", "飞行汽车", "无人机"],
+    "无人驾驶": ["autonomous driving", "robotaxi", "self-driving", "waymo", "fsd"],
+    "智能驾驶": ["autonomous driving", "robotaxi", "self-driving", "fsd"],
+    "创新药": ["fda approval", "clinical trial", "biotech", "glp-1", "adc"],
+    "减肥药": ["glp-1", "obesity drug", "semaglutide", "tirzepatide"],
+    "量子": ["quantum"],
+    "网络安全": ["cybersecurity", "ransomware", "data breach", "黑客"],
+    "短剧": ["短剧", "微短剧", "漫剧"],
+    "AI应用": ["chatgpt", "openai", "agent", "大模型", "智能体"],
+    "人工智能": ["openai", "anthropic", "llm", "大模型", "生成式"],
+    "DeepSeek": ["deepseek"],
+    "华为": ["huawei", "鸿蒙", "harmonyos"],
+    "苹果": ["apple", "iphone"],
+    "特斯拉": ["tesla"],
+    "脑机接口": ["brain-computer", "neuralink"],
+    "稀土": ["rare earth"],
+    "光伏": ["solar", "photovoltaic"],
+    "风电": ["wind power", "offshore wind"],
+}
+
 # 收盘后导出到 Vibe-Research（jevq/sync/vibe.py；dj 2026-10-10 要自动导出导入）
 VIBE_ENABLED = True
 VIBE_DIR = r"E:\vibe-research-agent"

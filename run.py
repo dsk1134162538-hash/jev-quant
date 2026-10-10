@@ -11,7 +11,7 @@ from jevq import accounts as accounts_mod
 from jevq import config, db, notify_content
 from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
 from jevq.data import (akdata, board_events, candidates, closes, concepts, custom_store, hi189, news7x24, own_sectors,
-                       sell_followups, tencent, ztpool)
+                       catalyst, market_extra, sell_followups, tencent, ztpool)
 from jevq.data.features import history_features
 from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
@@ -251,6 +251,14 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             log(f"近 10 日涨停查询失败，扫首板本项过滤跳过：{e!r}")
             recent_limit_ups = set()
 
+    if config.CATALYST_ENABLED and not late:      # 隔夜消息催化：只记录，不参与交易
+        state["phase"] = "抓隔夜新闻"
+        try:
+            got = catalyst.run(conn, today, datetime.combine(prev_day, time(15, 0)), now())
+            log(f"隔夜消息催化：{got}")
+        except Exception as e:
+            log(f"隔夜消息催化失败：{e!r}")
+
     state["phase"] = "等待 09:15"
     if not once and not late and not wait_until(time(9, 15), stop):
         return None
@@ -433,6 +441,11 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if own_quotes:      # 自建板块（只记录）：日快照要赶在报告之前；失败只记日志
         snaps = own_sectors.snapshot_step(conn, today, universe, own_quotes, ret5, own_judge, log=log)
         log(f"自建板块日快照 {snaps} 个板块")
+    if config.MARKET_EXTRA_ENABLED:     # 人气榜 / 热榜 / 概念资金流 / 龙虎榜：只记录，赶在报告之前
+        try:
+            log(f"人气与资金快照：{market_extra.snapshot(conn, today)}")
+        except Exception as e:
+            log(f"人气与资金快照失败：{e!r}")
     try:
         path = write_report(conn, ledger, today, prices, overseas, engine.sentiment_label,
                             out_dir=REPORT_DIR, names=names, articles=hi189.cached(conn, today))

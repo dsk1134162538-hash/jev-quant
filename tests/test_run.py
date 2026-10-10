@@ -1,6 +1,6 @@
 import threading
 from collections import Counter
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -326,6 +326,30 @@ def test_notice_sync_failure_is_logged_and_day_continues(env, monkeypatch):
     assert len(calls) == 2                              # 盘前 + 13:00 重同步都失败也照常跑完
     assert len(FakeEngine.instances[0].ticks) == 240 and path is not None
     assert "notice down" in env.log_text()
+
+
+def test_premarket_catalyst_window_starts_prev_close_and_extra_snapshot_before_report(env, monkeypatch):
+    calls = []
+    monkeypatch.setattr(run.config, "CATALYST_ENABLED", True)
+    monkeypatch.setattr(run.config, "MARKET_EXTRA_ENABLED", True)
+    monkeypatch.setattr(run.catalyst, "run", lambda conn, day, start, end: calls.append(("catalyst", day, start)) or {})
+    monkeypatch.setattr(run.market_extra, "snapshot", lambda conn, day: calls.append(("extra", day)) or {})
+    real_report = run.write_report
+    monkeypatch.setattr(run, "write_report", lambda *a, **k: calls.append(("report",)) or real_report(*a, **k))
+    env.run()
+    kinds = [c[0] for c in calls]
+    assert kinds == ["catalyst", "extra", "report"]
+    assert calls[0][2].time() == time(15, 0) and calls[0][2].date() < calls[0][1]
+
+
+def test_catalyst_failure_does_not_stop_the_day(env, monkeypatch):
+    monkeypatch.setattr(run.config, "CATALYST_ENABLED", True)
+
+    def boom(*a, **k):
+        raise RuntimeError("rss down")
+    monkeypatch.setattr(run.catalyst, "run", boom)
+    assert env.run() is not None and "rss down" in env.log_text()
+    assert len(FakeEngine.instances[0].ticks) == 240
 
 
 def test_missing_key_without_positions_is_fatal(env, monkeypatch):
