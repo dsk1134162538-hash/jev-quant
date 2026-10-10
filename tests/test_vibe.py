@@ -191,11 +191,11 @@ def test_sync_day_skips_push_when_vibe_not_installed(tmp_path):
 
 
 def test_sync_day_pushes_through_given_client(tmp_path):
-    fake = FakeVibe()
+    fake = FakeLedger()
     (tmp_path / "2026-10-09.md").write_text("# 复盘", encoding="utf-8")
-    stats = vibe.sync_day(_conn(), date(2026, 10, 9), out_dir=tmp_path / "out", report_dir=tmp_path,
-                          kb=None, client_factory=lambda: _ctx(fake))
-    assert stats["pushed"] is True and stats["trades"] == 4 and stats["docs"] == 1
+    stats = vibe.sync_day(_held_conn(), date(2026, 10, 9), out_dir=tmp_path / "out", report_dir=tmp_path,
+                          kb=None, client_factory=lambda: _ctx(fake), calendar=CAL)
+    assert stats["pushed"] is True and stats["trades"] == 4 and stats["docs"] == 1 and stats["opened"] == 1
     state = json.loads((tmp_path / "out" / "state.json").read_text(encoding="utf-8"))
     assert "Jev复盘_2026-10-09.md" in state["docs"]
 
@@ -209,3 +209,106 @@ class _ctx:
 
     def __exit__(self, *a):
         return False
+
+
+# ---- 实盘持仓 → 论点 + 判据 ----
+
+CAL = [date(2026, 10, d) for d in (8, 9, 12, 13, 14, 15)]
+
+
+def _held_conn(source="rebound"):
+    conn = _conn()
+    conn.execute("INSERT INTO live_positions VALUES ('002658', 500, 3570.0, 7.14, '2026-10-08', 7.17)")
+    if source:
+        conn.execute("INSERT INTO regime_sources VALUES ('002658', ?, '2026-10-08T10:29:00')", (source,))
+    conn.commit()
+    return conn
+
+
+def test_live_holdings_reads_position_buy_reason_and_source():
+    [h] = vibe.live_holdings(_held_conn("lowbuy"))
+    assert h == {"key": "002658:2026-10-08", "code": "002658", "name": "雪迪龙", "buy_date": "2026-10-08",
+                 "buy_price": 7.14, "shares": 500, "reason": "超跌买入", "source": "lowbuy"}
+
+
+def test_live_holdings_defaults_to_rebound_without_source():
+    assert vibe.live_holdings(_held_conn(None))[0]["source"] == "rebound"
+
+
+def test_nth_trading_day():
+    assert vibe.nth_trading_day(date(2026, 10, 9), 1, CAL) == date(2026, 10, 12)
+    assert vibe.nth_trading_day(date(2026, 10, 8), 2, CAL) == date(2026, 10, 12)
+    assert vibe.nth_trading_day(date(2026, 10, 9), 1, None) == date(2026, 10, 12)     # 没日历按工作日
+
+
+def test_plan_records_per_source():
+    h = vibe.live_holdings(_held_conn())[0]
+    thesis, stop, due = vibe.plan_records(h, CAL)
+    assert thesis["symbol"] == "002658" and thesis["status"] == "active" and thesis["review_by"] == "2026-10-12"
+    assert "超跌反弹" in thesis["title"] and "超跌买入" in thesis["statement"] and "7.14" in thesis["statement"]
+    assert thesis["note"].startswith("jev:thesis:002658:2026-10-08")
+    assert stop["type"] == "falsifier" and "-2" in stop["statement"] and "-3.5" in stop["statement"]
+    assert due["type"] == "decision_point" and due["due"] == "2026-10-12" and "14:55" in due["statement"]
+    board = vibe.plan_records({**h, "source": "board"}, CAL)
+    assert board[2]["due"] == "2026-10-09" and "竞价不及预期" in board[1]["statement"]
+    lowbuy = vibe.plan_records({**h, "source": "lowbuy"}, CAL)
+    assert lowbuy[2]["due"] == "2026-10-09" and "-3" in lowbuy[1]["statement"]
+
+
+class FakeLedger(FakeVibe):
+    def __init__(self):
+        super().__init__()
+        self.kinds = {"thesis": [], "criterion": []}
+
+    def list_ledger(self, kind):
+        return [dict(r) for r in self.kinds[kind]]
+
+    def save(self, kind, rec):
+        rows = self.kinds[kind]
+        if "id" in rec:
+            i = next(i for i, r in enumerate(rows) if r["id"] == rec["id"])
+            rows[i] = dict(rec)
+            return dict(rec)
+        new = {**rec, "id": f"{kind}{len(rows)}"}
+        rows.append(new)
+        return dict(new)
+
+
+def test_sync_plans_opens_once_and_closes_after_sell():
+    fake = FakeLedger()
+    conn = _held_conn()
+    assert vibe.sync_plans(fake, conn, CAL) == {"opened": 1, "closed": 0}
+    assert vibe.sync_plans(fake, conn, CAL) == {"opened": 0, "closed": 0}        # 不重复
+    [t] = fake.kinds["thesis"]
+    assert {c["thesis_id"] for c in fake.kinds["criterion"]} == {t["id"]} and len(fake.kinds["criterion"]) == 2
+    # 卖掉了：持仓清空，有一笔止损卖出
+    conn.execute("DELETE FROM live_positions")
+    conn.execute("INSERT INTO live_intents(id, ts, source, side, code, name, reason, status) "
+                 "VALUES (9, '2026-10-09T10:14:00', 'sim', 'sell', '002658', '雪迪龙', '止损-2.1%', 'done')")
+    conn.execute("UPDATE live_orders SET intent_id=9 WHERE id=2")
+    conn.commit()
+    assert vibe.sync_plans(fake, conn, CAL) == {"opened": 0, "closed": 1}
+    assert fake.kinds["thesis"][0]["status"] == "closed"
+    crit = {c["type"]: c for c in fake.kinds["criterion"]}
+    assert crit["falsifier"]["status"] == "met" and crit["falsifier"]["judged_at"] == "2026-10-09"
+    assert "止损-2.1%" in crit["falsifier"]["verdict_note"] and "6.98" in crit["falsifier"]["verdict_note"]
+    assert crit["decision_point"]["status"] == "met"
+    assert vibe.sync_plans(fake, conn, CAL) == {"opened": 0, "closed": 0}
+
+
+def test_sync_plans_close_without_stop_marks_falsifier_dropped():
+    fake = FakeLedger()
+    conn = _held_conn()
+    vibe.sync_plans(fake, conn, CAL)
+    conn.execute("DELETE FROM live_positions")
+    conn.commit()
+    vibe.sync_plans(fake, conn, CAL)
+    crit = {c["type"]: c for c in fake.kinds["criterion"]}
+    assert crit["falsifier"]["status"] == "dropped"
+
+
+def test_sync_plans_leaves_user_theses_alone():
+    fake = FakeLedger()
+    fake.kinds["thesis"].append({"id": "u1", "title": "我自己的", "status": "active", "note": "dj 写的"})
+    vibe.sync_plans(fake, _conn(), CAL)
+    assert fake.kinds["thesis"] == [{"id": "u1", "title": "我自己的", "status": "active", "note": "dj 写的"}]

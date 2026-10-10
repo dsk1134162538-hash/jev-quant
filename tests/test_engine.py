@@ -305,3 +305,31 @@ def test_jev_failure_gives_none_but_keeps_the_level_for_next_time():
     m = Flaky({"偏弱": 0.3, "正常": 0.5, "火热": 0.2}, None, {"偏弱": 0.45, "正常": 0.40, "火热": 0.15})
     eng, _, _ = make(qs(**{"600001": -1.0}), market=m)
     assert [_ask(eng, at(10, 10 * i)) for i in range(3)] == ["正常", None, "正常"]
+
+
+def test_zt_extra_stats_merged_into_sentiment_input_and_reason_sectors_refreshed():
+    """昨日涨停今日表现并进给 Jev 的统计；涨停原因板块跟情绪一起刷新，all_sectors = 文章板块 + 涨停原因板块。"""
+    from jevq.data.hi189 import Sector
+    market = Market("正常")
+    eng, _, _ = make(qs(**{"600001": 1.0}), market=market)
+    eng.zt_extra = lambda d: {"昨日涨停今日均涨%": 2.5}
+    eng.zt_reasons = lambda d: [Sector("涨停原因·PCB", ["A", "B"], [])]
+    eng.sectors = [Sector("晚报板块", [], ["C"])]
+    eng.tick(at(10, 0))
+    assert market.calls[0]["昨日涨停今日均涨%"] == 2.5 and market.calls[0]["涨停家数"] == 50
+    assert [s.name for s in eng.all_sectors()] == ["晚报板块", "涨停原因·PCB"]
+    detail = json.loads(eng.conn.execute("SELECT detail FROM decisions WHERE verdict='sentiment'").fetchone()[0])
+    assert detail["zt_reasons"] == {"涨停原因·PCB": 2}
+
+
+def test_zt_extra_failure_does_not_block_sentiment():
+    market = Market("正常")
+    eng, _, _ = make(qs(**{"600001": 1.0}), market=market)
+
+    def boom(d):
+        raise RuntimeError("x")
+    eng.zt_extra = boom
+    eng.zt_reasons = boom
+    eng.tick(at(10, 0))
+    assert market.calls and "昨日涨停今日均涨%" not in market.calls[0]
+    assert eng.all_sectors() == []

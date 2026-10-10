@@ -161,6 +161,11 @@ MAX_CUSTOM_ENABLED = 5
 SYNC_ENABLED = True
 DEPLOY_ENABLED = True
 
+# 涨停补充数据（jevq/data/ztpool.py；dj 2026-10-10 要接）
+ZT_EXTRA_ENABLED = True
+ZT_EXTRA_TIMEOUT = 8.0            # 秒
+ZT_REASON_MIN = 2                 # 同一涨停原因题材 ≥ 这么多家涨停，算主线判断里的「点名」
+
 # 收盘后导出到 Vibe-Research（jevq/sync/vibe.py；dj 2026-10-10 要自动导出导入）
 VIBE_ENABLED = True
 VIBE_DIR = r"E:\vibe-research-agent"

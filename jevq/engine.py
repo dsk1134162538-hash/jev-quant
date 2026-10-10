@@ -37,6 +37,10 @@ class Engine:
         self.articles_provider = articles_provider     # hi189 文章；None = 不接
         self.articles: list[dict] = []
         self.sectors: list = []                        # 文章里解析出的板块（扫首板点名用）
+        # 涨停补充数据（jevq.data.ztpool），run.py 构造后挂上；None = 不接
+        self.zt_extra: Callable[[date], dict] | None = None        # 昨日涨停今日表现 → 并进情绪统计
+        self.zt_reasons: Callable[[date], list] | None = None      # 涨停原因题材 → 主线判断的「点名」板块
+        self.zt_sectors: list = []
         self.fetch_quotes, self.fetch_pools = fetch_quotes, fetch_pools
         self.universe, self.prev_day, self.overseas = universe, prev_day, overseas
         self.fail_streak = 0
@@ -85,6 +89,19 @@ class Engine:
             self.sectors = sectors_of(self.articles)
         except Exception as e:
             print(f"[engine] hi189 文章刷新失败: {e!r}")
+
+    def _refresh_zt_reasons(self, now: datetime):
+        """涨停原因题材板块，跟情绪同频刷新；失败保留上一轮的。"""
+        if self.zt_reasons is None:
+            return
+        try:
+            self.zt_sectors = list(self.zt_reasons(now.date()))
+        except Exception as e:
+            print(f"[engine] 涨停原因刷新失败: {e!r}")
+
+    def all_sectors(self) -> list:
+        """主线判断用的「点名」板块：hi189 文章 + 当天涨停原因题材。"""
+        return list(self.sectors) + list(self.zt_sectors)
 
     def _settle(self, now: datetime, raw: str | None, trace: dict | None) -> tuple[str | None, float | None, str | None]:
         """Jev 原始标签 → 各策略用的情绪。返回（标签, 期望分, 为什么没跟 Jev：开盘未定/迟滞/None）。
@@ -246,6 +263,7 @@ class Engine:
         fresh = self._sentiment_at and now - self._sentiment_at < timedelta(minutes=SENTIMENT_REFRESH_MIN)
         if not fresh:
             self._refresh_articles(now)
+            self._refresh_zt_reasons(now)
             stats = self._market_stats(now, quotes)
             if stats:
                 try:
@@ -268,7 +286,8 @@ class Engine:
             # 外围一起记下：面板试跑（后台 daemon 在交易、面板自己没跑时）从这一行读最近的情绪与外围
             # label = 迟滞/开盘未定之后各策略实际用的情绪；raw_label = Jev 这一次判的
             detail = json.dumps({"stats": stats, "label": self.sentiment_label, "overseas": self.overseas,
-                                 "raw_label": raw, "score": score, "held": held}, ensure_ascii=False)
+                                 "raw_label": raw, "score": score, "held": held,
+                                 "zt_reasons": {s.name: len(s.limit_up) for s in self.zt_sectors}}, ensure_ascii=False)
             trace = None if self.sentiment_trace is None else json.dumps(self.sentiment_trace, ensure_ascii=False)
             self.conn.execute(
                 "INSERT INTO decisions(ts, code, verdict, detail, trace, strategy) "
@@ -282,6 +301,11 @@ class Engine:
         except Exception as e:
             print(f"[engine] 涨跌停池失败: {e!r}")
             return {}
+        if self.zt_extra is not None:
+            try:
+                stats.update(self.zt_extra(now.date()))
+            except Exception as e:
+                print(f"[engine] 昨日涨停表现失败: {e!r}")
         uni = [q for c, q in quotes.items() if c in self.universe]
         stats["上涨家数"] = sum(q.pct > 0 for q in uni)
         stats["下跌家数"] = sum(q.pct < 0 for q in uni)

@@ -14,7 +14,8 @@ class MarketJudge:
     def sentiment(self, stats: dict, articles: list[dict] | None = None, news: list[str] | None = None) -> str | None:
         """articles：hi189 当日文章（{title, link, published, text}）；有就作为「市场解读」一并交给 Jev。
         news：7x24 快讯标题（最近一小时）；有就一并交给 Jev。"""
-        instructions = "A股短线情绪当前处于什么状态？（参考涨跌停家数、炸板率、连板高度、成交额和涨跌家数）"
+        instructions = ("A股短线情绪当前处于什么状态？（参考涨跌停家数、炸板率、连板高度、成交额和涨跌家数；"
+                        "「昨日涨停今日」几项是短线赚钱效应：昨天涨停的票今天普遍红、连板继续涨是强，大面积低开下跌是亏钱效应）")
         state = stats
         if stats and articles:
             state = {**stats, "市场解读": [

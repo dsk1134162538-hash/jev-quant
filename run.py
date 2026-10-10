@@ -11,7 +11,7 @@ from jevq import accounts as accounts_mod
 from jevq import config, db, notify_content
 from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
 from jevq.data import (akdata, board_events, candidates, closes, concepts, custom_store, hi189, news7x24, own_sectors,
-                       sell_followups, tencent)
+                       sell_followups, tencent, ztpool)
 from jevq.data.features import history_features
 from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
@@ -288,12 +288,15 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     engine.turn_judge = None if (late or sell_only) else TurnJudge(jev, flash)
     engine.flash = flash
     engine.overseas_pcts = state.get("overseas_pcts") or {}
+    if config.ZT_EXTRA_ENABLED and not late:     # 昨日涨停今日表现 → 情绪；涨停原因题材 → 主线点名
+        engine.zt_extra = ztpool.safe_yesterday_stats
+        engine.zt_reasons = ztpool.safe_reason_sectors
     board = None
     if not late:
         board = BoardStrategy(conn, ledger, notice_judge, news_judge, tencent.fetch_quotes, universe, ret5,
                               concept_map, prev_prev_closes, prev_day, enabled=board_enabled,
                               recent_limit_ups=recent_limit_ups,
-                              sectors_provider=lambda: engine.sectors,
+                              sectors_provider=lambda: _sectors_of(engine),
                               fetch_day_minutes=tencent.fetch_day_minutes)
         # 「隔夜超期」只管 runner 错过了上一交易日的情况：昨天跑过，说明持仓昨天已经按规则处理过
         # （封死涨停隔夜的票就是规则允许留下的），今天照常按同一套规则判断，不在开盘一刀切卖掉。
@@ -452,6 +455,13 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if after_close is not None:
         after_close(conn, today)
     return path
+
+
+def _sectors_of(engine) -> list | None:
+    """主线判断的「点名」板块：文章 + 涨停原因（测试里的假引擎只有 sectors）。"""
+    if hasattr(engine, "all_sectors"):
+        return engine.all_sectors()
+    return getattr(engine, "sectors", None)
 
 
 def _notify_close_summary(notifier: Notifier, ledger: Ledger, today: date, prices: dict,
@@ -759,7 +769,7 @@ def _load_lowbuy(conn, ledger: Ledger, universe: dict, ret5: dict, sell_only: bo
         strat = LowbuyStrategy(conn, ledger, notice_judge, news_judge, dict(universe), ret5, prev_day,
                                lambda: engine.sentiment_label, lambda: getattr(engine, "overseas", None),
                                enabled=enabled, features=features if features is not None else {},
-                               concept_map=concept_map or {}, sectors_provider=lambda: getattr(engine, "sectors", None))
+                               concept_map=concept_map or {}, sectors_provider=lambda: _sectors_of(engine))
     except Exception as e:
         conn.rollback()
         log(f"低吸加载失败：{e!r}")

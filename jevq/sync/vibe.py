@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from jevq import config
@@ -72,6 +72,114 @@ def live_trades(conn) -> list[dict]:
                     "date": first[code]["date"], "shares": o["shares"], "price": price,
                     "note": f"jev:opening:{code}{KEY_SEP}实盘接管前已有的持仓，成本按 {price:g} 估"})
     return out + trades
+
+
+# ---- 实盘持仓 → 论点 + 判据（dj 10-10 要：Vibe 事件日历按到期日提醒，手机上看得到为什么买、什么时候必须走）----
+
+def hold_days_of(source: str) -> int:
+    """买入后第几个交易日必须清仓（和各策略卖出规则一致）：超跌 REBOUND_MAX_HOLD_DAYS，扫首板/低吸次日。"""
+    return config.REBOUND_MAX_HOLD_DAYS if source == "rebound" else 1
+
+
+def stop_text(source: str) -> str:
+    from jevq.rules import board_sell
+    if source == "board":
+        return (f"次日开盘 {board_sell.LOW_OPEN:g}%~+{board_sell.WEAK_OPEN_HIGH:g}%：竞价不及预期，开盘卖；"
+                f"开盘 ≤ {board_sell.LOW_OPEN:g}%：反抽 {board_sell.LOW_OPEN_BOUNCE:g} 点或 "
+                f"{board_sell.LOW_OPEN_DEADLINE:%H:%M} 卖，跌到 {board_sell.HARD_STOP:g}% 硬止损；"
+                f"高开 > +{board_sell.WEAK_OPEN_HIGH:g}%：跌到 {board_sell.STOP:g}% 止损、炸板卖（相对昨收）")
+    if source == "lowbuy":
+        return f"现价或开盘跌到 {config.LOWBUY_STOP:g}%（相对昨收）止损"
+    return (f"现价连续 {config.REBOUND_STOP_CONFIRM} 分钟在买入价 {config.REBOUND_STOP:g}% 以下止损"
+            f"（Jev 判探底回升/低开高走可先留着）；跌到 {config.REBOUND_HARD_STOP:g}% 硬止损")
+
+
+def nth_trading_day(d: date, n: int, calendar: list[date] | None) -> date:
+    days = sorted(x for x in (calendar or ()) if x > d)
+    if len(days) >= n:
+        return days[n - 1]
+    cur, left = d, n                     # 日历不够或没有：按工作日（不认节假日，只会偏早，不会偏晚）
+    while left:
+        cur += timedelta(days=1)
+        if cur.weekday() < 5:
+            left -= 1
+    return cur
+
+
+def live_holdings(conn) -> list[dict]:
+    out = []
+    for code, shares, buy_price, buy_date in conn.execute(
+            "SELECT code, shares, buy_price, buy_date FROM live_positions WHERE shares > 0 ORDER BY code"):
+        row = conn.execute(
+            "SELECT i.name, i.reason FROM live_orders o LEFT JOIN live_intents i ON i.id = o.intent_id "
+            "WHERE o.code=? AND o.side='buy' AND o.filled > 0 ORDER BY o.ts DESC, o.id DESC LIMIT 1", (code,)).fetchone()
+        src = conn.execute("SELECT source FROM regime_sources WHERE code=?", (code,)).fetchone()
+        out.append({"key": f"{code}:{buy_date}", "code": code, "name": (row and row[0]) or "", "buy_date": buy_date,
+                    "buy_price": buy_price, "shares": shares, "reason": (row and row[1]) or "",
+                    "source": src[0] if src else "rebound"})
+    return out
+
+
+def plan_records(h: dict, calendar: list[date] | None) -> tuple[dict, dict, dict]:
+    sname = config.STRATEGIES.get(h["source"], {}).get("name", h["source"])
+    due = nth_trading_day(date.fromisoformat(h["buy_date"]), hold_days_of(h["source"]), calendar).isoformat()
+    tag = f"{KEY_SEP}Jev 自动写入（实盘跟情绪轮动）"
+    thesis = {"symbol": h["code"], "title": f"{h['name'] or h['code']} 实盘｜{sname}"[:120],
+              "statement": f"{h['buy_date']} 买入 {h['shares']} 股 @{h['buy_price']:g}，来源策略：{sname}。"
+                           f"买入理由：{h['reason'] or '（没记）'}",
+              "review_by": due, "status": "active", "note": f"jev:thesis:{h['key']}{tag}"}
+    stop = {"symbol": h["code"], "type": "falsifier", "statement": stop_text(h["source"]), "status": "pending",
+            "note": f"jev:stop:{h['key']}{tag}"}
+    last = {"symbol": h["code"], "type": "decision_point", "due": due, "status": "pending",
+            "statement": f"最晚 {due} {config.EOD_SELL:%H:%M} 清仓（{sname}持有期限）",
+            "note": f"jev:due:{h['key']}{tag}"}
+    return thesis, stop, last
+
+
+def _sell_after(conn, code: str, buy_date: str) -> tuple[str, float, str] | None:
+    row = conn.execute(
+        "SELECT o.ts, o.avg_price, i.reason FROM live_orders o LEFT JOIN live_intents i ON i.id = o.intent_id "
+        "WHERE o.code=? AND o.side='sell' AND o.filled > 0 AND substr(o.ts, 1, 10) >= ? "
+        "ORDER BY o.ts DESC, o.id DESC LIMIT 1", (code, buy_date)).fetchone()
+    return (row[0][:10], row[1], row[2] or "") if row else None
+
+
+def _envelope_free(rec: dict) -> dict:
+    return {k: v for k, v in rec.items() if k not in ("kind", "created_at", "updated_at")}
+
+
+def sync_plans(client, conn, calendar: list[date] | None) -> dict:
+    """持仓新出现 → 写论点 + 止损判据 + 到期裁决点；持仓没了 → 论点关掉、判据按卖出结果判定。
+    只动 note 带「jev:」前缀的记录，dj 自己写的不碰。"""
+    theses = {trade_key(t): t for t in client.list_ledger("thesis") if trade_key(t)}
+    crits = {trade_key(c): c for c in client.list_ledger("criterion") if trade_key(c)}
+    held = live_holdings(conn)
+    opened = closed = 0
+    for h in held:
+        if f"jev:thesis:{h['key']}" in theses:
+            continue
+        thesis, stop, last = plan_records(h, calendar)
+        saved = client.save("thesis", thesis)
+        for c in (stop, last):
+            client.save("criterion", {**c, "thesis_id": saved["id"]})
+        opened += 1
+    open_keys = {f"jev:thesis:{h['key']}" for h in held}
+    for k, t in theses.items():
+        if t.get("status") != "active" or k in open_keys:
+            continue
+        hkey = k.removeprefix("jev:thesis:")
+        code, buy_date = hkey.split(":", 1)
+        sell = _sell_after(conn, code, buy_date)
+        day = sell[0] if sell else date.today().isoformat()
+        why = f"{sell[0]} 卖出 @{sell[1]:g}｜{sell[2] or '没记理由'}" if sell else "实盘持仓已没有（没找到卖出委托）"
+        client.save("thesis", {**_envelope_free(t), "status": "closed"})
+        for prefix, status in (("jev:stop:", "met" if sell and "止损" in sell[2] else "dropped"), ("jev:due:", "met")):
+            c = crits.get(prefix + hkey)
+            if c and c.get("status") == "pending":
+                client.save("criterion", {**_envelope_free(c), "status": status, "judged_at": day,
+                                          "verdict_note": why[:1000]})
+        closed += 1
+    return {"opened": opened, "closed": closed}
 
 
 # ---- 文档 → 研报库 ----
@@ -152,6 +260,13 @@ class VibeClient:
 
     def add_trade(self, rec: dict):
         return self._call("POST", "/ledger/trade", {"record": rec})
+
+    def list_ledger(self, kind: str) -> list[dict]:
+        return self._call("GET", f"/ledger/{kind}").get(kind, [])
+
+    def save(self, kind: str, rec: dict) -> dict:
+        """新增（不带 id）或整条覆盖（带 id）。"""
+        return self._call("POST", f"/ledger/{kind}", {"record": rec})
 
     def list_reports(self) -> list[dict]:
         return self._call("GET", "/reports")
@@ -241,8 +356,17 @@ def installed(vibe_dir) -> bool:
     return (d / "orchestrator" / "src" / "api.ts").exists() and (d / "orchestrator" / "node_modules").exists()
 
 
+def _calendar() -> list[date] | None:
+    try:
+        from jevq.data import akdata
+        return akdata.trade_days()
+    except Exception as e:
+        print(f"[vibe] 交易日历取不到，到期日按工作日算: {e!r}")
+        return None
+
+
 def sync_day(conn, day: date, out_dir=config.VIBE_OUT_DIR, report_dir=config.REPORT_DIR,
-             vibe_dir=config.VIBE_DIR, kb: dict | None = None, client_factory=None) -> dict:
+             vibe_dir=config.VIBE_DIR, kb: dict | None = None, client_factory=None, calendar=_calendar) -> dict:
     trades = live_trades(conn)
     docs = collect_docs(conn, report_dir, kb)
     write_local(out_dir, trades, docs)
@@ -256,6 +380,7 @@ def sync_day(conn, day: date, out_dir=config.VIBE_OUT_DIR, report_dir=config.REP
     with client_factory() as client:
         try:
             stats.update(push(client, trades, docs, state))
+            stats.update(sync_plans(client, conn, calendar() if callable(calendar) else calendar))
         finally:                         # 推到一半失败也把已推的记下来，下次不重复
             state_file.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
     stats["pushed"] = True
