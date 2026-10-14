@@ -127,6 +127,20 @@ def vol_series(feat: dict, q: Quote, t: time) -> tuple[list, float | None] | Non
     return vols, projected_volume(q.volume, t)
 
 
+def history_shrink_days(feat: dict) -> int | None:
+    """截至昨天（不含今天）的连续缩量天数：昨天比前天小、前天比大前天小……最多 MAX_SHRINK_DAYS。
+    超跌主账户开盘就买（用户 2026-10-14）时用：09:45 前今天的量还不能折算。没有历史 → None；遇到缺口停。"""
+    vols = feat.get("vols") or []
+    if not feat.get("vols_until") or len(vols) < 2:
+        return None
+    days = 0
+    for a, b in zip(reversed(vols[:-1]), reversed(vols[1:])):
+        if a is None or b is None or not b < a or days >= 5:
+            break
+        days += 1
+    return days
+
+
 MAX_SHRINK_DAYS = 5      # 与阶梯缩量字段 N 的上限一致（库里只留 6 天成交量）
 
 

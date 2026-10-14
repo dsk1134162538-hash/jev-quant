@@ -9,9 +9,9 @@ from jevq.models import Quote
 WEAK_SENTIMENT = {"冰点", "偏弱"}
 
 
-def in_buy_zone(q: Quote) -> bool:
+def in_buy_zone(q: Quote, low: float = BUY_ZONE_LOW) -> bool:
     return (not q.suspended and not q.is_st
-            and BUY_ZONE_LOW <= q.pct <= BUY_ZONE_HIGH)
+            and low <= q.pct <= BUY_ZONE_HIGH)
 
 
 def buy_window_open(mode: str, t: time) -> bool:
@@ -32,14 +32,15 @@ def rebound_mode(sentiment: str | None, turn: bool = False) -> str:
 
 
 def rank_rebound(quotes: Iterable[Quote], ret5: dict[str, float], excluded: set[str],
-                 shrink_days: Callable[[Quote], int | None] | None = None) -> list[Quote]:
+                 shrink_days: Callable[[Quote], int | None] | None = None,
+                 zone_low: float = BUY_ZONE_LOW) -> list[Quote]:
     """超跌反弹候选：当日涨幅在买入区间（in_buy_zone）、近 5 日涨幅在 [REBOUND_RET5_LOW, REBOUND_RET5_HIGH]、
     近两个月没连板过（excluded）；5 日跌得多的优先。
 
     给了 shrink_days（Quote → 连续缩量天数，含今天，None = 量能数据不全）时再加成交量条件：至少连续缩量
     REBOUND_MIN_SHRINK_DAYS 天才入选（不知道的不入选），连续缩量 ≥ REBOUND_PRIORITY_SHRINK_DAYS 天的排在前面，
     同档内仍是 5 日跌得多的优先。REBOUND_MIN_SHRINK_DAYS 设为 0 表示不看成交量。"""
-    pool = [q for q in quotes if q.code in ret5 and q.code not in excluded and in_buy_zone(q)
+    pool = [q for q in quotes if q.code in ret5 and q.code not in excluded and in_buy_zone(q, zone_low)
             and REBOUND_RET5_LOW <= ret5[q.code] <= REBOUND_RET5_HIGH]
     if shrink_days is None or config.REBOUND_MIN_SHRINK_DAYS <= 0:
         return sorted(pool, key=lambda q: ret5[q.code])

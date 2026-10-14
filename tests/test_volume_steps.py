@@ -252,3 +252,11 @@ def test_shrink_days_uses_stored_volume_when_quote_is_last_history_day():
     # 周末/盘前预览：行情就是历史最后一天，用库里那天的全天量当「今天」，与 vol_step 取值函数同口径
     feat = {"vols": [400.0, 300.0, 200.0, 150.0], "vols_until": "2026-09-24"}
     assert _shrink(feat, volume=10) == 3
+
+
+def test_history_shrink_days_counts_steps_up_to_yesterday():
+    from jevq.rules.metrics import history_shrink_days
+    assert history_shrink_days({"vols": [100.0, 400.0, 300.0, 200.0, 150.0], "vols_until": YESTERDAY}) == 3
+    assert history_shrink_days({"vols": [300.0, 200.0, 250.0], "vols_until": YESTERDAY}) == 0
+    assert history_shrink_days({"vols": [None, 300.0, 200.0], "vols_until": YESTERDAY}) == 1
+    assert history_shrink_days({}) is None

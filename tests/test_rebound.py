@@ -313,7 +313,8 @@ def test_no_buy_when_volume_history_is_missing_or_today_not_projectable():
     strat, *_ = make(features={})                                            # 库里没有量能历史
     assert strat.on_minute(_quotes(at(10, 0), **{"600002": -1.0}), at(10, 0)) == []
     strat, *_ = make(features={"600002": SHRINK4})
-    assert strat.on_minute(_quotes(at(9, 40), **{"600002": -1.0}), at(9, 40)) == []   # 09:45 前不折算全天量
+    fills = strat.on_minute(_quotes(at(9, 40), **{"600002": -1.0}), at(9, 40))      # 09:45 前不折算全天量：
+    assert {(f.account, f.code) for f in fills} == {("rebound_main", "600002")}     # 影子不买，主账户看截至昨天的（10-14）
 
 
 def test_tail_buy_uses_almost_full_day_volume():
@@ -673,3 +674,22 @@ def test_main_trailing_pullback_is_one_and_a_half_points_shadow_keeps_point_eigh
     q = type(q)(**{**q.__dict__, "price": 10.10})                      # 回落 1.5
     fills = strat.on_minute({"600002": q}, at(10, 31))
     assert [(f.account, f.reason) for f in fills] == [("rebound_main", "跟踪止盈")]
+
+
+# ---- 10-14 用户定：主账户当天跌幅放宽到 0~-5%、开盘就买（09:45 前缩量看截至昨天的）；影子账户照旧 ----
+
+def test_main_buys_down_to_minus_five_shadow_still_minus_three():
+    strat, conn, ledger, _ = make(ret5={"600002": -9.0, "600001": -8.0, "600003": -8.5})   # 大盘普跌
+    fills = strat.on_minute(_quotes(at(10, 0), **{"600002": -4.5}), at(10, 0))
+    assert {(f.account, f.code) for f in fills} == {("rebound_main", "600002")}
+    strat, *_ = make(ret5={"600002": -9.0, "600001": -8.0, "600003": -8.5})
+    assert strat.on_minute(_quotes(at(10, 0), **{"600002": -5.2}), at(10, 0)) == []         # 超过 -5% 不买
+
+
+def test_main_buys_at_the_open_using_shrink_up_to_yesterday():
+    """09:31：今天的量还不能折算，主账户看截至昨天连续缩量 ≥3 天就买；影子账户照旧等 09:45。"""
+    strat, conn, ledger, _ = make()                                    # SHRINK4：截至昨天 400>300>200>150，缩 3 天
+    fills = strat.on_minute(_quotes(at(9, 31), **{"600002": -1.0}), at(9, 31))
+    assert {(f.account, f.code) for f in fills} == {("rebound_main", "600002")}
+    strat, *_ = make(features={c: SHRINK2 for c in UNIVERSE})          # 截至昨天只缩 1 天：开盘不买
+    assert strat.on_minute(_quotes(at(9, 31), **{"600002": -1.0}), at(9, 31)) == []

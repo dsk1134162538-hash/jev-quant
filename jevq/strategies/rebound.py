@@ -19,7 +19,7 @@ from jevq.config import (MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE
 from jevq.ledger import Ledger, affordable_shares
 from jevq.models import Fill, Quote
 from jevq.rules.buy import buy_window_open, rank_rebound, rebound_mode
-from jevq.rules.metrics import shrink_days
+from jevq.rules.metrics import MIN_PROJECT_MINUTES, elapsed_trading_minutes, history_shrink_days, shrink_days
 from jevq.rules.rebound_sell import decide_rebound_sell
 
 SID = "rebound"
@@ -81,8 +81,20 @@ class ReboundStrategy:
             (q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()),
             self.ret5, self.excluded,
             shrink_days=None if self.features is None else (lambda q: self._shrink_days(q, now)))
-        return self._buy_shadow(ranked, now) + self._buy_main(self._main_pool(ranked, mode, now), now, mode,
+        # 主账户（用户 2026-10-14）：当天跌幅放宽到 REBOUND_MAIN_ZONE_LOW；09:45 前缩量看截至昨天的，开盘就能买
+        ranked_main = rank_rebound(
+            (q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()),
+            self.ret5, self.excluded, zone_low=config.REBOUND_MAIN_ZONE_LOW,
+            shrink_days=None if self.features is None else (lambda q: self._main_shrink_days(q, now)))
+        return self._buy_shadow(ranked, now) + self._buy_main(self._main_pool(ranked_main, mode, now), now, mode,
                                                              sentiment, deadline)
+
+    def _main_shrink_days(self, q: Quote, now: datetime) -> int | None:
+        """主账户的连续缩量天数：今天的量能折算（09:45 后）就含今天，否则看截至昨天的。"""
+        days = self._shrink_days(q, now)
+        if days is None and elapsed_trading_minutes(now.time()) < MIN_PROJECT_MINUTES:
+            return history_shrink_days(self.features.get(q.code) or {})
+        return days
 
     def _main_pool(self, ranked: list[Quote], mode: str, now: datetime) -> list[Quote]:
         """主账户的候选（用户 2026-10-14 按回测定，影子账户照旧当对照）：
