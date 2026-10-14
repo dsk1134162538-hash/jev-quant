@@ -123,3 +123,36 @@ def test_no_buys_on_sell_only_days():
     t = at(9, 41)
     assert r.mirror([Fill("board_main", "600001", "buy", 10.9, 100, 5, t, "扫板")],
                     {"600001": _q("600001", 10.9, t)}.get, t) == []
+
+
+# ---- 10-14 用户定：情绪轮动按大盘环境跟（全市场 5 日中位数）；盘中情绪只把关（冰点不买、拐点超跌优先） ----
+
+def test_weak_market_follows_rebound_only():
+    """大盘普跌（≤ -2%）：回测超跌反弹两日均 +1.3%~+1.7%，扫首板次日平均低开 1.5% → 只跟超跌。"""
+    for s in ("火热", "正常", "偏弱"):
+        assert allowed_sources(s, False, at(9, 40), market_ret5=-2.5) == ("rebound",)
+    assert allowed_sources("冰点", False, at(10, 0), market_ret5=-2.5) == ()
+
+
+def test_neutral_or_strong_market_follows_board_then_lowbuy_after_1030():
+    for s in ("火热", "正常", "偏弱"):
+        assert allowed_sources(s, False, at(9, 40), market_ret5=0.3) == ("board",)
+        assert allowed_sources(s, False, at(10, 30), market_ret5=2.5) == ("board", "lowbuy")
+    assert allowed_sources("冰点", False, at(10, 30), market_ret5=0.3) == ()
+
+
+def test_turn_still_puts_rebound_first_and_unknown_market_keeps_old_map():
+    assert allowed_sources("偏弱", True, at(13, 10), market_ret5=0.3) == ("rebound", "board", "lowbuy")
+    assert allowed_sources("冰点", True, at(13, 10), market_ret5=0.3) == ("rebound",)
+    assert allowed_sources("偏弱", False, at(10, 0), market_ret5=None) == ("lowbuy",)      # 算不出大盘：照旧按情绪
+
+
+def test_buy_reason_names_the_market_environment():
+    from jevq.models import Fill
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    strat = RegimeStrategy(conn, ledger, lambda: "正常", market_ret5=-2.4)
+    t = at(10, 40)
+    f = Fill("rebound_main", "600001", "buy", 10.0, 1000, 5.0, t, "超跌-1.0%｜5日-8%")
+    got = strat.mirror([f], lambda c: quote(c, ts=t), t)
+    assert got and "大盘普跌" in got[0].reason and "跟超跌反弹" in got[0].reason

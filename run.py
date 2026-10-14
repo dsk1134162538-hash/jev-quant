@@ -1,5 +1,6 @@
 import argparse
 import os
+import statistics
 import sys
 import threading
 from collections.abc import Callable
@@ -339,7 +340,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     # 情绪轮动（实盘跟它）：只跟各策略主账户的成交，晚启动不跑；只卖日照样跟卖
     regime = None if late else RegimeStrategy(conn, ledger, lambda: engine.sentiment_label,
                                               lambda: bool(getattr(engine, "turn_on", False)),
-                                              can_buy=not sell_only)
+                                              can_buy=not sell_only,
+                                              market_ret5=_market_ret5(ret5))
     if calendar_fallback:
         if board is not None:
             board.stale_before = None
@@ -483,6 +485,11 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if after_close is not None:
         after_close(conn, today)
     return path
+
+
+def _market_ret5(ret5: dict) -> float | None:
+    """全市场 5 日涨幅中位数（股票池，截至昨天收盘）：情绪轮动、超跌主账户按大盘环境用。"""
+    return round(statistics.median(ret5.values()), 2) if ret5 else None
 
 
 def _claude_or(jev, conn, enabled: bool):

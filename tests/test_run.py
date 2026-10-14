@@ -1595,3 +1595,7 @@ def test_claude_judges_wired_when_enabled(env, monkeypatch):
     assert type(seen["client"]).__name__ == "ClaudeJev" and seen["client"].fallback is not None
     assert FakeEngine.instances[0].catalyst_provider is not None
     assert type(run._claude_or("jev", None, False)) is str
+
+
+def test_market_ret5_is_median_of_universe():
+    assert run._market_ret5({"a": -5.0, "b": -1.0, "c": 3.0}) == -1.0 and run._market_ret5({}) is None

@@ -2,10 +2,11 @@
 
 自己不选股、不问 Jev：扫首板、低吸、超跌反弹的主账户（都过了 Jev 公告排雷 + 消息面）成交一笔，轮动账户
 按当时的情绪决定跟不跟——跟就同价同时买进；那个策略把它卖掉时同价卖出（卖法完全沿用原策略）。
-- 火热：扫首板
-- 正常：10:30（扫板窗口）前只等扫首板，之后没买到再跟低吸
-- 偏弱：低吸（不打板）
-- 冰点/情绪没判出来：不买
+2026-10-14 起按大盘环境跟（全市场 5 日涨幅中位数，回测见 docs/HANDOFF.md 第 27 项）：
+- 大盘普跌（≤ REGIME_WEAK_MARKET_RET5）：只跟超跌反弹
+- 大盘不弱：10:30（扫板窗口）前只等扫首板，之后没买到再跟低吸
+- 冰点/情绪没判出来：不买（盘中情绪只用来把关）
+（原来按情绪：火热扫首板、正常先扫首板后低吸、偏弱低吸——算不出大盘时照旧用）
 - 当天确认了情绪拐点（Engine.turn_on）：超跌反弹的「拐点抄底」优先，偏弱/冰点也买
 全仓单票，同一分钟多个策略都买了按上面的先后取一个。
 已知局限：某个策略的主账户正拿着票（当时情绪不对没跟）时，它当天就不会再出新买点，轮动跟不到。
@@ -26,10 +27,27 @@ SOURCE_OF = {"board_main": "board", "lowbuy_main": "lowbuy", "rebound_main": "re
 MAIN_OF = {v: k for k, v in SOURCE_OF.items()}
 
 
-def allowed_sources(sentiment: str | None, turn: bool, now: datetime) -> tuple[str, ...]:
-    """这一刻允许跟的策略，按优先级。"""
-    srcs = list(config.REGIME_SOURCES.get(sentiment, ())) if sentiment else []
-    if sentiment == "正常" and now.time() < config.REGIME_BOARD_FIRST_UNTIL:
+def market_env(market_ret5: float | None) -> str | None:
+    if market_ret5 is None or not config.REGIME_BY_MARKET:
+        return None
+    return "大盘普跌" if market_ret5 <= config.REGIME_WEAK_MARKET_RET5 else "大盘不弱"
+
+
+def allowed_sources(sentiment: str | None, turn: bool, now: datetime,
+                    market_ret5: float | None = None) -> tuple[str, ...]:
+    """这一刻允许跟的策略，按优先级。
+    按大盘环境（用户 2026-10-14，REGIME_BY_MARKET）：普跌只跟超跌反弹；不弱跟扫首板、10:30 后没买到再跟低吸；
+    冰点/情绪没判出来不买；确认拐点超跌优先。算不出大盘（market_ret5=None）照旧按情绪（REGIME_SOURCES）。"""
+    env = market_env(market_ret5)
+    if not sentiment or sentiment == "冰点":
+        srcs = []
+    elif env == "大盘普跌":
+        srcs = ["rebound"]
+    elif env == "大盘不弱":
+        srcs = ["board", "lowbuy"]
+    else:
+        srcs = list(config.REGIME_SOURCES.get(sentiment, ()))
+    if (env == "大盘不弱" or (env is None and sentiment == "正常")) and now.time() < config.REGIME_BOARD_FIRST_UNTIL:
         srcs = [s for s in srcs if s == "board"]
     if turn:
         srcs = ["rebound"] + [s for s in srcs if s != "rebound"]
@@ -38,11 +56,13 @@ def allowed_sources(sentiment: str | None, turn: bool, now: datetime) -> tuple[s
 
 class RegimeStrategy:
     def __init__(self, conn: sqlite3.Connection, ledger: Ledger, sentiment_provider: Callable[[], str | None],
-                 turn_provider: Callable[[], bool] | None = None, can_buy: bool = True):
+                 turn_provider: Callable[[], bool] | None = None, can_buy: bool = True,
+                 market_ret5: float | None = None):
         self.conn, self.ledger = conn, ledger
         self.sentiment_provider = sentiment_provider
         self.turn_provider = turn_provider or (lambda: False)
         self.can_buy = can_buy
+        self.market_ret5 = market_ret5        # 全市场 5 日涨幅中位数（截至昨天收盘）；None = 照旧按情绪跟
 
     def mirror(self, fills: list[Fill], quote_of: Callable[[str], Quote | None], now: datetime) -> list[Fill]:
         """跟随这一轮各策略主账户的成交。先卖后买。"""
@@ -55,14 +75,15 @@ class RegimeStrategy:
                 out.append(got)
         if self.can_buy and self.ledger.free_slots(ACCOUNT) > 0:
             sentiment, turn = self.sentiment_provider(), bool(self.turn_provider())
-            allowed = allowed_sources(sentiment, turn, now)
+            allowed = allowed_sources(sentiment, turn, now, self.market_ret5)
             buys = sorted((f for f in fills if f.side == "buy" and SOURCE_OF.get(f.account) in allowed),
                           key=lambda f: allowed.index(SOURCE_OF[f.account]))
             for f in buys:
                 q = quote_of(f.code)
                 if q is None:
                     continue
-                tag = f"{sentiment or '未知'}{'·拐点' if turn else ''}"
+                env = market_env(self.market_ret5)
+                tag = f"{sentiment or '未知'}{'·拐点' if turn else ''}{f'·{env}' if env else ''}"
                 got = self.ledger.buy(ACCOUNT, replace(q, price=f.price, ts=f.ts), now,
                                       f"轮动[{tag}]跟{self._name(f.account)}｜{f.reason}")
                 if got:
