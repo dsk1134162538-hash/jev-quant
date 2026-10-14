@@ -178,13 +178,14 @@ def test_intraday_buy_picks_deepest_five_day_drop():
 
 
 def test_weak_sentiment_does_not_buy_even_at_tail():
-    """用户 2026-10-09：偏弱/冰点不买（原来是等尾盘买）；盘中情绪转好就照常买。"""
-    strat, conn, ledger, state = make(sentiment="偏弱")
+    """用户 2026-10-09：偏弱/冰点不买（原来是等尾盘买）；盘中情绪转好就照常买。
+    这里是大盘不弱的情形（普跌时主账户偏弱也买，见 10-14 的测试）；大盘不弱主账户本来就不买，只看影子。"""
+    strat, conn, ledger, state = make(sentiment="偏弱", ret5=_market({"600002": -6.0}, filler=0.5))
     q = {"600002": -1.0}
     assert strat.on_minute(_quotes(at(10, 0), **q), at(10, 0)) == []
     assert strat.on_minute(_quotes(at(14, 50), **q), at(14, 50)) == []
     state["sentiment"] = "正常"
-    assert len(strat.on_minute(_quotes(at(14, 51), **q), at(14, 51))) == 2
+    assert [f.account for f in strat.on_minute(_quotes(at(14, 51), **q), at(14, 51))] == ["rebound_shadow"]
 
 
 def test_jev_reject_only_blocks_main():
@@ -458,8 +459,8 @@ def test_main_without_trend_judge_still_confirms_then_sells():
 
 
 def test_turn_lets_main_buy_on_weak_day_and_tags_the_reason():
-    """用户 2026-10-09：恐慌后情绪拐点确认 → 偏弱也立即盘中买（拐点抄底），实盘跟主账户。"""
-    strat, conn, ledger, state = make(sentiment="偏弱")
+    """用户 2026-10-09：恐慌后情绪拐点确认 → 偏弱也立即盘中买（拐点抄底），实盘跟主账户。（大盘不弱时；普跌时偏弱本来就买，10-14）"""
+    strat, conn, ledger, state = make(sentiment="偏弱", ret5=_market({"600002": -6.0}, filler=0.5))
     turn = {"on": False}
     strat.turn_provider = lambda: turn["on"]
     q = {"600002": -1.0}
@@ -638,21 +639,7 @@ def test_main_without_trend_judge_still_confirms_then_sells():
     assert _sells(strat.on_minute(_q(at(10, 15), -2.1), at(10, 15))) == [("rebound_main", "止损")]
 
 
-def test_turn_lets_main_buy_on_weak_day_and_tags_the_reason():
-    """用户 2026-10-09：恐慌后情绪拐点确认 → 偏弱也立即盘中买（拐点抄底），实盘跟主账户。"""
-    strat, conn, ledger, state = make(sentiment="偏弱")
-    turn = {"on": False}
-    strat.turn_provider = lambda: turn["on"]
-    q = {"600002": -1.0}
-    assert strat.on_minute(_quotes(at(13, 9), **q), at(13, 9)) == []
-    turn["on"] = True
-    fills = strat.on_minute(_quotes(at(13, 10), **q), at(13, 10))
-    main = [f for f in fills if f.account == "rebound_main"]
-    assert len(fills) == 2 and main[0].reason.startswith("拐点抄底｜超跌")
-    assert strat.candidates_view(_quotes(at(13, 11), **q), at(13, 11))["mode"] == "turn"
-
-
-# ---- 10-14 用户定：主账户只买 5 日跌超 10% 的；跟踪止盈回落线 1.5 点（影子账户照旧，当对照） ----
+# ---- 10-14 用户定：主账户跟踪止盈回落线 1.5 点（影子账户照旧 0.8，当对照） ----
 
 def _hold_both(conn, code="600002", buy_price=10.0):
     for acct in ("rebound_main", "rebound_shadow"):
@@ -693,3 +680,19 @@ def test_main_buys_at_the_open_using_shrink_up_to_yesterday():
     assert {(f.account, f.code) for f in fills} == {("rebound_main", "600002")}
     strat, *_ = make(features={c: SHRINK2 for c in UNIVERSE})          # 截至昨天只缩 1 天：开盘不买
     assert strat.on_minute(_quotes(at(9, 31), **{"600002": -1.0}), at(9, 31)) == []
+
+
+# ---- 10-14 用户定：大盘普跌时主账户情绪偏弱也买（回测不看盘中情绪；普跌时情绪常是偏弱）；冰点仍不买 ----
+
+def test_weak_market_main_buys_on_weak_sentiment_shadow_does_not():
+    strat, conn, ledger, _ = make(sentiment="偏弱")                    # 默认 ret5 中位数 -8%：普跌
+    fills = strat.on_minute(_quotes(at(10, 0), **{"600002": -1.0}), at(10, 0))
+    assert {(f.account, f.code) for f in fills} == {("rebound_main", "600002")}
+    assert fills[0].reason.startswith("普跌抄底｜")
+
+
+def test_ice_sentiment_or_non_weak_market_still_blocks_main():
+    strat, *_ = make(sentiment="冰点")
+    assert strat.on_minute(_quotes(at(10, 0), **{"600002": -1.0}), at(10, 0)) == []
+    strat, *_ = make(sentiment="偏弱", ret5=_market({"600002": -6.0}, filler=0.5))      # 大盘中性
+    assert strat.on_minute(_quotes(at(10, 0), **{"600002": -1.0}), at(10, 0)) == []

@@ -75,7 +75,14 @@ class ReboundStrategy:
             return []
         sentiment = self.sentiment_provider()
         mode = rebound_mode(sentiment, bool(self.turn_provider()))
-        if not buy_window_open(mode, now.time()):
+        # 主账户（用户 2026-10-14）：大盘普跌时情绪偏弱也买（回测不看盘中情绪，普跌时盘中情绪本来常是偏弱）；冰点仍不买
+        main_mode = mode
+        if (mode == "none" and sentiment == "偏弱" and self.market_ret5 is not None
+                and self.market_ret5 <= config.REBOUND_MAIN_MARKET_RET5_MAX):
+            main_mode = "weak_market"
+        shadow_open = buy_window_open(mode, now.time())
+        main_open = buy_window_open("intraday" if main_mode == "weak_market" else main_mode, now.time())
+        if not (shadow_open or main_open):
             return []
         ranked = rank_rebound(
             (q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()),
@@ -86,8 +93,10 @@ class ReboundStrategy:
             (q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()),
             self.ret5, self.excluded, zone_low=config.REBOUND_MAIN_ZONE_LOW,
             shrink_days=None if self.features is None else (lambda q: self._main_shrink_days(q, now)))
-        return self._buy_shadow(ranked, now) + self._buy_main(self._main_pool(ranked_main, mode, now), now, mode,
-                                                             sentiment, deadline)
+        shadow = self._buy_shadow(ranked, now) if shadow_open else []
+        main = self._buy_main(self._main_pool(ranked_main, main_mode, now), now, main_mode, sentiment,
+                              deadline) if main_open else []
+        return shadow + main
 
     def _main_shrink_days(self, q: Quote, now: datetime) -> int | None:
         """主账户的连续缩量天数：今天的量能折算（09:45 后）就含今天，否则看截至昨天的。"""
@@ -280,7 +289,7 @@ class ReboundStrategy:
                 if verdict == "error":
                     errors += 1
                 continue
-            tag = "拐点抄底｜" if mode == "turn" else ""
+            tag = {"turn": "拐点抄底｜", "weak_market": "普跌抄底｜"}.get(mode, "")
             f = self.ledger.buy(main, q, now, f"{tag}超跌{q.pct}%｜5日{self.ret5[q.code]}%｜{why}")
             if f:
                 trace["outcome"] = {"bought": True, "shares": f.shares, "price": f.price}
