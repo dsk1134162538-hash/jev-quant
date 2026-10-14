@@ -1579,3 +1579,19 @@ def test_turn_push_names_claude_when_it_decides():
     assert run._turn_opinions({"by": "规则+Claude", "claude_prob": 0.72, "claude_reason": "修复", "prob": 0.8}) \
         == "Claude 判修复拐点 0.72（修复），Jev 0.8"
     assert run._turn_opinions({"by": "规则", "prob": 0.6}) == "Jev 判修复拐点 0.6"
+
+
+def test_claude_judges_wired_when_enabled(env, monkeypatch):
+    """用户 2026-10-14：大盘情绪、板块情绪直接切 Claude（失败退回 Jev）；隔夜消息催化交给大盘情绪。"""
+    monkeypatch.setattr(run.config, "SENTIMENT_BY_CLAUDE", True)
+    seen = {}
+    real = run.MarketJudge
+
+    def spy(client):
+        seen["client"] = client
+        return real(client)
+    monkeypatch.setattr(run, "MarketJudge", spy)
+    env.run()
+    assert type(seen["client"]).__name__ == "ClaudeJev" and seen["client"].fallback is not None
+    assert FakeEngine.instances[0].catalyst_provider is not None
+    assert type(run._claude_or("jev", None, False)) is str

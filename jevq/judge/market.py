@@ -11,9 +11,11 @@ class MarketJudge:
         self.sentiment_trace: dict | None = None
         self.overseas_trace: dict | None = None
 
-    def sentiment(self, stats: dict, articles: list[dict] | None = None, news: list[str] | None = None) -> str | None:
+    def sentiment(self, stats: dict, articles: list[dict] | None = None, news: list[str] | None = None,
+                  catalyst: list[str] | None = None) -> str | None:
         """articles：hi189 当日文章（{title, link, published, text}）；有就作为「市场解读」一并交给 Jev。
-        news：7x24 快讯标题（最近一小时）；有就一并交给 Jev。"""
+        news：7x24 快讯标题（最近一小时）；有就一并交给 Jev。
+        catalyst：隔夜消息催化（jevq.data.catalyst.summary_lines，「题材（N 条）：标题；标题」）；有就一并交给。"""
         instructions = ("A股短线情绪当前处于什么状态？（参考涨跌停家数、炸板率、连板高度、成交额和涨跌家数；"
                         "「昨日涨停今日」几项是短线赚钱效应：昨天涨停的票今天普遍红、连板继续涨是强，大面积低开下跌是亏钱效应）")
         state = stats
@@ -25,6 +27,9 @@ class MarketJudge:
         if stats and news:
             state = {**state, "7x24快讯": news}
             instructions = instructions[:-1] + "，并参考 7x24 快讯）"
+        if stats and catalyst:
+            state = {**state, "隔夜消息催化": catalyst}
+            instructions = instructions[:-1] + "；隔夜消息催化是昨天收盘后到今天盘前各新闻源按题材数出来的新闻条数）"
         self.sentiment_trace = self._score(state, instructions, SENTIMENT_LEVELS)
         if self.sentiment_trace and articles:
             self.sentiment_trace["articles"] = [{"title": a["title"], "link": a["link"]} for a in articles]
@@ -44,4 +49,4 @@ class MarketJudge:
         except JevError:
             return None
         return {"inputs": state, "label": score_label(ans), "probabilities": score_probs(ans),
-                "confidence": ans.get("confidence")}
+                "confidence": ans.get("confidence"), "by": getattr(self.jev, "last_source", None) or "jev"}

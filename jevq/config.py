@@ -224,6 +224,12 @@ CATALYST_ALIASES = {
 CLAUDE_BIN = r"%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe"
 CLAUDE_MODEL = "sonnet"
 CLAUDE_PROXY = "http://127.0.0.1:8889"   # 命令行 claude 不走 Windows 系统代理，要显式给（VPN 端口改了这里跟着改）
+CLAUDE_JUDGE_TIMEOUT = 25.0             # 秒：大盘/板块情绪单次上限（在买入阶段同步问，不能拖太久；超时退回 Jev）
+SENTIMENT_BY_CLAUDE = True              # 用户 2026-10-14：大盘情绪（含外围）改由 Claude 判，失败退回 Jev
+SECTOR_STRENGTH_BY_CLAUDE = True        # 用户 2026-10-14：自建板块情绪改由 Claude 判（成员归类仍用 Jev）
+CLAUDE_NEWS_MINUTES = 90                # Claude 判大盘情绪时给最近多少分钟的 7x24 快讯（Jev 时是 60 分钟 20 条）
+CLAUDE_NEWS_LIMIT = 40
+CLAUDE_CATALYST_TOP = 10                # 隔夜消息催化给前几个题材
 CLAUDE_TIMEOUT = 60.0                    # 秒；10-14 实测一次 5~9 秒
 
 # 收盘后导出到 Vibe-Research（jevq/sync/vibe.py；dj 2026-10-10 要自动导出导入）

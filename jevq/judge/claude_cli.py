@@ -38,7 +38,7 @@ class ClaudeCLI:
             env.update(HTTPS_PROXY=self.proxy, HTTP_PROXY=self.proxy, NO_PROXY="127.0.0.1,localhost")
         return env
 
-    def ask_json(self, system: str, user: str) -> dict | None:
+    def ask_json(self, system: str, user: str, timeout: float | None = None) -> dict | None:
         """问一次，回答里的第一个 JSON 对象解析成 dict；失败返回 None。"""
         self.last_trace = None
         if not self.available():
@@ -48,7 +48,7 @@ class ClaudeCLI:
                 "--no-session-persistence", "--output-format", "json", "--model", self.model,
                 "--system-prompt", system]
         kwargs: dict = {"input": user, "capture_output": True, "text": True, "encoding": "utf-8",
-                        "timeout": self.timeout, "env": self._env(), "cwd": tempfile.gettempdir()}
+                        "timeout": timeout or self.timeout, "env": self._env(), "cwd": tempfile.gettempdir()}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW      # 后台 pythonw 调它不弹黑窗
         try:

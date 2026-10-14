@@ -23,6 +23,7 @@ from jevq.judge.news import NewsJudge
 from jevq.judge.notices import NoticeJudge
 from jevq.judge.trend import TrendJudge
 from jevq.judge.claude_cli import ClaudeCLI
+from jevq.judge.claude_jev import ClaudeJev
 from jevq.judge.turn import TurnJudge
 from jevq.judge.turn_claude import ClaudeTurnJudge
 from jevq.ledger import Ledger
@@ -164,7 +165,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         return None
 
     jev = JevClient(key or "", conn=conn)
-    market = MarketJudge(jev)
+    market = MarketJudge(_claude_or(jev, conn, config.SENTIMENT_BY_CLAUDE))   # 大盘情绪、外围（用户 2026-10-14 改 Claude）
 
     universe, ret5 = {}, {}
     if late:
@@ -301,6 +302,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                     articles_provider=None if late else lambda t: hi189.refresh(conn, today, prev_day, t))
     # 情绪拐点抄底 + 7x24 快讯：构造后再挂上（测试里的假引擎没有这些参数）
     engine.turn_judge = None if (late or sell_only) else TurnJudge(jev, flash)
+    if config.SENTIMENT_BY_CLAUDE and not late:      # Claude 判大盘情绪时把隔夜消息催化一起给它
+        engine.catalyst_provider = lambda d: catalyst.summary_lines(conn, d)
     if config.TURN_CLAUDE_REQUIRED and not (late or sell_only):    # 拐点必须 Claude 同意（用户 2026-10-14）
         claude = ClaudeCLI()
         if not claude.available():
@@ -448,7 +451,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         log(f"封板统计记录 {recorded} 只首板")
     except Exception as e:
         log(f"封板统计记录失败：{e!r}")
-    own_judge = OwnSectorJudge(jev)
+    own_judge = OwnSectorJudge(jev, strength_jev=_claude_or(jev, conn, config.SECTOR_STRENGTH_BY_CLAUDE))
     own_quotes = {c: q for c, q in quotes.items() if c in universe and q.ts.date() == today}
     if own_quotes:      # 自建板块（只记录）：日快照要赶在报告之前；失败只记日志
         snaps = own_sectors.snapshot_step(conn, today, universe, own_quotes, ret5, own_judge, log=log)
@@ -480,6 +483,11 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if after_close is not None:
         after_close(conn, today)
     return path
+
+
+def _claude_or(jev, conn, enabled: bool):
+    """开关打开：Claude 判、失败退回 Jev（jevq.judge.claude_jev）；关着就是 Jev 本身。"""
+    return ClaudeJev(ClaudeCLI(), conn=conn, fallback=jev) if enabled else jev
 
 
 def _turn_opinions(detail: dict) -> str:
@@ -679,7 +687,9 @@ def _own_intraday_recorder(conn, key: str | None, universe: dict, ret5: dict, lo
     if not path:
         return None
     return own_sectors.IntradayRecorder(lambda: db.connect(path),
-                                        lambda c: OwnSectorJudge(JevClient(key, conn=c)), universe, ret5, log)
+                                        lambda c: OwnSectorJudge(JevClient(key, conn=c), strength_jev=_claude_or(
+                                            JevClient(key, conn=c), c, config.SECTOR_STRENGTH_BY_CLAUDE)),
+                                        universe, ret5, log)
 
 
 def _load_rebound(conn, ledger: Ledger, today: date, universe: dict, ret5: dict, sell_only: bool,

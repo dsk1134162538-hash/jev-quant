@@ -8,8 +8,9 @@ STRENGTH_LEVELS = ["冰点", "偏弱", "正常", "火热"]
 
 
 class OwnSectorJudge:
-    def __init__(self, jev):
+    def __init__(self, jev, strength_jev=None):
         self.jev = jev
+        self.strength_jev = strength_jev or jev    # 板块情绪用的客户端（用户 2026-10-14 改 Claude）；归类仍用 jev
 
     def map_product(self, product: str, company: str, secs: list[dict]) -> tuple[str, float | None] | None:
         """这一行主营产品属于哪个板块。返回（板块 id | NONE_OF_THEM | UNUSABLE, 置信度）。"""
@@ -51,7 +52,7 @@ class OwnSectorJudge:
     def strength(self, sector: dict, state: dict) -> tuple[str, dict, float | None] | None:
         """板块当天行情强弱（四档，同市场情绪）。"""
         try:
-            ans = self.jev.ask({"板块": sector["name"], "板块产品定义": sector["product_def"], **state},
+            ans = self.strength_jev.ask({"板块": sector["name"], "板块产品定义": sector["product_def"], **state},
                                {"level": {"type": "score",
                                           "instructions": "这个板块今天的短线行情处在什么状态？"
                                                           "（参考成员涨幅、强势和涨停家数、成交额、连板高度、是否被晚报点名）",

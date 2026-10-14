@@ -99,6 +99,15 @@ def cached(conn, day: date) -> dict | None:
     return json.loads(row[0]) if row else None
 
 
+def summary_lines(conn, day: date, top: int = config.CLAUDE_CATALYST_TOP) -> list[str]:
+    """给 Claude 判大盘情绪：前 top 个题材「题材（N 条）：标题；标题」；当天没抓就空。"""
+    data = cached(conn, day)
+    if not data:
+        return []
+    return [f"{t['topic']}（{t['count']} 条）：" + "；".join(n["title"][:40] for n in t["news"][:2])
+            for t in data.get("topics", [])[:top]]
+
+
 def run(conn, day: date, start: datetime, end: datetime, fetch=None, budget: float | None = None) -> dict:
     """抓新闻 → 匹配 → 存库，返回摘要（题材数、源成功/失败数）。budget：抓取总时限（秒），None = 默认。"""
     from jevq.data import rss_news

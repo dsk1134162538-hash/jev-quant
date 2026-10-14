@@ -42,6 +42,7 @@ class Engine:
         self.zt_extra: Callable[[date], dict] | None = None        # 昨日涨停今日表现 → 并进情绪统计
         self.zt_reasons: Callable[[date], list] | None = None      # 涨停原因题材 → 主线判断的「点名」板块
         self.zt_sectors: list = []
+        self.catalyst_provider: Callable[[date], list[str]] | None = None   # 隔夜消息催化 → 大盘情绪（Claude 判时挂上）
         self.fetch_quotes, self.fetch_pools = fetch_quotes, fetch_pools
         self.universe, self.prev_day, self.overseas = universe, prev_day, overseas
         self.fail_streak = 0
@@ -147,9 +148,21 @@ class Engine:
         if self.flash is None:
             return []
         try:
+            if self.catalyst_provider is not None:       # 交给 Claude 判（用户 2026-10-14）：上下文大，多给些快讯
+                return self.flash.recent(now, minutes=config.CLAUDE_NEWS_MINUTES, limit=config.CLAUDE_NEWS_LIMIT)
             return self.flash.recent(now, minutes=60, limit=20)
         except Exception as e:
             print(f"[engine] 7x24 快讯失败: {e!r}")
+            return []
+
+    def _catalyst(self, now: datetime) -> list[str]:
+        """隔夜消息催化摘要（jevq.data.catalyst.summary_lines）；没挂 provider 或失败 = 空。"""
+        if self.catalyst_provider is None:
+            return []
+        try:
+            return list(self.catalyst_provider(now.date()))
+        except Exception as e:
+            print(f"[engine] 隔夜消息催化读取失败: {e!r}")
             return []
 
     def _restore_sentiment(self, day: date):
@@ -287,8 +300,9 @@ class Engine:
                     from jevq.data.hi189 import for_judge
                     judged = for_judge(self.articles)         # 中报在演练期只记录，不交给 Jev
                     news = self._news(now)
-                    if news:
-                        raw = self.market_judge.sentiment(stats, judged or None, news=news)
+                    extra = {k: v for k, v in (("news", news), ("catalyst", self._catalyst(now))) if v}
+                    if extra:
+                        raw = self.market_judge.sentiment(stats, judged or None, **extra)
                     else:
                         raw = (self.market_judge.sentiment(stats, judged) if judged
                                else self.market_judge.sentiment(stats))

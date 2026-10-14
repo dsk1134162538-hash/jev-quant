@@ -337,6 +337,17 @@ def rank_leaders(conn, members: list[dict], quotes: dict, ret5: dict[str, float]
             for i, m in enumerate(scored[:n])]
 
 
+def sector_news(conn: sqlite3.Connection, s: dict, day: date) -> dict:
+    """这个板块的隔夜相关新闻（jevq.data.catalyst 的当天摘要里，板块名或别名对得上的那一条）：给 Claude 判板块情绪用。"""
+    from jevq.data import catalyst
+    data = catalyst.cached(conn, day)
+    names = {s["name"], *(s.get("aliases") or [])}
+    for t in (data or {}).get("topics", []):
+        if names & set(t.get("topics") or [t["topic"]]):
+            return {"隔夜相关新闻数": t["count"], "隔夜相关新闻": [f"{n['title'][:40]}（{n['source']}）" for n in t["news"][:3]]}
+    return {}
+
+
 def _sector_data(conn: sqlite3.Connection, s: dict, day: date, quotes: dict, ret5: dict[str, float],
                  universe: dict[str, str], judge, art: list) -> dict:
     """一个板块此刻的统计、龙头和 Jev 强弱（日快照、盘中快照共用）。"""
@@ -353,7 +364,8 @@ def _sector_data(conn: sqlite3.Connection, s: dict, day: date, quotes: dict, ret
             "jev_strength": None, "jev_probs": None, "jev_confidence": None}
     if judge is not None and qs and (strong >= config.OWN_SECTORS_JEV_MIN_STRONG or mentioned_name):   # 线为 0 = 有行情就问
         res = judge.strength(s, {k: data[k] for k in ("members", "strong", "limit_up", "avg_pct", "amount",
-                                                      "max_board")} | {"晚报点名": bool(mentioned_name)})
+                                                      "max_board")} | {"晚报点名": bool(mentioned_name)}
+                             | sector_news(conn, s, day))
         if res:
             data["jev_strength"], data["jev_probs"], data["jev_confidence"] = res
     return data

@@ -35,3 +35,5 @@ def _no_extra_market_data(monkeypatch):
     monkeypatch.setattr("jevq.config.ZT_EXTRA_ENABLED", False)
     monkeypatch.setattr("jevq.config.TURN_CLAUDE_REQUIRED", False)   # 本机真装着 claude：测试不能真去问它
     monkeypatch.setattr("jevq.config.CLAUDE_BIN", "Z:/no/such/claude.exe")
+    monkeypatch.setattr("jevq.config.SENTIMENT_BY_CLAUDE", False)
+    monkeypatch.setattr("jevq.config.SECTOR_STRENGTH_BY_CLAUDE", False)
