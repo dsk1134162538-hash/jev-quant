@@ -78,7 +78,9 @@ class ReboundStrategy:
             (q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()),
             self.ret5, self.excluded,
             shrink_days=None if self.features is None else (lambda q: self._shrink_days(q, now)))
-        return self._buy_shadow(ranked, now) + self._buy_main(ranked, now, mode, sentiment, deadline)
+        # 主账户只买 5 日跌幅够深的（用户 2026-10-14）；影子账户照旧，当对照组
+        deep = [q for q in ranked if self.ret5[q.code] <= config.REBOUND_MAIN_RET5_MAX]
+        return self._buy_shadow(ranked, now) + self._buy_main(deep, now, mode, sentiment, deadline)
 
     def candidates_view(self, quotes: dict[str, Quote], now: datetime) -> dict:
         """面板「候选」页：此刻满足选股条件的票，按买入优先顺序（同 buy_step 的 rank_rebound）。
@@ -140,7 +142,8 @@ class ReboundStrategy:
                     asked: list[bool] = []
                     extra = {"stop_minutes": self._stop_minutes(account, pos.buy_price, q, now),
                              "trend": None if self.trend_judge is None
-                             else (lambda pos=pos, q=q, asked=asked: asked.append(True) or self._trend(pos, q, now))}
+                             else (lambda pos=pos, q=q, asked=asked: asked.append(True) or self._trend(pos, q, now)),
+                             "pullback": config.REBOUND_MAIN_TRAIL_PULLBACK}
                 d = decide_rebound_sell(pos, q, now, self._hold_days(pos.buy_date, now.date()),
                                         buy_pressure=self._buy_pressure(q, now), **extra)
                 if account == main and extra.get("trend") is not None and asked:

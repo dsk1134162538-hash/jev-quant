@@ -32,9 +32,11 @@ HOLD = SellDecision(False)
 
 def decide_rebound_sell(pos: Position, q: Quote, now: datetime, hold_days: int | None,
                         buy_pressure: bool = False, stop_minutes: int | None = None,
-                        trend: Callable[[], str | None] | None = None) -> SellDecision:
+                        trend: Callable[[], str | None] | None = None,
+                        pullback: float = REBOUND_TRAIL_PULLBACK) -> SellDecision:
     """stop_minutes：现价连续几分钟（含这一分钟）在止损线下；None = 不要确认、也没有硬止损（旧规则）。
     trend：问 Jev 今天走向，返回 TREND_LEVELS 之一或 None（没判出来）；一次判断里最多调一次。None = 不问，照卖。
+    pullback：跟踪止盈的回落线（个点，相对买入价）；主账户传 REBOUND_MAIN_TRAIL_PULLBACK，影子用默认。
     不卖时 reason 说明为什么还拿着（待确认 / 暂缓），调用方据此记录。"""
     if pos.buy_date >= now.date() or now.time() < MARKET_OPEN:
         return HOLD
@@ -62,7 +64,7 @@ def decide_rebound_sell(pos: Position, q: Quote, now: datetime, hold_days: int |
     if high_pnl >= REBOUND_TRAIL_START:
         if pnl <= 0:
             return SellDecision(True, "回到成本")
-        if round(high_pnl - pnl, 2) >= REBOUND_TRAIL_PULLBACK and not buy_pressure:
+        if round(high_pnl - pnl, 2) >= pullback and not buy_pressure:
             return SellDecision(True, "跟踪止盈")
     if now.time() >= EOD_SELL and (hold_days is None or hold_days >= REBOUND_MAX_HOLD_DAYS):
         return SellDecision(True, "到期清仓")

@@ -108,3 +108,19 @@ def test_strategy_only_buys_members_of_todays_mainline():
                            lambda: "正常", lambda: "中性", concept_map=cmap)
     fills = strat.buy_step({**hot, **cand}, t)
     assert {f.code for f in fills} == {"600001"}                                    # 600002 不在主线
+
+
+def test_trailing_pullback_widened_for_main_shadow_keeps_point_eight():
+    """10-14 用户定：低吸主账户回落 1.5 点才卖（众生药业 10-14 开盘 +1.4% 回落 0.8 被洗掉，之后 +8.9%）；影子照旧。"""
+    q = quote("600001", pct=2.5, open_pct=1.0, ts=D1)
+    q = type(q)(**{**q.__dict__, "high": 10.33})                       # 最高 +3.3%，现价 +2.5%：回落 0.8
+    assert not decide_lowbuy_sell(_pos(), q, D1, pullback=1.5).sell
+    assert decide_lowbuy_sell(_pos(), type(q)(**{**q.__dict__, "price": 10.18}), D1, pullback=1.5).reason == "跟踪止盈"
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    for acct in ("lowbuy_main", "lowbuy_shadow"):
+        conn.execute("INSERT INTO positions VALUES (?, '600001', 1000, 10005, 10.0, ?)", (acct, BUY.isoformat()))
+    conn.commit()
+    strat = LowbuyStrategy(conn, ledger, Judge(), Judge(), {"600001": "甲"}, {}, BUY, lambda: "正常", lambda: "中性")
+    fills = strat.sell_step({"600001": q}, D1)
+    assert [(f.account, f.reason) for f in fills] == [("lowbuy_shadow", "跟踪止盈")]

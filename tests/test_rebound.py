@@ -188,7 +188,8 @@ def test_weak_sentiment_does_not_buy_even_at_tail():
 
 
 def test_jev_reject_only_blocks_main():
-    strat, conn, ledger, _ = make(notice=Judge({"600002": ("reject", "新增减持")}))
+    strat, conn, ledger, _ = make(notice=Judge({"600002": ("reject", "新增减持")}),
+                                  ret5={"600001": -12.0, "600002": -15.0, "600003": -8.0})
     fills = strat.on_minute(_quotes(at(10, 0), **{"600001": -1.0, "600002": -1.0}), at(10, 0))
     assert {(f.account, f.code) for f in fills} == {("rebound_shadow", "600002"), ("rebound_main", "600001")}
     row = conn.execute("SELECT verdict FROM decisions WHERE code='600002' AND strategy='rebound'").fetchone()
@@ -247,8 +248,8 @@ def test_trailing_take_profit_in_strategy():
     _hold(conn)
     strat = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {}, set(), PREV_DAY, lambda: "正常",
                             enabled=False, trade_days=[PREV_DAY, TODAY])
-    q = quote("600002", pct=1.7, ts=at(10, 30))
-    q = type(q)(**{**q.__dict__, "high": 10.25})
+    q = quote("600002", pct=1.0, ts=at(10, 30))
+    q = type(q)(**{**q.__dict__, "high": 10.25})                      # 最高 +2.5%，现价 +1.0%：回落 1.5（主账户线）
     fills = strat.on_minute({"600002": q}, at(10, 30))
     assert [(f.side, f.reason) for f in fills] == [("sell", "跟踪止盈")]
 
@@ -267,10 +268,10 @@ def test_trailing_waits_while_recent_buying_dominates_then_sells():
     # 10:00–10:02 冲到 10.25，外盘增量一直大于内盘
     for m, (out, inn) in enumerate([(100, 100), (160, 120), (230, 140)]):
         assert strat.on_minute({"600002": _flow_q(at(10, m), 10.25, 10.25, out, inn)}, at(10, m)) == []
-    # 10:03 回落到 +1.7%（回落 0.8 点），但最近 3 分钟外盘 +150 > 内盘 +60 → 留着
-    assert strat.on_minute({"600002": _flow_q(at(10, 3), 10.17, 10.25, 250, 160)}, at(10, 3)) == []
+    # 10:03 回落到 +1.0%（回落 1.5 点，主账户线），但最近 3 分钟外盘 +150 > 内盘 +60 → 留着
+    assert strat.on_minute({"600002": _flow_q(at(10, 3), 10.10, 10.25, 250, 160)}, at(10, 3)) == []
     # 10:04 最近 3 分钟外盘 +50 < 内盘 +150 → 跟踪止盈卖
-    fills = strat.on_minute({"600002": _flow_q(at(10, 4), 10.17, 10.25, 210 + 0, 270)}, at(10, 4))
+    fills = strat.on_minute({"600002": _flow_q(at(10, 4), 10.10, 10.25, 210 + 0, 270)}, at(10, 4))
     assert [(f.side, f.reason) for f in fills] == [("sell", "跟踪止盈")]
 
 
@@ -281,7 +282,7 @@ def test_buy_pressure_needs_two_snapshots():
     _hold(conn)
     strat = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {}, set(), PREV_DAY, lambda: "正常",
                             enabled=False, trade_days=[PREV_DAY, TODAY])
-    fills = strat.on_minute({"600002": _flow_q(at(10, 30), 10.17, 10.25, 9999, 1)}, at(10, 30))
+    fills = strat.on_minute({"600002": _flow_q(at(10, 30), 10.10, 10.25, 9999, 1)}, at(10, 30))
     assert [(f.side, f.reason) for f in fills] == [("sell", "跟踪止盈")]
 
 
@@ -293,7 +294,7 @@ def _bought(fills):
 
 def test_buy_needs_three_day_shrink_and_four_day_shrink_goes_first():
     feats = {"600001": SHRINK2, "600002": SHRINK3, "600003": SHRINK4}
-    strat, conn, ledger, _ = make(features=feats)
+    strat, conn, ledger, _ = make(features=feats, ret5={"600001": -5.0, "600002": -15.0, "600003": -12.0})
     q = {"600001": -1.0, "600002": -1.0, "600003": -1.0}
     fills = strat.on_minute(_quotes(at(10, 0), **q), at(10, 0))
     # 600001 只缩 2 天不入选；600002 的 5 日跌得比 600003 多，但 600003 缩了 4 天，先买它（只有一个仓位）
@@ -467,3 +468,36 @@ def test_turn_lets_main_buy_on_weak_day_and_tags_the_reason():
     main = [f for f in fills if f.account == "rebound_main"]
     assert len(fills) == 2 and main[0].reason.startswith("拐点抄底｜超跌")
     assert strat.candidates_view(_quotes(at(13, 11), **q), at(13, 11))["mode"] == "turn"
+
+
+# ---- 10-14 用户定：主账户只买 5 日跌超 10% 的；跟踪止盈回落线 1.5 点（影子账户照旧，当对照） ----
+
+def test_main_only_buys_five_day_drop_over_ten_percent_shadow_unchanged():
+    strat, conn, ledger, _ = make(ret5={"600001": -9.9, "600002": -1.5, "600003": -3.0})
+    fills = strat.on_minute(_quotes(at(10, 0), **{"600001": -1.0, "600002": -1.0, "600003": -1.0}), at(10, 0))
+    assert {(f.account, f.code) for f in fills} == {("rebound_shadow", "600001")}     # 主账户一只都不够深
+    strat, conn, ledger, _ = make(ret5={"600001": -10.0, "600002": -1.5})
+    fills = strat.on_minute(_quotes(at(10, 0), **{"600001": -1.0, "600002": -1.0}), at(10, 0))
+    assert {(f.account, f.code) for f in fills} == {("rebound_shadow", "600001"), ("rebound_main", "600001")}
+
+
+def _hold_both(conn, code="600002", buy_price=10.0):
+    for acct in ("rebound_main", "rebound_shadow"):
+        conn.execute("INSERT INTO positions VALUES (?, ?, ?, ?, ?, ?)",
+                     (acct, code, 1000, buy_price * 1000 + 5, buy_price, PREV_DAY.isoformat()))
+    conn.commit()
+
+
+def test_main_trailing_pullback_is_one_and_a_half_points_shadow_keeps_point_eight():
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    _hold_both(conn)
+    strat = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {}, set(), PREV_DAY, lambda: "正常",
+                            enabled=False, trade_days=[PREV_DAY, TODAY])
+    q = quote("600002", pct=1.7, ts=at(10, 30))
+    q = type(q)(**{**q.__dict__, "high": 10.25})                       # 最高 +2.5%，现价 +1.7%：回落 0.8
+    fills = strat.on_minute({"600002": q}, at(10, 30))
+    assert [(f.account, f.reason) for f in fills] == [("rebound_shadow", "跟踪止盈")]
+    q = type(q)(**{**q.__dict__, "price": 10.10})                      # 回落 1.5
+    fills = strat.on_minute({"600002": q}, at(10, 31))
+    assert [(f.account, f.reason) for f in fills] == [("rebound_main", "跟踪止盈")]

@@ -37,7 +37,9 @@ def rank_lowbuy(quotes: Iterable[Quote], ret5: dict[str, float], shrink=None, ma
     return sorted(pool, key=lambda q: ret5[q.code], reverse=True)
 
 
-def decide_lowbuy_sell(pos: Position, q: Quote, now: datetime, prev_trade_day: date | None = None) -> SellDecision:
+def decide_lowbuy_sell(pos: Position, q: Quote, now: datetime, prev_trade_day: date | None = None,
+                       pullback: float | None = None) -> SellDecision:
+    """pullback：跟踪止盈回落线（个点）；主账户传 LOWBUY_MAIN_TRAIL_PULLBACK，None = LOWBUY_TRAIL_PULLBACK（影子）。"""
     if pos.buy_date >= now.date() or now.time() < config.MARKET_OPEN:
         return HOLD
     if prev_trade_day is not None and pos.buy_date < prev_trade_day:
@@ -55,7 +57,7 @@ def decide_lowbuy_sell(pos: Position, q: Quote, now: datetime, prev_trade_day: d
     if high_pnl >= config.LOWBUY_TRAIL_START:
         if pnl <= 0:
             return SellDecision(True, "回到成本")
-        if round(high_pnl - pnl, 2) >= config.LOWBUY_TRAIL_PULLBACK:
+        if round(high_pnl - pnl, 2) >= (config.LOWBUY_TRAIL_PULLBACK if pullback is None else pullback):
             return SellDecision(True, "跟踪止盈")
     if now.time() >= config.EOD_SELL:
         return SellDecision(True, "尾盘清仓")

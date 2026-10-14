@@ -8,6 +8,7 @@ from collections.abc import Callable
 from datetime import date, datetime
 from time import monotonic
 
+from jevq import config
 from jevq.config import MAX_CHECKS_PER_TICK, MAX_ERRORS_PER_TICK, MAX_PER_TRADE, STRATEGIES
 from jevq.ledger import Ledger, affordable_shares
 from jevq.models import Fill, Quote
@@ -46,7 +47,8 @@ class LowbuyStrategy:
                 q = quotes.get(pos.code)
                 if q is None or q.ts.date() < now.date():
                     continue
-                d = decide_lowbuy_sell(pos, q, now, self.prev_day)
+                d = decide_lowbuy_sell(pos, q, now, self.prev_day,      # 主账户回落线放宽（10-14），影子照旧
+                                       pullback=config.LOWBUY_MAIN_TRAIL_PULLBACK if account == self.accounts[0] else None)
                 if d.sell and (f := self.ledger.sell(account, pos, q, now, d.reason)):
                     fills.append(f)
         return fills

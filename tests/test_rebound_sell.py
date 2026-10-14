@@ -180,3 +180,11 @@ def test_back_to_cost_is_not_held_by_jev():
     t = Trend("探底回升")
     d = decide_rebound_sell(pos(), q(10.0, high=10.25), D1, hold_days=1, stop_minutes=0, trend=t)
     assert d.sell and d.reason == "回到成本" and t.calls == 0
+
+
+def test_trailing_pullback_can_be_widened():
+    """10-14 用户定：主账户回落 1.5 点才卖（调用方传 pullback），不传还是 0.8 点。"""
+    p = q(10.17, high=10.25)                                           # 最高 +2.5%，现价 +1.7%
+    assert decide_rebound_sell(pos(), p, D1, hold_days=1).reason == "跟踪止盈"
+    assert not decide_rebound_sell(pos(), p, D1, hold_days=1, pullback=1.5).sell
+    assert decide_rebound_sell(pos(), q(10.10, high=10.25), D1, hold_days=1, pullback=1.5).reason == "跟踪止盈"
