@@ -5,7 +5,8 @@
 
 全部满足才算拐点（规则只给候选，Jev 再确认，见 jevq.judge.turn）：
 1. window   ：TURN_START ~ TURN_END 之间
-2. panic    ：今天红盘占比最低到过 ≤ TURN_PANIC_UP（30%）——今天确实恐慌过
+2. panic    ：今天（TURN_PANIC_FROM 09:35 起，开盘头几分钟不算）红盘占比最低到过 ≤ TURN_PANIC_UP（30%）
+   ld_peak  ：而且今天跌停峰值 ≥ TURN_LD_PEAK_MIN（10 家）——确实恐慌过，不是普通弱开（10-14 用户定）
 3. low_age  ：那个最低点离现在 ≥ TURN_LOW_AGE 个交易分钟（15，跨午休只算交易时间）——恐慌释放后没再创新低
 4. up_min   ：现在红盘占比 ≥ TURN_UP_MIN（35%）
 5. up_gain  ：现在比最低点多 ≥ TURN_UP_GAIN（15 个百分点）——广度明显修复
@@ -61,7 +62,8 @@ def turn_check(series: list[Breadth], now: datetime) -> tuple[bool, dict]:
         return False, {"checks": {"data": False}}
     cur = today[-1]
     i_now = trading_index(cur.ts.time())
-    low = min(today, key=lambda b: (b.up_ratio, -trading_index(b.ts.time())))     # 同为最低取最近的一次
+    settled = [b for b in today if b.ts.time() >= config.TURN_PANIC_FROM] or today
+    low = min(settled, key=lambda b: (b.up_ratio, -trading_index(b.ts.time())))   # 同为最低取最近的一次
     peak_ld = max(b.limit_down for b in today)
     before = [b for b in today if trading_index(b.ts.time()) <= i_now - config.TURN_VOL_LOOKBACK]
     vol_before = before[-1].amount_ratio if before else None
@@ -69,6 +71,7 @@ def turn_check(series: list[Breadth], now: datetime) -> tuple[bool, dict]:
     checks = {
         "window": config.TURN_START <= now.time() < config.TURN_END,
         "panic": low.up_ratio <= config.TURN_PANIC_UP,
+        "ld_peak": peak_ld >= config.TURN_LD_PEAK_MIN,
         "low_age": i_now - trading_index(low.ts.time()) >= config.TURN_LOW_AGE,
         "up_min": cur.up_ratio >= config.TURN_UP_MIN,
         "up_gain": cur.up_ratio - low.up_ratio >= config.TURN_UP_GAIN,

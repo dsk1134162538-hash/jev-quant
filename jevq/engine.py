@@ -23,6 +23,7 @@ class Engine:
         self.conn, self.ledger = conn, ledger
         # 情绪拐点抄底（jevq.rules.turn + jevq.judge.turn.TurnJudge）：None = 不判拐点
         self.turn_judge = turn_judge
+        self.turn_gate = None                          # 拐点把关（Claude，jevq.judge.turn_claude）；None = 不把关
         self.flash = flash                             # 7x24 快讯（jevq.data.news7x24.Flash）；None = 不接
         self.overseas_pcts = overseas_pcts or {}
         self.breadth_series: list = []                 # 今天每分钟的全市场广度（turn_rules.Breadth）
@@ -229,32 +230,48 @@ class Engine:
             self.turn_on, self.turn_detail = True, detail
 
     def _turn_step(self, now: datetime):
-        """规则看到恐慌后的修复 → 确认，当天锁定 turn_on。TURN_JEV_REQUIRED=True 时还要 Jev 确认：没确认、规则
-        还满足时每 TURN_JEV_RETRY 分钟再问，Jev 没答上下一分钟就再问；False 时 Jev 照问一次但只记录。
-        每次问都记一条 decisions。"""
-        if self.turn_on or self.turn_judge is None or self.halted:
+        """规则看到恐慌后的修复 → 确认，当天锁定 turn_on。
+        挂了 turn_gate（Claude，用户 2026-10-14）：必须它同意（≥ TURN_CLAUDE_MIN）才确认，Jev 照问只记录。
+        没挂：TURN_JEV_REQUIRED=True 要 Jev 确认，False 规则满足就确认、Jev 只记录。
+        把关的没确认、规则还满足时每 TURN_JEV_RETRY 分钟再问；没答上下一分钟就再问。每次问都记一条 decisions。"""
+        if self.turn_on or self.halted or (self.turn_judge is None and self.turn_gate is None):
             return
         ok, detail = turn_rules.turn_check(self.breadth_series, now)
         if not ok:
             return
         if self._turn_asked_at and now - self._turn_asked_at < timedelta(minutes=config.TURN_JEV_RETRY):
             return
-        try:
-            prob = self.turn_judge.confirm(self.breadth_series, detail, now, self.sentiment_label,
-                                           self.overseas_pcts)
-        except Exception as e:
-            print(f"[engine] 拐点确认异常: {e!r}")
-            prob = None
-        self._turn_asked_at = None if prob is None else now
+        prob = None
+        if self.turn_judge is not None:
+            try:
+                prob = self.turn_judge.confirm(self.breadth_series, detail, now, self.sentiment_label,
+                                               self.overseas_pcts)
+            except Exception as e:
+                print(f"[engine] 拐点确认（Jev）异常: {e!r}")
         jev_ok = prob is not None and prob >= config.TURN_JEV_MIN
-        confirmed = jev_ok if config.TURN_JEV_REQUIRED else True
-        record = {"confirmed": confirmed, "prob": prob, "by": "规则+Jev" if config.TURN_JEV_REQUIRED else "规则",
-                  "jev_agrees": jev_ok, "text": turn_rules.describe(detail), "rules": detail}
-        trace = getattr(self.turn_judge, "last_trace", None)
+        record = {"prob": prob, "jev_agrees": jev_ok, "text": turn_rules.describe(detail), "rules": detail}
+        trace = {"jev": getattr(self.turn_judge, "last_trace", None)}
+        if self.turn_gate is not None:
+            try:
+                gate_prob = self.turn_gate.confirm(self.breadth_series, detail, now)
+            except Exception as e:
+                print(f"[engine] 拐点确认（Claude）异常: {e!r}")
+                gate_prob = None
+            gate_trace = getattr(self.turn_gate, "last_trace", None) or {}
+            confirmed = gate_prob is not None and gate_prob >= config.TURN_CLAUDE_MIN
+            answered = gate_prob is not None
+            record.update(by="规则+Claude", claude_prob=gate_prob, claude_reason=gate_trace.get("reason"))
+            trace["claude"] = gate_trace
+        else:
+            confirmed = jev_ok if config.TURN_JEV_REQUIRED else True
+            answered = prob is not None
+            record["by"] = "规则+Jev" if config.TURN_JEV_REQUIRED else "规则"
+        record["confirmed"] = confirmed
+        self._turn_asked_at = now if answered else None
         self.conn.execute(
             "INSERT INTO decisions(ts, code, verdict, detail, trace, strategy) VALUES (?, '', 'turn', ?, ?, 'market')",
             (now.isoformat(timespec="seconds"), json.dumps(record, ensure_ascii=False),
-             None if trace is None else json.dumps(trace, ensure_ascii=False)))
+             json.dumps(trace, ensure_ascii=False)))
         self.conn.commit()
         if confirmed:
             self.turn_on, self.turn_detail = True, record

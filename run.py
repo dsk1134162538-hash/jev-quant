@@ -22,7 +22,9 @@ from jevq.judge.own_sectors import OwnSectorJudge
 from jevq.judge.news import NewsJudge
 from jevq.judge.notices import NoticeJudge
 from jevq.judge.trend import TrendJudge
+from jevq.judge.claude_cli import ClaudeCLI
 from jevq.judge.turn import TurnJudge
+from jevq.judge.turn_claude import ClaudeTurnJudge
 from jevq.ledger import Ledger
 from jevq.live import store as live_store
 from jevq.notify import Notifier, notifier_from_env
@@ -299,6 +301,11 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                     articles_provider=None if late else lambda t: hi189.refresh(conn, today, prev_day, t))
     # 情绪拐点抄底 + 7x24 快讯：构造后再挂上（测试里的假引擎没有这些参数）
     engine.turn_judge = None if (late or sell_only) else TurnJudge(jev, flash)
+    if config.TURN_CLAUDE_REQUIRED and not (late or sell_only):    # 拐点必须 Claude 同意（用户 2026-10-14）
+        claude = ClaudeCLI()
+        if not claude.available():
+            _warn(state, log, notifier, f"找不到本机 claude（{claude.exe}），今天情绪拐点不会确认")
+        engine.turn_gate = ClaudeTurnJudge(claude, conn)
     engine.flash = flash
     engine.overseas_pcts = state.get("overseas_pcts") or {}
     if config.ZT_EXTRA_ENABLED and not late:     # 昨日涨停今日表现 → 情绪；涨停原因题材 → 主线点名
@@ -373,7 +380,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                 log(f"卖飞跟踪失败：{e!r}")
             if getattr(engine, "turn_on", False) and getattr(engine, "turn_detail", None):
                 notifier.once("turn", "💡 情绪拐点：开始抄底",
-                              f"{engine.turn_detail.get('text', '')}\nJev 判修复拐点 {engine.turn_detail.get('prob')}；"
+                              f"{engine.turn_detail.get('text', '')}\n{_turn_opinions(engine.turn_detail)}；"
                               "超跌反弹今天偏弱/冰点也盘中买，实盘跟")
             if own_intraday is not None:
                 try:    # 盘中板块情绪：后台线程记录，这里只触发，不等
@@ -473,6 +480,13 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if after_close is not None:
         after_close(conn, today)
     return path
+
+
+def _turn_opinions(detail: dict) -> str:
+    """拐点推送里的 AI 看法：Claude 把关时写它的概率和理由，Jev 的作对照。"""
+    if detail.get("by") == "规则+Claude":
+        return f"Claude 判修复拐点 {detail.get('claude_prob')}（{detail.get('claude_reason') or ''}），Jev {detail.get('prob')}"
+    return f"Jev 判修复拐点 {detail.get('prob')}"
 
 
 def _sectors_of(engine) -> list | None:

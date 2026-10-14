@@ -1564,3 +1564,18 @@ def test_catalyst_skipped_when_started_after_deadline(env, monkeypatch):
     monkeypatch.setattr(run.catalyst, "run", lambda *a, **k: calls.append(a) or {})
     env.run()
     assert calls == [] and "隔夜消息催化跳过" in env.log_text()
+
+
+def test_turn_gate_attached_and_warns_when_claude_missing(env, monkeypatch):
+    """用户 2026-10-14：拐点必须 Claude 同意；本机找不到 claude 要提醒（那天拐点不会确认）。"""
+    monkeypatch.setattr(run.config, "TURN_CLAUDE_REQUIRED", True)
+    env.run()
+    eng = FakeEngine.instances[0]
+    assert type(getattr(eng, "turn_gate", None)).__name__ == "ClaudeTurnJudge"
+    assert "找不到本机 claude" in env.log_text()
+
+
+def test_turn_push_names_claude_when_it_decides():
+    assert run._turn_opinions({"by": "规则+Claude", "claude_prob": 0.72, "claude_reason": "修复", "prob": 0.8}) \
+        == "Claude 判修复拐点 0.72（修复），Jev 0.8"
+    assert run._turn_opinions({"by": "规则", "prob": 0.6}) == "Jev 判修复拐点 0.6"

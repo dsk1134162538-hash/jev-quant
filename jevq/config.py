@@ -52,13 +52,17 @@ REBOUND_LOW_OPEN_BOUNCE = 0.8  # 卖出：低开后从当天最低拉起这么�
 TURN_START = time(9, 45)        # 开盘前 15 分钟广度不稳，不判
 TURN_END = time(14, 50)
 TURN_PANIC_UP = 0.30            # 今天红盘占比最低到过这个以下 = 恐慌过（股票池约 3000 只 ≈ 红盘不到 1000 家）
+TURN_PANIC_FROM = time(9, 35)   # 恐慌低点从这时起算：开盘头几分钟的广度是集合竞价余波（10-14 09:30 红盘 21% 下一分钟就 39%）
+TURN_LD_PEAK_MIN = 10           # 当天跌停峰值至少这么多家才算真恐慌（10-09 18 家、10-13 14 家是真拐点；10-14 5 家是假的）
 TURN_LOW_AGE = 15               # 最低点离现在至少几个交易分钟（恐慌释放后没再创新低）
 TURN_UP_MIN = 0.35              # 现在红盘占比至少
 TURN_UP_GAIN = 0.15             # 现在红盘占比比最低点至少多几个百分点（0.15 = 15 个点）
 TURN_LD_FLOOR = 5               # 跌停家数降到这个以内，或降到今天最多的 TURN_LD_SHRINK 倍以内
 TURN_LD_SHRINK = 0.6
 TURN_VOL_LOOKBACK = 30          # 成交额较昨日同期% 要比这么多交易分钟前高（放量）
-TURN_JEV_REQUIRED = False       # True = 规则满足后还要 Jev 确认；False = 规则满足就确认，Jev 照问但只记录
+TURN_CLAUDE_REQUIRED = True     # 用户 2026-10-14：规则满足后必须 Claude 同意才确认（jevq/judge/turn_claude.py）；Jev 照问只记录
+TURN_CLAUDE_MIN = 0.55          # Claude 判修复拐点的概率至少这么多（10-14 回放：真拐点 0.72、假的 0.35）
+TURN_JEV_REQUIRED = False      # True = 规则满足后还要 Jev 确认；False = 规则满足就确认，Jev 照问但只记录
                                 # （10-09 实测同一份 13:10 数据 Jev 给 0.50~0.58，像掷硬币，当门槛只会拖慢）
 TURN_JEV_MIN = 0.55             # Jev 判「修复拐点」的概率至少这么多才确认（10-09 13:10 实测约 0.6）
 TURN_JEV_RETRY = 5              # 分钟：Jev 没确认，规则仍满足时多久后再问（拐点要快）
@@ -215,6 +219,12 @@ CATALYST_ALIASES = {
     "光伏": ["solar", "photovoltaic"],
     "风电": ["wind power", "offshore wind"],
 }
+
+# 本机 claude 命令行（订阅登录）：jevq/judge/claude_cli.py
+CLAUDE_BIN = r"%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe"
+CLAUDE_MODEL = "sonnet"
+CLAUDE_PROXY = "http://127.0.0.1:8889"   # 命令行 claude 不走 Windows 系统代理，要显式给（VPN 端口改了这里跟着改）
+CLAUDE_TIMEOUT = 60.0                    # 秒；10-14 实测一次 5~9 秒
 
 # 收盘后导出到 Vibe-Research（jevq/sync/vibe.py；dj 2026-10-10 要自动导出导入）
 VIBE_ENABLED = True

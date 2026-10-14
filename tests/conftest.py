@@ -33,3 +33,5 @@ def _no_extra_market_data(monkeypatch):
     monkeypatch.setattr("jevq.config.CATALYST_ENABLED", False)
     monkeypatch.setattr("jevq.config.MARKET_EXTRA_ENABLED", False)
     monkeypatch.setattr("jevq.config.ZT_EXTRA_ENABLED", False)
+    monkeypatch.setattr("jevq.config.TURN_CLAUDE_REQUIRED", False)   # 本机真装着 claude：测试不能真去问它
+    monkeypatch.setattr("jevq.config.CLAUDE_BIN", "Z:/no/such/claude.exe")
