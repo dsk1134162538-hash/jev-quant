@@ -6,6 +6,7 @@
 行情与情绪都由共用的 Engine 每分钟取好、刷新好传进来，本策略不自己拉行情、不自己问情绪。
 """
 import json
+import statistics
 import sqlite3
 from collections import deque
 from collections.abc import Callable
@@ -43,6 +44,8 @@ class ReboundStrategy:
         self.accounts = STRATEGIES[SID]["accounts"]
         self.notice_judge, self.news_judge = notice_judge, news_judge
         self.universe, self.ret5, self.excluded = universe, ret5, excluded
+        # 大盘 5 日涨幅中位数（全股票池，截至昨天收盘）：主账户按大盘环境买（用户 2026-10-14）
+        self.market_ret5 = round(statistics.median(ret5.values()), 2) if ret5 else None
         self.sentiment_provider = sentiment_provider
         self.sentiment_trace_provider = sentiment_trace_provider or (lambda: None)
         self.enabled = enabled
@@ -78,9 +81,31 @@ class ReboundStrategy:
             (q for c, q in quotes.items() if c in self.universe and q.ts.date() >= now.date()),
             self.ret5, self.excluded,
             shrink_days=None if self.features is None else (lambda q: self._shrink_days(q, now)))
-        # 主账户只买 5 日跌幅够深的（用户 2026-10-14）；影子账户照旧，当对照组
-        deep = [q for q in ranked if self.ret5[q.code] <= config.REBOUND_MAIN_RET5_MAX]
-        return self._buy_shadow(ranked, now) + self._buy_main(deep, now, mode, sentiment, deadline)
+        return self._buy_shadow(ranked, now) + self._buy_main(self._main_pool(ranked, mode, now), now, mode,
+                                                             sentiment, deadline)
+
+    def _main_pool(self, ranked: list[Quote], mode: str, now: datetime) -> list[Quote]:
+        """主账户的候选（用户 2026-10-14 按回测定，影子账户照旧当对照）：
+        - 大盘普跌（全市场 5 日中位数 ≤ REBOUND_MAIN_MARKET_RET5_MAX）才买；确认拐点的日子不看这条（拐点是盘中恐慌，
+          5 日中位数只看到昨天，10-09、10-13 两个拐点日分别是 -1.5%、+0.2%）；
+        - 个股比大盘多跌超过 -REBOUND_MAIN_EXCESS_MIN 个点的不买（个股自己出问题，多半刚开始跌）。
+        大盘条件不满足时每天记一条 gate。"""
+        m = self.market_ret5
+        if m is None:
+            self._log_gate(now, "大盘 5 日涨幅算不出：主账户今天不买", m)
+            return []
+        if mode != "turn" and m > config.REBOUND_MAIN_MARKET_RET5_MAX:
+            self._log_gate(now, f"大盘 5 日中位数 {m:+.2f}%（要 ≤ {config.REBOUND_MAIN_MARKET_RET5_MAX:g}%，"
+                                "大盘普跌才抄超跌）：主账户今天不买，拐点确认了再买", m)
+            return []
+        return [q for q in ranked if self.ret5[q.code] - m >= config.REBOUND_MAIN_EXCESS_MIN]
+
+    def _log_gate(self, now: datetime, detail: str, market_ret5: float | None) -> None:
+        day = now.date().isoformat()
+        if self.conn.execute("SELECT 1 FROM decisions WHERE strategy=? AND verdict='gate' AND substr(ts, 1, 10)=?",
+                             (SID, day)).fetchone():
+            return
+        self._log(now, "", "gate", detail, {"strategy": SID, "market_ret5": market_ret5})
 
     def candidates_view(self, quotes: dict[str, Quote], now: datetime) -> dict:
         """面板「候选」页：此刻满足选股条件的票，按买入优先顺序（同 buy_step 的 rank_rebound）。

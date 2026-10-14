@@ -1208,7 +1208,7 @@ def _real_engine(env, monkeypatch, events, clock, step, codes=("600001",)):
 
 
 def test_slow_jev_in_buy_phase_does_not_delay_board_and_custom_sells(env, monkeypatch):
-    monkeypatch.setattr("jevq.config.REBOUND_MAIN_RET5_MAX", 0.0)    # 测 Jev 时限，不测 10-14 的主账户跌幅门槛
+    monkeypatch.setattr("jevq.config.REBOUND_MAIN_MARKET_RET5_MAX", 99.0)   # 测 Jev 时限，不测 10-14 的大盘环境门槛
     """买入阶段的 Jev（引擎刷新情绪、超跌反弹排雷）再慢，同一分钟里扫首板、自定义策略的卖出也已经做完。"""
     events, clock = [], [0.0]
     judge = _real_engine(env, monkeypatch, events, clock, step=30.0)
@@ -1314,7 +1314,7 @@ def test_sell_phase_error_skips_only_that_strategys_buy_phase(env, fake_custom):
 
 
 def test_tick_jev_budget_exhausted_candidates_checked_next_minute(env, monkeypatch):
-    monkeypatch.setattr("jevq.config.REBOUND_MAIN_RET5_MAX", 0.0)    # 测 Jev 时限，不测 10-14 的主账户跌幅门槛
+    monkeypatch.setattr("jevq.config.REBOUND_MAIN_MARKET_RET5_MAX", 99.0)   # 测 Jev 时限，不测 10-14 的大盘环境门槛
     """预算用完：超跌反弹剩下的候选这一分钟不判（不记否决/错误），下一分钟接着判。
     09:30 就能判，说明同一分钟引擎先刷好了情绪（没有情绪超跌反弹只在尾盘买）；情绪每 10 分钟刷一次。"""
     events, clock = [], [0.0]
