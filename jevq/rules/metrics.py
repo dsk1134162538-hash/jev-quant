@@ -65,12 +65,38 @@ def elapsed_trading_minutes(t: time) -> float:
     return morning + afternoon
 
 
+# A 股日内累计成交量曲线：开盘后第 N 个交易分钟（午休不计），全天量通常完成了几成。
+# 10-14 从 160 只股票 × 5 个交易日的分时统计（取中位数）：两头多、中间少，开盘半小时就成交了三成。
+# 原来线性折算（量 ÷ 分钟 × 240）在 10:00 把全天量估高 2.4 倍，活跃的票几乎都被判成「今天放量」。
+VOLUME_PROFILE = {
+    0: 0.0037, 5: 0.0918, 10: 0.1439, 15: 0.1893, 20: 0.2313, 25: 0.2704, 30: 0.3004, 35: 0.3316, 40: 0.3557,
+    45: 0.3781, 50: 0.3978, 55: 0.42, 60: 0.4389, 65: 0.4605, 70: 0.4777, 75: 0.4936, 80: 0.5078, 85: 0.5224,
+    90: 0.5358, 95: 0.5488, 100: 0.5598, 105: 0.57, 110: 0.5814, 115: 0.5926, 120: 0.6038, 125: 0.6291,
+    130: 0.6444, 135: 0.6581, 140: 0.6779, 145: 0.6899, 150: 0.7039, 155: 0.7175, 160: 0.7322, 165: 0.7481,
+    170: 0.7612, 175: 0.7729, 180: 0.7865, 185: 0.8013, 190: 0.8154, 195: 0.8305, 200: 0.8466, 205: 0.8619,
+    210: 0.8739, 215: 0.8938, 220: 0.911, 225: 0.9294, 230: 0.9496, 235: 0.9763, 240: 1.0}
+_PROFILE_KEYS = sorted(VOLUME_PROFILE)
+
+
+def intraday_fraction(minutes: float) -> float:
+    """开盘后 minutes 个交易分钟时全天量通常完成的比例（VOLUME_PROFILE 两点之间线性插值）。"""
+    if minutes >= 240:
+        return 1.0
+    lo = max(k for k in _PROFILE_KEYS if k <= minutes)
+    hi = min(k for k in _PROFILE_KEYS if k >= minutes)
+    if lo == hi:
+        return VOLUME_PROFILE[lo]
+    w = (minutes - lo) / (hi - lo)
+    return VOLUME_PROFILE[lo] + (VOLUME_PROFILE[hi] - VOLUME_PROFILE[lo]) * w
+
+
 def projected_volume(volume: float, t: time) -> float | None:
-    """把当日截至 t 的成交量（手）折算成全天量 = 量 ÷ 已过交易分钟 × 240。09:45 前或没成交返回 None。"""
+    """把当日截至 t 的成交量（手）折算成全天量 = 量 ÷ 此刻通常已完成的比例（VOLUME_PROFILE）。
+    09:45 前或没成交返回 None。"""
     minutes = elapsed_trading_minutes(t)
     if minutes < MIN_PROJECT_MINUTES or not volume or volume <= 0:
         return None
-    return volume / minutes * 240
+    return volume / intraday_fraction(minutes)
 
 
 def vol_step(history: list, today: float | None, n: int | None, down: bool) -> bool | None:

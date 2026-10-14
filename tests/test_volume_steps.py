@@ -25,12 +25,12 @@ def test_elapsed_trading_minutes_excludes_lunch(t, minutes):
 def test_projected_volume_none_before_0945():
     assert projected_volume(1000, time(9, 44)) is None
     assert projected_volume(1000, time(9, 0)) is None
-    assert projected_volume(1000, time(9, 45)) == 1000 / 15 * 240
+    assert projected_volume(1000, time(9, 45)) == 1000 / 0.1893
 
 
 def test_projected_volume_lunch_and_after_close():
-    assert projected_volume(1500, time(13, 30)) == 1500 / 150 * 240
-    assert projected_volume(1500, time(12, 0)) == 1500 / 120 * 240
+    assert projected_volume(1500, time(13, 30)) == 1500 / 0.7039
+    assert projected_volume(1500, time(12, 0)) == 1500 / 0.6038
     assert projected_volume(1500, time(15, 30)) == 1500           # 收盘后就是全天量
     assert projected_volume(0, time(10, 0)) is None                # 没成交（停牌）→ 不判断
 
@@ -73,19 +73,19 @@ def _get(feat, volume, t, ts=TODAY_TS):
 
 def test_getter_step_down_projects_today_volume():
     feat = {"vols": [400.0, 300.0, 200.0, 150.0], "vols_until": YESTERDAY}
-    get = _get(feat, volume=12, t=time(10, 0))                 # 12 / 30 × 240 = 96 手
+    get = _get(feat, volume=12, t=time(10, 0))                 # 12 / 0.3004（10:00 通常已成交三成）≈ 40 手
     assert get("vol_step_down", 3) is True
     assert get("vol_step_up", 3) is False
-    get = _get(feat, volume=25, t=time(10, 0))                 # 折算 200 ≥ 150，不再缩量
+    get = _get(feat, volume=50, t=time(10, 0))                 # 折算 166 ≥ 150，不再缩量
     assert get("vol_step_down", 3) is False
 
 
 def test_getter_step_up_after_lunch():
     feat = {"vols": [100.0, 200.0, 300.0], "vols_until": YESTERDAY}
-    # 13:30 已过 150 分钟：250 / 150 × 240 = 400 > 300
+    # 13:30 已过 150 分钟（通常已成交 70.4%）：250 / 0.7039 ≈ 355 > 300
     assert _get(feat, volume=250, t=time(13, 30))("vol_step_up", 3) is True
-    # 同样 250 手若按不扣午休的 240 分钟算只有 250，会误判为不放量——这里确认扣了午休
-    assert _get(feat, volume=180, t=time(13, 30))("vol_step_up", 3) is False   # 288 < 300
+    # 午休不计：按 150 分钟查曲线
+    assert _get(feat, volume=180, t=time(13, 30))("vol_step_up", 3) is False   # 256 < 300
 
 
 def test_getter_none_before_0945_and_without_history():
@@ -224,10 +224,10 @@ def test_shrink_days_counts_consecutive_shrinks_including_today():
 
 
 def test_shrink_days_stops_where_the_chain_breaks():
-    # 96 < 150 < 200 < 300，再往前 300 > 100 是放量：只有 3 天
+    # 40 < 150 < 200 < 300，再往前 300 > 100 是放量：只有 3 天
     assert _shrink({"vols": [100.0, 300.0, 200.0, 150.0], "vols_until": YESTERDAY}, volume=12) == 3
-    # 今天折算 200 ≥ 昨天 150：今天没缩量，0 天
-    assert _shrink({"vols": [400.0, 300.0, 200.0, 150.0], "vols_until": YESTERDAY}, volume=25) == 0
+    # 今天折算 166 ≥ 昨天 150：今天没缩量，0 天
+    assert _shrink({"vols": [400.0, 300.0, 200.0, 150.0], "vols_until": YESTERDAY}, volume=50) == 0
 
 
 def test_shrink_days_is_capped_at_five():

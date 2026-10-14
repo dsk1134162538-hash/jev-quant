@@ -57,3 +57,22 @@ def test_seal_ratio_computed_and_none_when_not_sealed():
     assert seal_ratio(not_sealed) is None
     zero_amount = q(price=11.0, limit_up=11.0, bid_vols=(1000,), amount=0)
     assert seal_ratio(zero_amount) is None
+
+
+# ---- 10-14 用户定：盘中全天量按日内成交量曲线折算（原来线性折算，开盘半小时高估 2.4 倍，深跌的活跃票全被判成放量） ----
+from datetime import time as _t  # noqa: E402
+
+from jevq.rules.metrics import intraday_fraction, projected_volume  # noqa: E402
+
+
+def test_intraday_fraction_follows_real_u_shaped_profile():
+    assert intraday_fraction(30) == 0.3004 and intraday_fraction(120) == 0.6038 and intraday_fraction(240) == 1.0
+    assert 0.3004 < intraday_fraction(32) < 0.3316                      # 两个点之间线性插值
+    assert intraday_fraction(250) == 1.0
+
+
+def test_projection_uses_profile_not_straight_line():
+    assert round(projected_volume(300, _t(10, 0))) == round(300 / 0.3004)        # 原来是 300 / 30 × 240 = 2400
+    assert round(projected_volume(600, _t(11, 30))) == round(600 / 0.6038)
+    assert round(projected_volume(600, _t(13, 0))) == round(600 / 0.6038)        # 午休不算
+    assert projected_volume(100, _t(9, 44)) is None                               # 09:45 前仍不判断
