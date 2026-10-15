@@ -261,3 +261,25 @@ def test_main_buys_on_ice_point_in_broad_drop_only_when_switched_on(monkeypatch)
     monkeypatch.setattr(config, "REBOUND_MAIN_BUY_ON_ICE", True)
     fills = strat.on_minute(_quotes(at(10, 1), **Q), at(10, 1))
     assert _bought(fills) == {("rebound_main", "600002")}                          # 影子账户照旧冰点不买
+
+
+def test_attach_sectors_sets_view_and_skips_veto_without_claude(monkeypatch):
+    import run
+    conn = _conn_with_sectors()
+    strat = type("S", (), {"sector_view": None, "sector_veto": None})()
+    logs, state = [], {}
+    monkeypatch.setattr(config, "REBOUND_SECTOR_VETO", True)          # conftest 把 CLAUDE_BIN 指到不存在的路径
+    monkeypatch.setattr(run, "_warn", lambda st, log, notifier, msg: logs.append(msg))
+    run._attach_sectors(strat, conn, TODAY, {"600001": -1.0}, flash=None, log=logs.append, state=state, notifier=None)
+    assert strat.sector_view is not None and "600006" in strat.sector_view.blacklist
+    assert strat.sector_veto is None and any("找不到本机 claude" in m for m in logs)
+
+
+def test_attach_sectors_failure_leaves_rules_only():
+    import run
+    conn = db.connect(":memory:")
+    conn.execute("DROP TABLE industries")
+    strat = type("S", (), {"sector_view": "old", "sector_veto": None})()
+    logs = []
+    run._attach_sectors(strat, conn, TODAY, {}, flash=None, log=logs.append, state={}, notifier=None)
+    assert strat.sector_view is None and any("板块数据失败" in m for m in logs)
