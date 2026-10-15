@@ -257,6 +257,7 @@ def test_main_buys_on_ice_point_in_broad_drop_only_when_switched_on(monkeypatch)
     conn = db.connect(":memory:")
     strat = ReboundStrategy(conn, Ledger(conn), Judge(), Judge(), UNIVERSE, dict(RET5), set(), PREV_DAY,
                             lambda: "冰点", features={c: SHRINK4 for c in UNIVERSE})
+    monkeypatch.setattr(config, "REBOUND_MAIN_BUY_ON_ICE", False)
     assert strat.on_minute(_quotes(at(10, 0), **Q), at(10, 0)) == []
     monkeypatch.setattr(config, "REBOUND_MAIN_BUY_ON_ICE", True)
     fills = strat.on_minute(_quotes(at(10, 1), **Q), at(10, 1))

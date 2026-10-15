@@ -131,7 +131,7 @@ def test_weak_market_follows_rebound_only():
     """大盘普跌（≤ -2%）：回测超跌反弹两日均 +1.3%~+1.7%，扫首板次日平均低开 1.5% → 只跟超跌。"""
     for s in ("火热", "正常", "偏弱"):
         assert allowed_sources(s, False, at(9, 40), market_ret5=-2.5) == ("rebound",)
-    assert allowed_sources("冰点", False, at(10, 0), market_ret5=-2.5) == ()
+    assert allowed_sources("冰点", False, at(10, 0), market_ret5=-2.5) == ("rebound",)    # 10-16 起普跌时冰点也跟
 
 
 def test_neutral_or_strong_market_follows_board_then_lowbuy_after_1030():
@@ -159,6 +159,7 @@ def test_buy_reason_names_the_market_environment():
 
 
 def test_ice_point_in_broad_drop_follows_rebound_only_when_switched_on(monkeypatch):
+    monkeypatch.setattr(config, "REBOUND_MAIN_BUY_ON_ICE", False)
     assert allowed_sources("冰点", False, at(10, 0), market_ret5=-2.5) == ()
     monkeypatch.setattr(config, "REBOUND_MAIN_BUY_ON_ICE", True)
     assert allowed_sources("冰点", False, at(10, 0), market_ret5=-2.5) == ("rebound",)

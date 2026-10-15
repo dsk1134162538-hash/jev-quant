@@ -218,6 +218,7 @@ def refresh_members(conn: sqlite3.Connection, today: date, universe: dict[str, s
             continue
         try:
             _check_stock(conn, today, code, universe[code], cand[code], by_id, secs, dh, judge, zygc, intro, stats)
+            conn.commit()       # 每只票提交一次：下一只要联网取主营、问 Jev，别一直占着写锁
         except Exception as e:      # noqa: BLE001 —— 单只票出错不影响其它
             conn.rollback()
             stats["failed"] += 1
@@ -403,8 +404,8 @@ def snapshot_day(conn: sqlite3.Connection, day: date, quotes: dict, ret5: dict[s
         data = _sector_data(conn, s, day, quotes, ret5, universe, judge, art)
         conn.execute("INSERT OR REPLACE INTO own_sector_daily VALUES (?, ?, ?)",
                      (day.isoformat(), s["id"], json.dumps(data, ensure_ascii=False)))
+        conn.commit()       # 每个板块写完就提交：下一个板块要问 Claude/Jev（10-15 收盘后占着写锁 2 分钟，live.py 一直报 locked）
         written += 1
-    conn.commit()
     return written
 
 

@@ -693,8 +693,10 @@ def test_weak_market_main_buys_on_weak_sentiment_shadow_does_not():
     assert fills[0].reason.startswith("普跌抄底｜")
 
 
-def test_ice_sentiment_or_non_weak_market_still_blocks_main():
+def test_ice_sentiment_in_broad_drop_buys_main_only_and_non_weak_market_still_blocks():
+    """10-16 dj 同意：普跌时冰点也买（REBOUND_MAIN_BUY_ON_ICE）；影子照旧冰点不买；大盘中性时偏弱照样不买。"""
     strat, *_ = make(sentiment="冰点")
-    assert strat.on_minute(_quotes(at(10, 0), **{"600002": -1.0}), at(10, 0)) == []
+    fills = strat.on_minute(_quotes(at(10, 0), **{"600002": -1.0}), at(10, 0))
+    assert {(f.account, f.code) for f in fills} == {("rebound_main", "600002")}
     strat, *_ = make(sentiment="偏弱", ret5=_market({"600002": -6.0}, filler=0.5))      # 大盘中性
     assert strat.on_minute(_quotes(at(10, 0), **{"600002": -1.0}), at(10, 0)) == []
