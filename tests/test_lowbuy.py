@@ -124,3 +124,29 @@ def test_trailing_pullback_widened_for_main_shadow_keeps_point_eight():
     strat = LowbuyStrategy(conn, ledger, Judge(), Judge(), {"600001": "甲"}, {}, BUY, lambda: "正常", lambda: "中性")
     fills = strat.sell_step({"600001": q}, D1)
     assert [(f.account, f.reason) for f in fills] == [("lowbuy_shadow", "跟踪止盈")]
+
+
+def test_main_holds_two_days_and_skips_low_open_bounce_shadow_unchanged():
+    """10-15 起低吸主账户最多拿 2 个交易日、低开反抽/回 0 轴不卖；影子照旧次日清。"""
+    cal = [date(2026, 10, 9), date(2026, 10, 12), date(2026, 10, 13)]
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    for acct in ("lowbuy_main", "lowbuy_shadow"):
+        conn.execute("INSERT INTO positions VALUES (?, '600001', 1000, 10005, 10.0, ?)", (acct, BUY.isoformat()))
+    conn.commit()
+    strat = LowbuyStrategy(conn, ledger, Judge(), Judge(), {"600001": "甲"}, {}, BUY, lambda: "正常", lambda: "中性",
+                           trade_days=cal)
+    bounce = quote("600001", pct=-0.1, open_pct=-1.5, ts=D1)                  # 低开 -1.5% 回到 0 轴
+    assert [(f.account, f.reason) for f in strat.sell_step({"600001": bounce}, D1)] == [("lowbuy_shadow", "回到0轴")]
+    eod = datetime(2026, 10, 12, 14, 55)
+    assert strat.sell_step({"600001": quote("600001", pct=0.3, ts=eod)}, eod) == []    # 主账户第 1 天尾盘不清
+    d2 = datetime(2026, 10, 13, 14, 55)
+    fills = strat.sell_step({"600001": quote("600001", pct=0.3, ts=d2)}, d2)
+    assert [(f.account, f.reason) for f in fills] == [("lowbuy_main", "尾盘清仓")]
+
+
+def test_main_without_calendar_falls_back_to_one_day():
+    eod = datetime(2026, 10, 12, 14, 55)
+    d = decide_lowbuy_sell(_pos(), quote("600001", pct=0.3, ts=eod), eod, hold_days=None, max_hold=2)
+    assert d.reason == "尾盘清仓"
+    assert decide_lowbuy_sell(_pos(), quote("600001", pct=0.3, ts=D1), D1, hold_days=3, max_hold=2).reason == "隔夜超期"

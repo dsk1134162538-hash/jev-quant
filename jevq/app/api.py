@@ -153,7 +153,10 @@ def builtin_summaries() -> list[dict]:
                  f"{config.LOWBUY_BOUNCE:g} 个点卖",
                  f"当天最高相对买入价到 +{config.LOWBUY_TRAIL_START:g}% 后，从最高回落 {config.LOWBUY_TRAIL_PULLBACK:g} 个点卖，"
                  "跌回成本价必卖（10-09 改，原来摸到 +1% 就卖，容易卖飞）",
-                 f"{hm(config.EOD_SELL)} 还没卖就清仓，不隔第二夜"]},
+                 f"{hm(config.EOD_SELL)} 还没卖就清仓，不隔第二夜（以上是影子账户）",
+                 f"主账户（实盘跟的）：跟踪止盈回落 {config.LOWBUY_MAIN_TRAIL_PULLBACK:g} 个点、最多拿 "
+                 f"{config.LOWBUY_MAIN_MAX_HOLD_DAYS} 个交易日（最后一天 {hm(config.EOD_SELL)} 清仓）"
+                 + ("" if config.LOWBUY_MAIN_LOW_OPEN_SELL else "、低开反抽/回 0 轴不卖") + "，止损同上"]},
              {"title": "情绪", "lines": [
                  f"情绪偏弱、冰点、没判出来，或外围偏弱：只在尾盘 {hm(config.TAIL_BUY_START)}~{hm(config.BUY_END)} 买"
                  "（知识库：买在修复日前一天的尾盘）",

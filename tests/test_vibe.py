@@ -252,7 +252,7 @@ def test_plan_records_per_source():
     board = vibe.plan_records({**h, "source": "board"}, CAL)
     assert board[2]["due"] == "2026-10-09" and "竞价不及预期" in board[1]["statement"]
     lowbuy = vibe.plan_records({**h, "source": "lowbuy"}, CAL)
-    assert lowbuy[2]["due"] == "2026-10-09" and "-3" in lowbuy[1]["statement"]
+    assert lowbuy[2]["due"] == "2026-10-12" and "-3" in lowbuy[1]["statement"]       # 低吸主账户拿 2 天
 
 
 class FakeLedger(FakeVibe):

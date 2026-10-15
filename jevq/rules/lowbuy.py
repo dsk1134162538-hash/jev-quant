@@ -10,6 +10,8 @@
 4. 当天最高相对买入价 ≥ LOWBUY_TRAIL_START（+1%）后：跌回成本价 → 回到成本；从最高回落 ≥ LOWBUY_TRAIL_PULLBACK
    （0.8 个点，相对买入价）→ 跟踪止盈（取代原来的「高开止盈 / 摸到 +1%」，少卖飞）
 5. 14:55 还没卖 → 尾盘清仓，不隔第二夜
+主账户（10-15 起，dj「中高风险」+ 回测）：最多拿 LOWBUY_MAIN_MAX_HOLD_DAYS（2）个交易日、低开反抽/回 0 轴不卖；
+止损、跟踪止盈照旧（相对昨收 -3%；+1% 启动、回落 1.5 点）。影子账户照旧当对照。
 """
 from collections.abc import Iterable
 from datetime import date, datetime
@@ -38,16 +40,24 @@ def rank_lowbuy(quotes: Iterable[Quote], ret5: dict[str, float], shrink=None, ma
 
 
 def decide_lowbuy_sell(pos: Position, q: Quote, now: datetime, prev_trade_day: date | None = None,
-                       pullback: float | None = None) -> SellDecision:
-    """pullback：跟踪止盈回落线（个点）；主账户传 LOWBUY_MAIN_TRAIL_PULLBACK，None = LOWBUY_TRAIL_PULLBACK（影子）。"""
+                       pullback: float | None = None, hold_days: int | None = None, max_hold: int = 1,
+                       low_open_sell: bool = True) -> SellDecision:
+    """pullback：跟踪止盈回落线（个点）；主账户传 LOWBUY_MAIN_TRAIL_PULLBACK，None = LOWBUY_TRAIL_PULLBACK（影子）。
+    hold_days / max_hold / low_open_sell（主账户 10-15 起拿 2 天、低开反抽不卖，影子照旧次日清、卖）：
+    hold_days = 买入后第几个交易日（按交易日历），None = 日历不可用（只能按 prev_trade_day 判隔夜超期、当天尾盘清）；
+    max_hold > 1 时必须给 hold_days，否则按 1 天处理。"""
     if pos.buy_date >= now.date() or now.time() < config.MARKET_OPEN:
         return HOLD
-    if prev_trade_day is not None and pos.buy_date < prev_trade_day:
+    if hold_days is None:
+        max_hold = 1
+        if prev_trade_day is not None and pos.buy_date < prev_trade_day:
+            return SellDecision(True, "隔夜超期")
+    elif hold_days > max_hold:
         return SellDecision(True, "隔夜超期")
     pct, op = q.pct, q.open_pct
     if pct <= config.LOWBUY_STOP or op <= config.LOWBUY_STOP:
         return SellDecision(True, "止损")
-    if op <= config.LOWBUY_LOW_OPEN:
+    if low_open_sell and op <= config.LOWBUY_LOW_OPEN:
         if pct >= config.LOWBUY_ZERO_LINE:
             return SellDecision(True, "回到0轴")
         if round(pct - q.low_pct, 2) >= config.LOWBUY_BOUNCE:
@@ -59,6 +69,6 @@ def decide_lowbuy_sell(pos: Position, q: Quote, now: datetime, prev_trade_day: d
             return SellDecision(True, "回到成本")
         if round(high_pnl - pnl, 2) >= (config.LOWBUY_TRAIL_PULLBACK if pullback is None else pullback):
             return SellDecision(True, "跟踪止盈")
-    if now.time() >= config.EOD_SELL:
+    if now.time() >= config.EOD_SELL and (hold_days is None or hold_days >= max_hold):
         return SellDecision(True, "尾盘清仓")
     return HOLD

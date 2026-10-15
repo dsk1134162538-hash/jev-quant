@@ -345,7 +345,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         _attach_sectors(rebound, conn, today, ret5, flash, log, state, notifier)
     lowbuy = None if late else _load_lowbuy(conn, ledger, universe, ret5, sell_only, notice_judge, news_judge,
                                             engine, prev_day, log, concept_map=concept_map,
-                                            features=getattr(rebound, "features", None), today=today)
+                                            features=getattr(rebound, "features", None), today=today,
+                                            trade_days=days)
     # 情绪轮动（实盘跟它）：只跟各策略主账户的成交，晚启动不跑；只卖日照样跟卖
     regime = None if late else RegimeStrategy(conn, ledger, lambda: engine.sentiment_label,
                                               lambda: bool(getattr(engine, "turn_on", False)),
@@ -837,7 +838,8 @@ def _follow(regime: RegimeStrategy, fills: list, engine: Engine, t: datetime, co
 
 def _load_lowbuy(conn, ledger: Ledger, universe: dict, ret5: dict, sell_only: bool, notice_judge, news_judge,
                  engine: Engine, prev_day: date, log: Callable[[str], None], concept_map: dict | None = None,
-                 features: dict | None = None, today: date | None = None) -> LowbuyStrategy | None:
+                 features: dict | None = None, today: date | None = None,
+                 trade_days=None) -> LowbuyStrategy | None:
     """低吸（10-09 重新上线）：只卖日 / 股票池或 5 日涨幅为空 → 只卖不买。缩量回调要成交量历史（超跌反弹
     算好的那份，没有就自己算一遍；算不出来只卖不买），主线要题材表。"""
     enabled = not sell_only and bool(universe) and bool(ret5)
@@ -851,7 +853,8 @@ def _load_lowbuy(conn, ledger: Ledger, universe: dict, ret5: dict, sell_only: bo
         strat = LowbuyStrategy(conn, ledger, notice_judge, news_judge, dict(universe), ret5, prev_day,
                                lambda: engine.sentiment_label, lambda: getattr(engine, "overseas", None),
                                enabled=enabled, features=features if features is not None else {},
-                               concept_map=concept_map or {}, sectors_provider=lambda: _sectors_of(engine))
+                               concept_map=concept_map or {}, sectors_provider=lambda: _sectors_of(engine),
+                               trade_days=trade_days)
     except Exception as e:
         conn.rollback()
         log(f"低吸加载失败：{e!r}")

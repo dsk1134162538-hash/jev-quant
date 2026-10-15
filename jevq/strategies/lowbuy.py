@@ -25,7 +25,8 @@ class LowbuyStrategy:
                  universe: dict[str, str], ret5: dict[str, float], prev_day: date,
                  sentiment_provider: Callable[[], str | None], overseas_provider: Callable[[], str | None],
                  enabled: bool = True, features: dict[str, dict] | None = None,
-                 concept_map: dict[str, list[str]] | None = None, sectors_provider=None):
+                 concept_map: dict[str, list[str]] | None = None, sectors_provider=None,
+                 trade_days: list[date] | None = None):
         self.conn, self.ledger = conn, ledger
         self.accounts = STRATEGIES[SID]["accounts"]
         self.notice_judge, self.news_judge = notice_judge, news_judge
@@ -37,6 +38,7 @@ class LowbuyStrategy:
         # 缩量回调、主线两条选股条件的数据：None = 不看这一条（只有测试不传）
         self.features, self.concept_map = features, concept_map
         self.sectors_provider = sectors_provider     # () -> hi189 文章板块，主线判断「文章点名」用
+        self.calendar = sorted(trade_days) if trade_days else None   # 交易日历；None = 主账户也只拿 1 天
 
     def sell_step(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         if self._rejected_day != now.date():
@@ -47,8 +49,13 @@ class LowbuyStrategy:
                 q = quotes.get(pos.code)
                 if q is None or q.ts.date() < now.date():
                     continue
-                d = decide_lowbuy_sell(pos, q, now, self.prev_day,      # 主账户回落线放宽（10-14），影子照旧
-                                       pullback=config.LOWBUY_MAIN_TRAIL_PULLBACK if account == self.accounts[0] else None)
+                if account == self.accounts[0]:      # 主账户：回落线放宽（10-14）、拿 2 天且低开反抽不卖（10-15）
+                    d = decide_lowbuy_sell(pos, q, now, self.prev_day, pullback=config.LOWBUY_MAIN_TRAIL_PULLBACK,
+                                           hold_days=self._hold_days(pos.buy_date, now.date()),
+                                           max_hold=config.LOWBUY_MAIN_MAX_HOLD_DAYS,
+                                           low_open_sell=config.LOWBUY_MAIN_LOW_OPEN_SELL)
+                else:                                # 影子：原规则当对照
+                    d = decide_lowbuy_sell(pos, q, now, self.prev_day)
                 if d.sell and (f := self.ledger.sell(account, pos, q, now, d.reason)):
                     fills.append(f)
         return fills
@@ -68,6 +75,11 @@ class LowbuyStrategy:
                                  lambda q: shrink_days(self.features.get(q.code) or {}, q, now.time())),
                              mainline=self._mainline(today_quotes, now))
         return self._buy_shadow(ranked, now) + self._buy_main(ranked, now, mode, sentiment, deadline)
+
+    def _hold_days(self, buy_date: date, today: date) -> int | None:
+        if self.calendar is None:
+            return None
+        return sum(1 for d in self.calendar if buy_date < d <= today)
 
     def on_minute(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         return self.sell_step(quotes, now) + self.buy_step(quotes, now)

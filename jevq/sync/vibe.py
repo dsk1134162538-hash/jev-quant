@@ -76,8 +76,10 @@ def live_trades(conn) -> list[dict]:
 # ---- 实盘持仓 → 论点 + 判据（dj 10-10 要：Vibe 事件日历按到期日提醒，手机上看得到为什么买、什么时候必须走）----
 
 def hold_days_of(source: str) -> int:
-    """买入后第几个交易日必须清仓（和各策略卖出规则一致）：超跌 REBOUND_MAX_HOLD_DAYS，扫首板/低吸次日。"""
-    return config.REBOUND_MAIN_MAX_HOLD_DAYS if source == "rebound" else 1     # 实盘跟的是主账户
+    """买入后第几个交易日必须清仓（和各主账户卖出规则一致）：超跌、低吸按 *_MAIN_MAX_HOLD_DAYS，扫首板次日。"""
+    if source == "rebound":                  # 实盘跟的是主账户
+        return config.REBOUND_MAIN_MAX_HOLD_DAYS
+    return config.LOWBUY_MAIN_MAX_HOLD_DAYS if source == "lowbuy" else 1
 
 
 def stop_text(source: str) -> str:
