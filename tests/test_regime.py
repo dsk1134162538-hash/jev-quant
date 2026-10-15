@@ -3,7 +3,7 @@ from datetime import datetime
 
 from factories import quote
 
-from jevq import db
+from jevq import config, db
 from jevq.ledger import Ledger
 from jevq.models import Fill
 from jevq.strategies.regime import ACCOUNT, RegimeStrategy, allowed_sources
@@ -156,3 +156,10 @@ def test_buy_reason_names_the_market_environment():
     f = Fill("rebound_main", "600001", "buy", 10.0, 1000, 5.0, t, "超跌-1.0%｜5日-8%")
     got = strat.mirror([f], lambda c: quote(c, ts=t), t)
     assert got and "大盘普跌" in got[0].reason and "跟超跌反弹" in got[0].reason
+
+
+def test_ice_point_in_broad_drop_follows_rebound_only_when_switched_on(monkeypatch):
+    assert allowed_sources("冰点", False, at(10, 0), market_ret5=-2.5) == ()
+    monkeypatch.setattr(config, "REBOUND_MAIN_BUY_ON_ICE", True)
+    assert allowed_sources("冰点", False, at(10, 0), market_ret5=-2.5) == ("rebound",)
+    assert allowed_sources("冰点", False, at(10, 0), market_ret5=0.5) == ()          # 大盘不弱时冰点照样不买

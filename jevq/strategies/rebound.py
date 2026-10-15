@@ -83,9 +83,11 @@ class ReboundStrategy:
             return []
         sentiment = self.sentiment_provider()
         mode = rebound_mode(sentiment, bool(self.turn_provider()))
-        # 主账户（用户 2026-10-14）：大盘普跌时情绪偏弱也买（回测不看盘中情绪，普跌时盘中情绪本来常是偏弱）；冰点仍不买
+        # 主账户（用户 2026-10-14）：大盘普跌时情绪偏弱也买（回测不看盘中情绪，普跌时盘中情绪本来常是偏弱）；
+        # 冰点默认仍不买，REBOUND_MAIN_BUY_ON_ICE 打开后也买
         main_mode = mode
-        if (mode == "none" and sentiment == "偏弱" and self.market_ret5 is not None
+        weak_ok = ("偏弱", "冰点") if config.REBOUND_MAIN_BUY_ON_ICE else ("偏弱",)
+        if (mode == "none" and sentiment in weak_ok and self.market_ret5 is not None
                 and self.market_ret5 <= config.REBOUND_MAIN_MARKET_RET5_MAX):
             main_mode = "weak_market"
         shadow_open = buy_window_open(mode, now.time())

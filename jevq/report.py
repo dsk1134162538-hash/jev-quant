@@ -12,7 +12,8 @@ from jevq.live import store as live_store
 
 
 # 报告给人看：检查结果用中文，不露出程序里的代码
-VERDICT_LABELS = {"pass": "通过", "reject": "否决", "error": "出错", "sentiment": "情绪", "skip": "跳过"}
+VERDICT_LABELS = {"pass": "通过", "reject": "否决", "error": "出错", "sentiment": "情绪", "skip": "跳过",
+                  "sector": "板块（Claude 没答上）", "trend": "走向"}
 
 def _strategy_groups(conn: sqlite3.Connection, day: date) -> tuple[list[dict], dict[str, str]]:
     """净值表按策略分组的账户列表（含策略 id，用来查净值基准），以及策略 id -> 名称

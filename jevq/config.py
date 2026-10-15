@@ -92,6 +92,10 @@ REBOUND_MAIN_LOW_OPEN_SELL = False
 # 把「业绩预降」「基金重仓」这类非题材标签剔掉后普跌日就没差别了——对口径太敏感，先不启用（REBOUND_LONE_FILTER）。
 # 「板块在涨就不买」普跌日几乎不起作用、全部环境里反而变差，不加
 REBOUND_LONE_FILTER = False
+# 买入（主账户 + 情绪轮动跟它）：大盘普跌时情绪「冰点」也买。默认关，等 dj 点头（10-14 dj 定的是「偏弱也买、冰点仍不买」）。
+# 依据：普跌日回测本来就不看盘中情绪；「昨天全市场中位数跌超 1%」（收盘多半判成冰点）的普跌日反而最好：
+# 新卖法下 7 天 295 笔均 +4.1%、胜率 87%；09:45 前沿用昨天收盘的冰点会把这些日子的开盘买点整段挡掉
+REBOUND_MAIN_BUY_ON_ICE = False
 REBOUND_SECTOR_BLACKLIST_IDS = ("liquor",)
 REBOUND_SECTOR_BLACKLIST_WORDS = ("酿酒", "白酒", "黄酒", "啤酒", "葡萄酒")
 REBOUND_LONE_RET5 = -5.0

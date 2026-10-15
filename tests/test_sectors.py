@@ -251,3 +251,13 @@ def test_candidate_line_lists_weakest_sectors_first():
     q = quote("600002", pct=-1.2, ts=at(10, 0))
     line = candidate_line(q, -8.5, ["A", "B", "C"], {"A": -1.0, "B": -6.0})
     assert line.index("B(-6.0%)") < line.index("A(-1.0%)") and "C" in line and "5 日 -8.50%" in line
+
+
+def test_main_buys_on_ice_point_in_broad_drop_only_when_switched_on(monkeypatch):
+    conn = db.connect(":memory:")
+    strat = ReboundStrategy(conn, Ledger(conn), Judge(), Judge(), UNIVERSE, dict(RET5), set(), PREV_DAY,
+                            lambda: "冰点", features={c: SHRINK4 for c in UNIVERSE})
+    assert strat.on_minute(_quotes(at(10, 0), **Q), at(10, 0)) == []
+    monkeypatch.setattr(config, "REBOUND_MAIN_BUY_ON_ICE", True)
+    fills = strat.on_minute(_quotes(at(10, 1), **Q), at(10, 1))
+    assert _bought(fills) == {("rebound_main", "600002")}                          # 影子账户照旧冰点不买

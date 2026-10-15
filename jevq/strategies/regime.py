@@ -39,7 +39,7 @@ def allowed_sources(sentiment: str | None, turn: bool, now: datetime,
     按大盘环境（用户 2026-10-14，REGIME_BY_MARKET）：普跌只跟超跌反弹；不弱跟扫首板、10:30 后没买到再跟低吸；
     冰点/情绪没判出来不买；确认拐点超跌优先。算不出大盘（market_ret5=None）照旧按情绪（REGIME_SOURCES）。"""
     env = market_env(market_ret5)
-    if not sentiment or sentiment == "冰点":
+    if not sentiment or (sentiment == "冰点" and not (env == "大盘普跌" and config.REBOUND_MAIN_BUY_ON_ICE)):
         srcs = []
     elif env == "大盘普跌":
         srcs = ["rebound"]

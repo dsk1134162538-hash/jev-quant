@@ -96,7 +96,7 @@ def builtin_summaries() -> list[dict]:
                  + "按近 5 日涨幅从低到高排序（跌得多的优先）"]},
              {"title": "主账户（实盘跟的）另加的规则，影子账户不用、当对照", "lines": [
                  f"大盘普跌（全市场 5 日涨幅中位数 ≤ {config.REBOUND_MAIN_MARKET_RET5_MAX:g}%）才买，确认拐点的日子不看这条；"
-                 "普跌时情绪偏弱也买，冰点不买",
+                 + ("普跌时情绪偏弱、冰点也买" if config.REBOUND_MAIN_BUY_ON_ICE else "普跌时情绪偏弱也买，冰点不买"),
                  f"当天跌幅放宽到 0 ~ {config.REBOUND_MAIN_ZONE_LOW:g}%，开盘就买（09:45 前缩量看截至昨天的）",
                  f"比大盘多跌超过 {-config.REBOUND_MAIN_EXCESS_MIN:g} 个点的不买",
                  "板块黑名单：白酒等酒类不买（自建板块「白酒」+ 概念/行业名带" + "/".join(config.REBOUND_SECTOR_BLACKLIST_WORDS) + "）",
