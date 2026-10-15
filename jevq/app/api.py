@@ -94,6 +94,21 @@ def builtin_summaries() -> list[dict]:
                  *_rebound_volume_lines(),
                  ("同档内" if config.REBOUND_MIN_SHRINK_DAYS > 0 else "")
                  + "按近 5 日涨幅从低到高排序（跌得多的优先）"]},
+             {"title": "主账户（实盘跟的）另加的规则，影子账户不用、当对照", "lines": [
+                 f"大盘普跌（全市场 5 日涨幅中位数 ≤ {config.REBOUND_MAIN_MARKET_RET5_MAX:g}%）才买，确认拐点的日子不看这条；"
+                 "普跌时情绪偏弱也买，冰点不买",
+                 f"当天跌幅放宽到 0 ~ {config.REBOUND_MAIN_ZONE_LOW:g}%，开盘就买（09:45 前缩量看截至昨天的）",
+                 f"比大盘多跌超过 {-config.REBOUND_MAIN_EXCESS_MIN:g} 个点的不买",
+                 "板块黑名单：白酒等酒类不买（自建板块「白酒」+ 概念/行业名带" + "/".join(config.REBOUND_SECTOR_BLACKLIST_WORDS) + "）",
+                 *([f"个股自己跌不买：个股 5 日跌超 {-config.REBOUND_LONE_RET5:g}%、所属板块 5 日跌不到 "
+                    f"{-config.REBOUND_LONE_SECTOR_MAX:g}%（板块 = 新浪概念 + 新浪行业 + 自建板块，取跌得最多的那个）"]
+                   if config.REBOUND_LONE_FILTER else []),
+                 ("Claude 看候选所属板块和隔夜消息催化、7x24 快讯，否决冷门板块（只否决、拿不准保留；没答上按规则买）"
+                  if config.REBOUND_SECTOR_VETO else "Claude 冷门板块否决：已关闭"),
+                 f"卖出：止损 {config.REBOUND_MAIN_STOP:g}%（连续 {config.REBOUND_STOP_CONFIRM} 分钟）、硬止损 "
+                 f"{config.REBOUND_HARD_STOP:g}%、跟踪止盈回落 {config.REBOUND_MAIN_TRAIL_PULLBACK:g} 个点、最多拿 "
+                 f"{config.REBOUND_MAIN_MAX_HOLD_DAYS} 个交易日"
+                 + ("" if config.REBOUND_MAIN_LOW_OPEN_SELL else "、低开反抽不卖")]},
              {"title": "买点", "lines": [
                  f"只看情绪：正常或火热时盘中可买（到 {hm(config.BUY_END)}），偏弱、冰点或情绪没判出来时不买（不看外围）",
                  f"情绪有迟滞：Jev 四档概率的期望分要越过档位分界再多 {config.SENTIMENT_HYSTERESIS:g} 才换档（防来回翻）；"

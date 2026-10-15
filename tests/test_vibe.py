@@ -244,11 +244,11 @@ def test_nth_trading_day():
 def test_plan_records_per_source():
     h = vibe.live_holdings(_held_conn())[0]
     thesis, stop, due = vibe.plan_records(h, CAL)
-    assert thesis["symbol"] == "002658" and thesis["status"] == "active" and thesis["review_by"] == "2026-10-12"
+    assert thesis["symbol"] == "002658" and thesis["status"] == "active" and thesis["review_by"] == "2026-10-13"
     assert "超跌反弹" in thesis["title"] and "超跌买入" in thesis["statement"] and "7.14" in thesis["statement"]
     assert thesis["note"].startswith("jev:thesis:002658:2026-10-08")
-    assert stop["type"] == "falsifier" and "-2" in stop["statement"] and "-3.5" in stop["statement"]
-    assert due["type"] == "decision_point" and due["due"] == "2026-10-12" and "14:55" in due["statement"]
+    assert stop["type"] == "falsifier" and "-3%" in stop["statement"] and "-3.5" in stop["statement"]   # 实盘跟主账户：-3%
+    assert due["type"] == "decision_point" and due["due"] == "2026-10-13" and "14:55" in due["statement"]   # 主账户拿 3 天
     board = vibe.plan_records({**h, "source": "board"}, CAL)
     assert board[2]["due"] == "2026-10-09" and "竞价不及预期" in board[1]["statement"]
     lowbuy = vibe.plan_records({**h, "source": "lowbuy"}, CAL)

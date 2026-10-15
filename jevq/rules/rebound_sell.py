@@ -33,19 +33,22 @@ HOLD = SellDecision(False)
 def decide_rebound_sell(pos: Position, q: Quote, now: datetime, hold_days: int | None,
                         buy_pressure: bool = False, stop_minutes: int | None = None,
                         trend: Callable[[], str | None] | None = None,
-                        pullback: float = REBOUND_TRAIL_PULLBACK) -> SellDecision:
+                        pullback: float = REBOUND_TRAIL_PULLBACK, stop: float = REBOUND_STOP,
+                        max_hold: int = REBOUND_MAX_HOLD_DAYS, low_open_sell: bool = True) -> SellDecision:
     """stop_minutes：现价连续几分钟（含这一分钟）在止损线下；None = 不要确认、也没有硬止损（旧规则）。
     trend：问 Jev 今天走向，返回 TREND_LEVELS 之一或 None（没判出来）；一次判断里最多调一次。None = 不问，照卖。
     pullback：跟踪止盈的回落线（个点，相对买入价）；主账户传 REBOUND_MAIN_TRAIL_PULLBACK，影子用默认。
+    stop / max_hold / low_open_sell：止损线、最多拿几个交易日、低开反抽卖不卖；主账户传 REBOUND_MAIN_*（10-15 起
+    -3%、3 天、不卖低开反抽），影子用默认（-2%、2 天、卖）。
     不卖时 reason 说明为什么还拿着（待确认 / 暂缓），调用方据此记录。"""
     if pos.buy_date >= now.date() or now.time() < MARKET_OPEN:
         return HOLD
-    if hold_days is not None and hold_days > REBOUND_MAX_HOLD_DAYS:
+    if hold_days is not None and hold_days > max_hold:
         return SellDecision(True, "隔夜超期")
     ask = _once(trend)
     waiting = HOLD
     pnl = round((q.price / pos.buy_price - 1) * 100, 2)
-    if pnl <= REBOUND_STOP:
+    if pnl <= stop:
         if stop_minutes is not None and pnl <= REBOUND_HARD_STOP:
             return SellDecision(True, "硬止损")
         if stop_minutes is None or stop_minutes >= REBOUND_STOP_CONFIRM:
@@ -55,7 +58,7 @@ def decide_rebound_sell(pos: Position, q: Quote, now: datetime, hold_days: int |
             waiting = d
         else:
             waiting = SellDecision(False, f"止损待确认（{stop_minutes}/{REBOUND_STOP_CONFIRM} 分钟）")
-    if q.open_pct <= REBOUND_LOW_OPEN and round(q.pct - q.low_pct, 2) >= REBOUND_LOW_OPEN_BOUNCE:
+    if low_open_sell and q.open_pct <= REBOUND_LOW_OPEN and round(q.pct - q.low_pct, 2) >= REBOUND_LOW_OPEN_BOUNCE:
         d = _unless_rising("低开反抽", ask)
         if d.sell:
             return d
@@ -66,7 +69,7 @@ def decide_rebound_sell(pos: Position, q: Quote, now: datetime, hold_days: int |
             return SellDecision(True, "回到成本")
         if round(high_pnl - pnl, 2) >= pullback and not buy_pressure:
             return SellDecision(True, "跟踪止盈")
-    if now.time() >= EOD_SELL and (hold_days is None or hold_days >= REBOUND_MAX_HOLD_DAYS):
+    if now.time() >= EOD_SELL and (hold_days is None or hold_days >= max_hold):
         return SellDecision(True, "到期清仓")
     return waiting
 

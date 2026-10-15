@@ -294,7 +294,8 @@ def test_open_without_previous_close_uses_jev_label():
     assert _ask(eng, at(9, 30)) == "偏弱"
 
 
-def test_jev_failure_gives_none_but_keeps_the_level_for_next_time():
+def test_jev_failure_keeps_last_label_and_level_for_next_time():
+    """10-15 起：一次没判出来沿用今天上一次的情绪（原来变成「未知」，主账户就不买了）。"""
     class Flaky(ProbMarket):
         def sentiment(self, stats, *a, **k):
             if self.probs[0] is None:
@@ -304,7 +305,41 @@ def test_jev_failure_gives_none_but_keeps_the_level_for_next_time():
             return ProbMarket.sentiment(self, stats)
     m = Flaky({"偏弱": 0.3, "正常": 0.5, "火热": 0.2}, None, {"偏弱": 0.45, "正常": 0.40, "火热": 0.15})
     eng, _, _ = make(qs(**{"600001": -1.0}), market=m)
-    assert [_ask(eng, at(10, 10 * i)) for i in range(3)] == ["正常", None, "正常"]
+    assert [_ask(eng, at(10, 10 * i)) for i in range(3)] == ["正常", "正常", "正常"]
+    assert _rows(eng)[1]["held"] == "没判出来，沿用上一次" and _rows(eng)[1]["raw_label"] is None
+
+
+def test_first_judgement_failing_gives_none_after_open_settles():
+    class Never(ProbMarket):
+        def sentiment(self, stats, *a, **k):
+            self.sentiment_trace = None
+            return None
+    eng, _, _ = make(qs(**{"600001": -1.0}), market=Never())
+    assert _ask(eng, at(10, 0)) is None
+
+
+def test_open_failure_carries_previous_close_label():
+    """10-15 09:30、09:40 涨停池超时，情绪空着，主账户等到 09:50 才买：开盘没判出来也沿用昨天收盘的。"""
+    class Never(ProbMarket):
+        def sentiment(self, stats, *a, **k):
+            self.sentiment_trace = None
+            return None
+    conn = db.connect(":memory:")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES "
+                 "('2026-09-22T14:56:00', '', 'sentiment', '{\"label\": \"偏弱\"}', 'market')")
+    eng, _, _ = make(qs(**{"600001": -1.0}), market=Never(), conn=conn)
+    assert _ask(eng, at(9, 30)) == "偏弱"
+    assert _rows(eng)[-1]["held"] == "开盘未定"
+
+
+def test_pool_failure_still_judges_on_breadth():
+    market = Market("偏弱")
+    conn = db.connect(":memory:")
+    eng = Engine(conn, Ledger(conn), market, lambda codes: qs(**{"600001": -1.0, "600002": 1.0}),
+                 lambda d: (_ for _ in ()).throw(TimeoutError("stock_zt_pool_em 超时 20.0s")), UNIVERSE,
+                 date(2026, 9, 22), "中性")
+    assert _ask(eng, at(10, 0)) == "偏弱"
+    assert market.calls[0]["涨跌停池"] == "这一轮没取到" and market.calls[0]["上涨家数"] == 1
 
 
 def test_zt_extra_stats_merged_into_sentiment_input_and_reason_sectors_refreshed():

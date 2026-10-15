@@ -10,7 +10,7 @@ import statistics
 import sqlite3
 from collections import deque
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from time import monotonic
 
 from jevq import config
@@ -54,6 +54,14 @@ class ReboundStrategy:
         self._rejected_day: date | None = None
         # 持仓票每分钟的 (分钟, 外盘, 内盘) 快照，用来算最近几分钟的主买/主卖增量
         self._flow: dict[str, deque] = {}
+        # 主账户看板块（用户 2026-10-15）：jevq.data.sectors.SectorView（黑名单、个股自己跌）和
+        # jevq.judge.sector_veto.ClaudeSectorVeto（冷门板块否决），run.py 构造后挂上；None = 不看这一条
+        self.sector_view = None
+        self.sector_veto = None
+        self._sector_ok: dict[str, str] = {}          # 当天 Claude 判过「保留」的票 → 理由
+        self._sector_day: date | None = None
+        self._veto_retry_at: datetime | None = None    # Claude 没答上：这之前不再问，按规则买
+        self._blocked_logged: set[str] = set()         # 当天已记过「板块不买」的票，每只每天记一次
 
     def on_minute(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         """先卖后买（= sell_step + 不限时的 buy_step）。"""
@@ -119,7 +127,77 @@ class ReboundStrategy:
             self._log_gate(now, f"大盘 5 日中位数 {m:+.2f}%（要 ≤ {config.REBOUND_MAIN_MARKET_RET5_MAX:g}%，"
                                 "大盘普跌才抄超跌）：主账户今天不买，拐点确认了再买", m)
             return []
-        return [q for q in ranked if self.ret5[q.code] - m >= config.REBOUND_MAIN_EXCESS_MIN]
+        pool = [q for q in ranked if self.ret5[q.code] - m >= config.REBOUND_MAIN_EXCESS_MIN]
+        return self._sector_filter(pool, now)
+
+    def _sector_filter(self, pool: list[Quote], now: datetime) -> list[Quote]:
+        """板块条件（用户 2026-10-15）：黑名单板块、个股自己跌（板块没跟着跌）不买。每只票每天记一条 skip。"""
+        if self.sector_view is None:
+            return pool
+        self._sector_new_day(now.date())
+        out = []
+        for q in pool:
+            why = self.sector_view.reason_blocked(q.code)
+            if why is None:
+                out.append(q)
+                continue
+            if q.code not in self._blocked_logged:
+                self._blocked_logged.add(q.code)
+                self._log(now, q.code, "skip", why, {"strategy": SID, "candidate": {
+                    "name": q.name, "price": q.price, "pct": q.pct, "ret5": self.ret5.get(q.code),
+                    "sectors": self.sector_view.names(q.code)[:12]}})
+        return out
+
+    def _sector_new_day(self, day: date) -> None:
+        if self._sector_day == day:
+            return
+        self._sector_day = day
+        self._sector_ok, self._veto_retry_at = {}, None
+        self._blocked_logged = {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT code FROM decisions WHERE strategy=? AND verdict='skip' AND code != '' "
+            "AND substr(ts, 1, 10)=?", (SID, day.isoformat()))}
+
+    def _veto_step(self, q: Quote, upcoming: list[Quote], now: datetime, deadline: float | None) -> str | None:
+        """Claude 冷门板块否决。返回：None = 能往下走（保留、没挂、没答上按规则）；"veto" = 否决（已记 reject）；
+        "wait" = 本分钟时间预算不够，留到下一分钟。一次把 q 和后面没判过的几只一起问。"""
+        if self.sector_veto is None or self.sector_view is None or not config.REBOUND_SECTOR_VETO:
+            return None
+        self._sector_new_day(now.date())
+        if q.code in self._sector_ok:
+            return None
+        if self._veto_retry_at is not None and now < self._veto_retry_at:
+            return None
+        timeout = config.REBOUND_SECTOR_VETO_TIMEOUT
+        if deadline is not None:
+            left = deadline - monotonic()
+            if left < 12:
+                return "wait"
+            timeout = min(timeout, left)
+        from jevq.judge.sector_veto import candidate_line
+        batch = [q] + [x for x in upcoming if x.code != q.code and x.code not in self._sector_ok
+                       and x.code not in self.rejected][:config.REBOUND_SECTOR_VETO_TOP - 1]
+        lines = {x.code: candidate_line(x, self.ret5.get(x.code), self.sector_view.names(x.code),
+                                        self.sector_view.sret5) for x in batch}
+        try:
+            got = self.sector_veto.judge(lines, now, timeout=timeout)
+        except Exception as e:
+            print(f"[rebound] 板块否决异常: {e!r}")
+            got = None
+        trace = {"strategy": SID, "sector_veto": getattr(self.sector_veto, "last_trace", None)}
+        if got is None:
+            self._veto_retry_at = now + timedelta(minutes=config.REBOUND_SECTOR_VETO_RETRY)
+            self._log(now, q.code, "sector", "Claude 没答上板块冷热，按规则买", trace)
+            return None
+        verdict = None
+        for code, (keep, why) in got.items():
+            if keep:
+                self._sector_ok[code] = why
+            else:
+                self.rejected.add(code)
+                self._log(now, code, "reject", f"板块冷门（Claude）：{why}", trace)
+                if code == q.code:
+                    verdict = "veto"
+        return verdict
 
     def _log_gate(self, now: datetime, detail: str, market_ret5: float | None) -> None:
         day = now.date().isoformat()
@@ -189,7 +267,9 @@ class ReboundStrategy:
                     extra = {"stop_minutes": self._stop_minutes(account, pos.buy_price, q, now),
                              "trend": None if self.trend_judge is None
                              else (lambda pos=pos, q=q, asked=asked: asked.append(True) or self._trend(pos, q, now)),
-                             "pullback": config.REBOUND_MAIN_TRAIL_PULLBACK}
+                             "pullback": config.REBOUND_MAIN_TRAIL_PULLBACK, "stop": config.REBOUND_MAIN_STOP,
+                             "max_hold": config.REBOUND_MAIN_MAX_HOLD_DAYS,
+                             "low_open_sell": config.REBOUND_MAIN_LOW_OPEN_SELL}
                 d = decide_rebound_sell(pos, q, now, self._hold_days(pos.buy_date, now.date()),
                                         buy_pressure=self._buy_pressure(q, now), **extra)
                 if account == main and extra.get("trend") is not None and asked:
@@ -207,7 +287,7 @@ class ReboundStrategy:
         last, n = self._below_stop.get(key, ("", 0))
         if last == minute:
             return n
-        below = round((q.price / buy_price - 1) * 100, 2) <= config.REBOUND_STOP
+        below = round((q.price / buy_price - 1) * 100, 2) <= config.REBOUND_MAIN_STOP     # 只有主账户用
         n = n + 1 if below else 0
         self._below_stop[key] = (minute, n)
         return n
@@ -268,6 +348,11 @@ class ReboundStrategy:
                 continue
             if deadline is not None and monotonic() >= deadline:
                 break           # 本分钟 Jev 预算用完：剩下的不算判过（不记否决），下一分钟再问
+            veto = self._veto_step(q, ranked[rank:], now, deadline)
+            if veto == "wait":
+                break
+            if veto == "veto":
+                continue
             checked += 1
             verdict, why = self._check(self.notice_judge, q.code, now.date())
             notice_trace = getattr(self.notice_judge, "last_trace", None)
@@ -278,7 +363,9 @@ class ReboundStrategy:
             trace = {"strategy": SID,
                      "candidate": {"name": q.name, "price": q.price, "pct": q.pct,
                                    "ret5": self.ret5[q.code], "shrink_days": self._shrink_days(q, now),
-                                   "rank": rank, "of": len(ranked)},
+                                   "rank": rank, "of": len(ranked),
+                                   "sector": None if self.sector_view is None else self.sector_view.weakest(q.code),
+                                   "sector_keep": self._sector_ok.get(q.code)},
                      "notices": notice_trace, "news": news_trace,
                      "market": {"mode": mode, "sentiment": sentiment,
                                 "sentiment_trace": self.sentiment_trace_provider()},

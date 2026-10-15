@@ -489,3 +489,26 @@ def test_run_builds_intraday_recorder_only_for_file_db_with_key(tmp_path):
     assert run._own_intraday_recorder(conn, None, uni, {}, print, False) is None
     assert run._own_intraday_recorder(conn, "k", uni, {}, print, True) is None
     assert isinstance(run._own_intraday_recorder(conn, "k", uni, {}, print, False), os_.IntradayRecorder)
+
+
+def test_generic_product_names_are_unusable_or_cached_per_company():
+    """10-15 核对：「其他」被映射成电力、「化工产品」成了染料，还按产品名全局缓存，别家公司跟着错。"""
+    assert os_.product_cache_key("其他", "惠天热电") is None
+    assert os_.product_cache_key("其他(补充)", "x") is None and os_.product_cache_key("其它业务", "x") is None
+    assert os_.product_cache_key("化工产品", "新疆天业") == "新疆天业｜化工产品"
+    assert os_.product_cache_key("特A类", "今世缘") == "今世缘｜特A类"
+    assert os_.product_cache_key("高档", "水井坊") == "水井坊｜高档"
+    assert os_.product_cache_key("电子级玻璃纤维布", "x") == "电子级玻璃纤维布"
+
+
+def test_other_rows_never_reach_jev_and_generic_names_are_not_shared_across_companies():
+    conn = make()
+    conn.execute("INSERT INTO concepts VALUES ('600001', '电子布', 'x'), ('600002', '电子布', 'x')")
+    jev = FakeJev({"布": "电子布"})
+    zygc = {"600001": [zrow("布", 0.6), zrow("其他", 0.4)], "600002": [zrow("布", 0.9)]}
+    os_.refresh_members(conn, TODAY, UNIVERSE, OwnSectorJudge(jev), art_sectors=[],
+                        zygc=lambda c: zygc[c], intro=lambda c: {})
+    asked = [state["主营产品行"] for state, q in jev.calls if "sector" in q]
+    assert "其他" not in asked and asked.count("布") == 2                  # 两家公司各问一次
+    keys = {k for (k,) in conn.execute("SELECT product FROM own_product_map")}
+    assert all("｜布" in k for k in keys) and len(keys) == 2

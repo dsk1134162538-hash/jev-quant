@@ -77,7 +77,7 @@ def live_trades(conn) -> list[dict]:
 
 def hold_days_of(source: str) -> int:
     """买入后第几个交易日必须清仓（和各策略卖出规则一致）：超跌 REBOUND_MAX_HOLD_DAYS，扫首板/低吸次日。"""
-    return config.REBOUND_MAX_HOLD_DAYS if source == "rebound" else 1
+    return config.REBOUND_MAIN_MAX_HOLD_DAYS if source == "rebound" else 1     # 实盘跟的是主账户
 
 
 def stop_text(source: str) -> str:
@@ -89,7 +89,7 @@ def stop_text(source: str) -> str:
                 f"高开 > +{board_sell.WEAK_OPEN_HIGH:g}%：跌到 {board_sell.STOP:g}% 止损、炸板卖（相对昨收）")
     if source == "lowbuy":
         return f"现价或开盘跌到 {config.LOWBUY_STOP:g}%（相对昨收）止损"
-    return (f"现价连续 {config.REBOUND_STOP_CONFIRM} 分钟在买入价 {config.REBOUND_STOP:g}% 以下止损"
+    return (f"现价连续 {config.REBOUND_STOP_CONFIRM} 分钟在买入价 {config.REBOUND_MAIN_STOP:g}% 以下止损"
             f"（Jev 判探底回升/低开高走可先留着）；跌到 {config.REBOUND_HARD_STOP:g}% 硬止损")
 
 

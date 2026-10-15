@@ -112,6 +112,15 @@ class Engine:
         - Jev 没判出来 → None（各策略照旧按「未知」处理），档位留着，下次接着比。"""
         from jevq.app.sentiment_board import score as expected
         if raw is None:
+            # 没判出来（10-15 开盘涨停池超时两次，情绪空了 20 分钟、主账户一直不买）：开盘未定沿用上一交易日收盘的，
+            # 盘中沿用今天上一次的；都没有才是「未知」
+            if now.time() < config.SENTIMENT_SETTLE:
+                carried = self._prev_close_label()
+                if carried in SENTIMENT_LEVELS:
+                    self._level = SENTIMENT_LEVELS.index(carried)
+                    return carried, None, "开盘未定"
+            if self.sentiment_label in SENTIMENT_LEVELS and self._sentiment_at is not None                     and self._sentiment_at.date() == now.date():
+                return self.sentiment_label, None, "没判出来，沿用上一次"
             return None, None, None
         s = expected(raw, (trace or {}).get("probabilities"))
         if now.time() < config.SENTIMENT_SETTLE:
@@ -329,9 +338,9 @@ class Engine:
     def _market_stats(self, now: datetime, quotes: dict[str, Quote]) -> dict:
         try:
             stats = dict(self.fetch_pools(now.date()))
-        except Exception as e:
+        except Exception as e:      # 拿不到涨跌停池照样判（涨跌家数、成交额、昨日涨停表现还在），不让情绪空着
             print(f"[engine] 涨跌停池失败: {e!r}")
-            return {}
+            stats = {"涨跌停池": "这一轮没取到"}
         if self.zt_extra is not None:
             try:
                 stats.update(self.zt_extra(now.date()))

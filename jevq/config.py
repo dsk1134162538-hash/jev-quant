@@ -80,6 +80,30 @@ REBOUND_MAIN_EXCESS_MIN = -10.0
 REBOUND_MAIN_ZONE_LOW = -5.0
 REBOUND_MAIN_TRAIL_PULLBACK = 1.5   # 卖出（主账户）：跟踪止盈从最高回落这么多个点才卖（用户 2026-10-14，原 0.8；影子账户仍 0.8）
 REBOUND_HARD_STOP = -3.5       # 卖出（主账户）：硬止损（%），到了直接卖，不等确认、不问 Jev
+# 卖出（主账户，2026-10-15 按 dj「中高风险」风格 + 回测改，影子账户仍 -2% / 2 天 / 卖低开反抽当对照）：
+# 普跌日 821 笔日线近似（每天等权）：现在 -2%/2 天 日均 +1.67% → -3%/3 天 +2.07%；全部环境 +0.91% → +1.22%，非普跌也更好；
+# 去掉低开反抽再 +0.15 个点。硬止损 -4.5% 回测没更好，留 -3.5%。见 docs/HANDOFF.md 第 29 项
+REBOUND_MAIN_STOP = -3.0
+REBOUND_MAIN_MAX_HOLD_DAYS = 3
+REBOUND_MAIN_LOW_OPEN_SELL = False
+# 买入（主账户，用户 2026-10-15「超跌也要看板块」）：白酒等酒类不买（自建板块 id + 概念/行业名关键词）。
+# 板块跌幅的回测（77 天、700 只、2016 笔）：全部环境里「板块 5 日跌 3% 以上」比「板块在涨」好得多（+1.7%~+2.3% 对 +0.3%），
+# 但主账户只在普跌日买，普跌日板块跌多跌少差别不大；「个股自己跌（个股跌超 5%、板块跌不到 3%）」第一次测出来很差，
+# 把「业绩预降」「基金重仓」这类非题材标签剔掉后普跌日就没差别了——对口径太敏感，先不启用（REBOUND_LONE_FILTER）。
+# 「板块在涨就不买」普跌日几乎不起作用、全部环境里反而变差，不加
+REBOUND_LONE_FILTER = False
+REBOUND_SECTOR_BLACKLIST_IDS = ("liquor",)
+REBOUND_SECTOR_BLACKLIST_WORDS = ("酿酒", "白酒", "黄酒", "啤酒", "葡萄酒")
+REBOUND_LONE_RET5 = -5.0
+REBOUND_LONE_SECTOR_MAX = -3.0
+INDUSTRY_REFRESH_ENABLED = True   # 盘前刷新新浪行业（7 天一次，超跌看板块用）
+SECTOR_MIN_MEMBERS = 5          # 板块成员（有 5 日涨幅的）不足这么多不算板块涨跌
+# 买入（主账户，用户 2026-10-15「结合新闻选板块、冷门板块不要买」）：排名靠前的候选连同所属板块、近期新闻交给 Claude，
+# 它只能否决没有资金/消息关注的冷门板块，不能加票；没答上按规则照买。新闻没有历史，靠影子账户对照实盘检验
+REBOUND_SECTOR_VETO = True
+REBOUND_SECTOR_VETO_TOP = 5     # 一次最多给 Claude 几只候选
+REBOUND_SECTOR_VETO_RETRY = 3   # 分钟：Claude 没答上，多久后再问（这期间按规则买）
+REBOUND_SECTOR_VETO_TIMEOUT = 35.0   # 秒：10-15 晚实测 6 只候选 + 新闻一次 15~20 秒；受每分钟 TICK_JEV_BUDGET 限制
 # 卖出（主账户）：止损确认后、低开反抽触发时问 Jev 今天走向；判成这些就先留着，下一分钟再看
 TREND_LEVELS = ["冲高回落", "高开低走", "单边下跌", "震荡", "探底回升", "低开高走"]
 REBOUND_TREND_HOLD = ("探底回升", "低开高走")

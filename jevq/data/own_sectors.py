@@ -261,8 +261,30 @@ def _check_stock(conn, today, code, name, cand_ids, by_id, secs, dh, judge, zygc
             stats["pending"] += 1
 
 
+# 产品名太泛（10-15 核对时发现）：「其他」被 Jev 结合公司映射成了电力、「化工产品」成了染料、「制药」成了创新药，
+# 又按产品名全局缓存，别的公司写着同样的名字也跟着错。「其他…」这类直接算无法判断、不问 Jev；
+# 其余泛名（短、档次/类别、行业大类）按「公司｜产品」缓存，不跨公司共用。
+_ALWAYS_UNUSABLE = re.compile(r"^(其他|其它|补充|合计|小计|主营业务|其他业务)")
+_GENERIC_NAMES = {"设备", "产品", "服务", "材料", "商品", "工程", "医药", "制药", "生物医药", "化工", "化工产品",
+                  "化学产品", "精细化工产品", "高档", "中档", "低档", "零部件", "组件", "配件", "贸易", "制造业", "工业"}
+_GRADE = re.compile(r"^[A-Z特高中低普]{0,3}[A-Z]?(类|档|级)(产品)?$")
+
+
+def product_cache_key(product: str, company: str) -> str | None:
+    """own_product_map 的键：None = 不用查/问，直接算 UNUSABLE；泛名带上公司。"""
+    name = product.strip()
+    if _ALWAYS_UNUSABLE.match(name):
+        return None
+    if len(name) <= 2 or name in _GENERIC_NAMES or _GRADE.match(name):
+        return f"{company}｜{name}"
+    return name
+
+
 def _map_product(conn, today, product: str, company: str, secs: list[dict], dh: str, judge) -> str:
-    row = conn.execute("SELECT sector_id, defs_hash FROM own_product_map WHERE product=?", (product,)).fetchone()
+    key = product_cache_key(product, company)
+    if key is None:
+        return UNUSABLE
+    row = conn.execute("SELECT sector_id, defs_hash FROM own_product_map WHERE product=?", (key,)).fetchone()
     if row and row[1] == dh:
         return row[0]
     ans = judge.map_product(product, company, secs)       # → 板块 id / NONE_OF_THEM / UNUSABLE，None = Jev 不可用
@@ -270,7 +292,7 @@ def _map_product(conn, today, product: str, company: str, secs: list[dict], dh: 
         return NONE_OF_THEM                               # 这次当「都不是」但不缓存，下次再问
     sid, conf = ans
     conn.execute("INSERT OR REPLACE INTO own_product_map VALUES (?, ?, ?, ?, ?)",
-                 (product, sid, conf, dh, today.isoformat()))
+                 (key, sid, conf, dh, today.isoformat()))
     conn.commit()
     return sid
 

@@ -230,17 +230,21 @@ def _hold(conn, code="600002", buy_price=10.0, buy_date=PREV_DAY):
     conn.commit()
 
 
-def test_holds_overnight_on_first_day_and_clears_on_second():
-    calendar = [date(2026, 9, 23), date(2026, 9, 24), date(2026, 9, 25)]
+def test_shadow_clears_on_second_day_main_holds_to_third():
+    """10-15 起主账户最多拿 3 个交易日（REBOUND_MAIN_MAX_HOLD_DAYS），影子仍 2 天。"""
+    calendar = [date(2026, 9, 23), date(2026, 9, 24), date(2026, 9, 25), date(2026, 9, 28)]
     conn = db.connect(":memory:")
     ledger = Ledger(conn)
-    _hold(conn)
+    _hold_both(conn)
     strat = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {}, set(), PREV_DAY, lambda: "正常",
                             enabled=False, trade_days=calendar)
     assert strat.on_minute(_quotes(at(14, 56), **{"600002": 0.5}), at(14, 56)) == []
     d2 = datetime(2026, 9, 25, 14, 56)
     fills = strat.on_minute({"600002": quote("600002", pct=0.5, ts=d2)}, d2)
-    assert [(f.side, f.reason) for f in fills] == [("sell", "到期清仓")]
+    assert [(f.account, f.reason) for f in fills] == [("rebound_shadow", "到期清仓")]
+    d3 = datetime(2026, 9, 28, 14, 56)
+    fills = strat.on_minute({"600002": quote("600002", pct=0.5, ts=d3)}, d3)
+    assert [(f.account, f.reason) for f in fills] == [("rebound_main", "到期清仓")]
 
 
 def test_trailing_take_profit_in_strategy():
@@ -345,16 +349,15 @@ def _bounce_q(t, price_pct):
 def test_sold_stock_is_not_bought_back_until_one_percent_below_sell_price():
     strat, conn, ledger, _ = make()
     _hold_both(conn)
-    fills = strat.on_minute(_bounce_q(at(10, 0), -1.0), at(10, 0))            # 9.90 卖出
-    assert [(f.account, f.side, f.reason, f.price) for f in fills] == [
-        ("rebound_main", "sell", "低开反抽", 9.9), ("rebound_shadow", "sell", "低开反抽", 9.9)]
+    fills = strat.on_minute(_bounce_q(at(10, 0), -1.0), at(10, 0))            # 9.90 卖出（主账户 10-15 起不卖低开反抽）
+    assert [(f.account, f.side, f.reason, f.price) for f in fills] == [("rebound_shadow", "sell", "低开反抽", 9.9)]
     # 同一分钟没有原价买回；之后价格没比卖出价低 1% 以上（9.90 → 9.801）之前也不买
     assert strat.on_minute(_bounce_q(at(10, 1), -1.0), at(10, 1)) == []
     assert strat.on_minute(_bounce_q(at(10, 2), -1.5), at(10, 2)) == []       # 9.85
     # 9.80 ≤ 9.90 × 0.99 四舍五入到分 = 9.80：可以再买
     fills = strat.on_minute(_bounce_q(at(10, 3), -2.0), at(10, 3))
-    assert _bought(fills) == {("rebound_main", "600002"), ("rebound_shadow", "600002")}
-    assert {f.price for f in fills} == {9.8}
+    assert _bought(fills) == {("rebound_shadow", "600002")}
+    assert {f.price for f in fills if f.side == "buy"} == {9.8}
 
 
 def test_rebuy_block_survives_a_restart_and_is_per_account():
@@ -382,7 +385,7 @@ def test_stock_sold_on_an_earlier_day_can_be_bought_again():
     assert _bought(fills) == {("rebound_main", "600002"), ("rebound_shadow", "600002")}
 
 
-# ---- 主账户止损：连续 2 分钟确认 + 问 Jev 走向；影子账户照旧（对照组）----
+# ---- 主账户止损：连续 2 分钟确认 + 问 Jev 走向；影子账户照旧（对照组）。10-15 起主账户线 -3%、影子 -2% ----
 
 class FakeTrend:
     def __init__(self, label):
@@ -414,9 +417,9 @@ def _q(t, pct):
 
 def test_main_stop_needs_two_minutes_shadow_sells_at_once():
     strat, conn, trend = _stop_strat("单边下跌")
-    assert _sells(strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))) == [("rebound_shadow", "止损")]
+    assert _sells(strat.on_minute(_q(at(10, 14), -3.1), at(10, 14))) == [("rebound_shadow", "止损")]
     assert trend.calls == []
-    assert _sells(strat.on_minute(_q(at(10, 15), -2.1), at(10, 15))) == [("rebound_main", "止损（单边下跌）")]
+    assert _sells(strat.on_minute(_q(at(10, 15), -3.1), at(10, 15))) == [("rebound_main", "止损（单边下跌）")]
     assert [c[0] for c in trend.calls] == ["rebound_main"]
     rows = conn.execute("SELECT code, verdict, detail, strategy FROM decisions WHERE verdict = 'trend'").fetchall()
     assert rows == [("600002", "trend", "止损（单边下跌）", "rebound")]
@@ -425,22 +428,22 @@ def test_main_stop_needs_two_minutes_shadow_sells_at_once():
 def test_minute_back_above_line_resets_the_count():
     """10-09 雪迪龙那种：10:14 瞬间跌破，10:15 回到线上，10:16 再跌破 → 还是第 1 分钟，不卖。"""
     strat, conn, trend = _stop_strat("单边下跌")
-    strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))
-    strat.on_minute(_q(at(10, 15), -1.9), at(10, 15))
-    assert _sells(strat.on_minute(_q(at(10, 16), -2.1), at(10, 16))) == []
+    strat.on_minute(_q(at(10, 14), -3.1), at(10, 14))
+    strat.on_minute(_q(at(10, 15), -2.9), at(10, 15))
+    assert _sells(strat.on_minute(_q(at(10, 16), -3.1), at(10, 16))) == []
     assert trend.calls == []
 
 
 def test_same_minute_twice_does_not_count_as_two():
     strat, conn, trend = _stop_strat("单边下跌")
-    strat.sell_step(_q(at(10, 14), -2.1), at(10, 14))
-    assert _sells(strat.sell_step(_q(at(10, 14), -2.1), at(10, 14))) == []
+    strat.sell_step(_q(at(10, 14), -3.1), at(10, 14))
+    assert _sells(strat.sell_step(_q(at(10, 14), -3.1), at(10, 14))) == []
 
 
 def test_main_holds_when_jev_sees_rebound_and_logs_why():
     strat, conn, trend = _stop_strat("探底回升")
-    strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))
-    assert _sells(strat.on_minute(_q(at(10, 15), -2.1), at(10, 15))) == []
+    strat.on_minute(_q(at(10, 14), -3.1), at(10, 14))
+    assert _sells(strat.on_minute(_q(at(10, 15), -3.1), at(10, 15))) == []
     assert conn.execute("SELECT detail FROM decisions WHERE verdict = 'trend'").fetchone() == ("止损暂缓（探底回升）",)
     # 再跌到 -3.5% 硬止损：不问 Jev 直接卖
     n = len(trend.calls)
@@ -454,8 +457,8 @@ def test_main_without_trend_judge_still_confirms_then_sells():
     _hold(conn)
     strat = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {}, set(), PREV_DAY, lambda: "正常",
                             enabled=False, trade_days=[PREV_DAY, TODAY])
-    assert _sells(strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))) == []
-    assert _sells(strat.on_minute(_q(at(10, 15), -2.1), at(10, 15))) == [("rebound_main", "止损")]
+    assert _sells(strat.on_minute(_q(at(10, 14), -3.1), at(10, 14))) == []
+    assert _sells(strat.on_minute(_q(at(10, 15), -3.1), at(10, 15))) == [("rebound_main", "止损")]
 
 
 def test_turn_lets_main_buy_on_weak_day_and_tags_the_reason():
@@ -526,16 +529,15 @@ def _bounce_q(t, price_pct):
 def test_sold_stock_is_not_bought_back_until_one_percent_below_sell_price():
     strat, conn, ledger, _ = make()
     _hold_both(conn)
-    fills = strat.on_minute(_bounce_q(at(10, 0), -1.0), at(10, 0))            # 9.90 卖出
-    assert [(f.account, f.side, f.reason, f.price) for f in fills] == [
-        ("rebound_main", "sell", "低开反抽", 9.9), ("rebound_shadow", "sell", "低开反抽", 9.9)]
+    fills = strat.on_minute(_bounce_q(at(10, 0), -1.0), at(10, 0))            # 9.90 卖出（主账户 10-15 起不卖低开反抽）
+    assert [(f.account, f.side, f.reason, f.price) for f in fills] == [("rebound_shadow", "sell", "低开反抽", 9.9)]
     # 同一分钟没有原价买回；之后价格没比卖出价低 1% 以上（9.90 → 9.801）之前也不买
     assert strat.on_minute(_bounce_q(at(10, 1), -1.0), at(10, 1)) == []
     assert strat.on_minute(_bounce_q(at(10, 2), -1.5), at(10, 2)) == []       # 9.85
     # 9.80 ≤ 9.90 × 0.99 四舍五入到分 = 9.80：可以再买
     fills = strat.on_minute(_bounce_q(at(10, 3), -2.0), at(10, 3))
-    assert _bought(fills) == {("rebound_main", "600002"), ("rebound_shadow", "600002")}
-    assert {f.price for f in fills} == {9.8}
+    assert _bought(fills) == {("rebound_shadow", "600002")}
+    assert {f.price for f in fills if f.side == "buy"} == {9.8}
 
 
 def test_rebuy_block_survives_a_restart_and_is_per_account():
@@ -563,7 +565,7 @@ def test_stock_sold_on_an_earlier_day_can_be_bought_again():
     assert _bought(fills) == {("rebound_main", "600002"), ("rebound_shadow", "600002")}
 
 
-# ---- 主账户止损：连续 2 分钟确认 + 问 Jev 走向；影子账户照旧（对照组）----
+# ---- 主账户止损：连续 2 分钟确认 + 问 Jev 走向；影子账户照旧（对照组）。10-15 起主账户线 -3%、影子 -2% ----
 
 class FakeTrend:
     def __init__(self, label):
@@ -595,9 +597,9 @@ def _q(t, pct):
 
 def test_main_stop_needs_two_minutes_shadow_sells_at_once():
     strat, conn, trend = _stop_strat("单边下跌")
-    assert _sells(strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))) == [("rebound_shadow", "止损")]
+    assert _sells(strat.on_minute(_q(at(10, 14), -3.1), at(10, 14))) == [("rebound_shadow", "止损")]
     assert trend.calls == []
-    assert _sells(strat.on_minute(_q(at(10, 15), -2.1), at(10, 15))) == [("rebound_main", "止损（单边下跌）")]
+    assert _sells(strat.on_minute(_q(at(10, 15), -3.1), at(10, 15))) == [("rebound_main", "止损（单边下跌）")]
     assert [c[0] for c in trend.calls] == ["rebound_main"]
     rows = conn.execute("SELECT code, verdict, detail, strategy FROM decisions WHERE verdict = 'trend'").fetchall()
     assert rows == [("600002", "trend", "止损（单边下跌）", "rebound")]
@@ -606,22 +608,22 @@ def test_main_stop_needs_two_minutes_shadow_sells_at_once():
 def test_minute_back_above_line_resets_the_count():
     """10-09 雪迪龙那种：10:14 瞬间跌破，10:15 回到线上，10:16 再跌破 → 还是第 1 分钟，不卖。"""
     strat, conn, trend = _stop_strat("单边下跌")
-    strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))
-    strat.on_minute(_q(at(10, 15), -1.9), at(10, 15))
-    assert _sells(strat.on_minute(_q(at(10, 16), -2.1), at(10, 16))) == []
+    strat.on_minute(_q(at(10, 14), -3.1), at(10, 14))
+    strat.on_minute(_q(at(10, 15), -2.9), at(10, 15))
+    assert _sells(strat.on_minute(_q(at(10, 16), -3.1), at(10, 16))) == []
     assert trend.calls == []
 
 
 def test_same_minute_twice_does_not_count_as_two():
     strat, conn, trend = _stop_strat("单边下跌")
-    strat.sell_step(_q(at(10, 14), -2.1), at(10, 14))
-    assert _sells(strat.sell_step(_q(at(10, 14), -2.1), at(10, 14))) == []
+    strat.sell_step(_q(at(10, 14), -3.1), at(10, 14))
+    assert _sells(strat.sell_step(_q(at(10, 14), -3.1), at(10, 14))) == []
 
 
 def test_main_holds_when_jev_sees_rebound_and_logs_why():
     strat, conn, trend = _stop_strat("探底回升")
-    strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))
-    assert _sells(strat.on_minute(_q(at(10, 15), -2.1), at(10, 15))) == []
+    strat.on_minute(_q(at(10, 14), -3.1), at(10, 14))
+    assert _sells(strat.on_minute(_q(at(10, 15), -3.1), at(10, 15))) == []
     assert conn.execute("SELECT detail FROM decisions WHERE verdict = 'trend'").fetchone() == ("止损暂缓（探底回升）",)
     # 再跌到 -3.5% 硬止损：不问 Jev 直接卖
     n = len(trend.calls)
@@ -635,8 +637,8 @@ def test_main_without_trend_judge_still_confirms_then_sells():
     _hold(conn)
     strat = ReboundStrategy(conn, ledger, Judge(), Judge(), UNIVERSE, {}, set(), PREV_DAY, lambda: "正常",
                             enabled=False, trade_days=[PREV_DAY, TODAY])
-    assert _sells(strat.on_minute(_q(at(10, 14), -2.1), at(10, 14))) == []
-    assert _sells(strat.on_minute(_q(at(10, 15), -2.1), at(10, 15))) == [("rebound_main", "止损")]
+    assert _sells(strat.on_minute(_q(at(10, 14), -3.1), at(10, 14))) == []
+    assert _sells(strat.on_minute(_q(at(10, 15), -3.1), at(10, 15))) == [("rebound_main", "止损")]
 
 
 # ---- 10-14 用户定：主账户跟踪止盈回落线 1.5 点（影子账户照旧 0.8，当对照） ----

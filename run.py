@@ -12,7 +12,7 @@ from jevq import accounts as accounts_mod
 from jevq import config, db, notify_content
 from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
 from jevq.data import (akdata, board_events, candidates, closes, concepts, custom_store, hi189, news7x24, own_sectors,
-                       catalyst, market_extra, sell_followups, tencent, ztpool)
+                       catalyst, market_extra, sectors, sell_followups, tencent, ztpool)
 from jevq.data.features import history_features
 from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
@@ -27,6 +27,7 @@ from jevq.judge.claude_cli import ClaudeCLI
 from jevq.judge.claude_jev import ClaudeJev
 from jevq.judge.turn import TurnJudge
 from jevq.judge.turn_claude import ClaudeTurnJudge
+from jevq.judge.sector_veto import ClaudeSectorVeto
 from jevq.ledger import Ledger
 from jevq.live import store as live_store
 from jevq.notify import Notifier, notifier_from_env
@@ -238,6 +239,13 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         if not concept_map:
             _warn(state, log, notifier, "题材数据缺失，扫首板今日只卖不买")
         board_enabled = bool(concept_map) and bool(ret5)   # 扫首板排名要用 ret5，覆盖率不够也只卖不买
+        if config.INDUSTRY_REFRESH_ENABLED:          # 新浪行业（超跌看板块用），7 天一刷，失败用旧的
+            try:
+                if sectors.needs_refresh(conn, today):
+                    deadline = (now() + timedelta(minutes=5)) if once else datetime.combine(today, time(9, 25))
+                    sectors.refresh_industries(conn, today, deadline=deadline, stop=stop, log=log)
+            except Exception as e:
+                log(f"新浪行业刷新失败：{e!r}")
         try:
             prev_prev_day = max((d for d in days if d < prev_day), default=None) if days else None
             prev_prev_closes = closes.prev_closes_from_db(conn, universe, today, prev_day, prev_prev_day)
@@ -334,6 +342,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                                               trend_judge=TrendJudge(jev))
     if rebound is not None:
         rebound.turn_provider = lambda: bool(getattr(engine, "turn_on", False))
+        _attach_sectors(rebound, conn, today, ret5, flash, log, state, notifier)
     lowbuy = None if late else _load_lowbuy(conn, ledger, universe, ret5, sell_only, notice_judge, news_judge,
                                             engine, prev_day, log, concept_map=concept_map,
                                             features=getattr(rebound, "features", None), today=today)
@@ -739,6 +748,30 @@ def _load_rebound(conn, ledger: Ledger, today: date, universe: dict, ret5: dict,
     if not enabled:
         log("超跌反弹：今日只卖不买")
     return strat
+
+
+def _attach_sectors(rebound: ReboundStrategy, conn, today: date, ret5: dict, flash, log, state, notifier) -> None:
+    """超跌主账户看板块（用户 2026-10-15）：黑名单 + 个股自己跌（SectorView），Claude 按新闻否决冷门板块。
+    出错只是不看这一条，照常买卖。"""
+    try:
+        rebound.sector_view = sectors.SectorView.load(conn, today, ret5)
+        v = rebound.sector_view
+        log(f"超跌反弹板块：{len(v.map)} 只有板块归属，{len(v.sret5)} 个板块算得出 5 日涨跌，"
+            f"黑名单 {len(v.blacklist)} 只")
+    except Exception as e:
+        conn.rollback()
+        log(f"超跌反弹板块数据失败，今天主账户不看板块：{e!r}")
+        rebound.sector_view = None
+    if not config.REBOUND_SECTOR_VETO or rebound.sector_view is None:
+        return
+    claude = ClaudeCLI()
+    if not claude.available():
+        _warn(state, log, notifier, f"找不到本机 claude（{claude.exe}），超跌冷门板块否决今天不做")
+        return
+    rebound.sector_veto = ClaudeSectorVeto(
+        claude,
+        news_provider=lambda t: flash.recent(t, minutes=config.CLAUDE_NEWS_MINUTES, limit=config.CLAUDE_NEWS_LIMIT),
+        catalyst_provider=lambda t: catalyst.summary_lines(conn, t.date()))
 
 
 def _should_fast_scan(board: BoardStrategy | None, t: time) -> bool:
