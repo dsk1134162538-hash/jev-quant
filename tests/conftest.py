@@ -38,4 +38,5 @@ def _no_extra_market_data(monkeypatch):
     monkeypatch.setattr("jevq.config.SENTIMENT_BY_CLAUDE", False)
     monkeypatch.setattr("jevq.config.SECTOR_STRENGTH_BY_CLAUDE", False)
     monkeypatch.setattr("jevq.config.INDUSTRY_REFRESH_ENABLED", False)    # 新浪行业要联网
+    monkeypatch.setattr("jevq.config.HOLDERS_REFRESH_ENABLED", False)     # 股东户数要联网
     monkeypatch.setattr("jevq.config.REBOUND_SECTOR_VETO", False)

@@ -58,6 +58,7 @@ class ReboundStrategy:
         # jevq.judge.sector_veto.ClaudeSectorVeto（冷门板块否决），run.py 构造后挂上；None = 不看这一条
         self.sector_view = None
         self.sector_veto = None
+        self.stock_filter = None                       # jevq.data.holders.StockFilter（股东户数、股性活跃度）；None = 不看
         self._sector_ok: dict[str, str] = {}          # 当天 Claude 判过「保留」的票 → 理由
         self._sector_day: date | None = None
         self._veto_retry_at: datetime | None = None    # Claude 没答上：这之前不再问，按规则买
@@ -133,13 +134,16 @@ class ReboundStrategy:
         return self._sector_filter(pool, now)
 
     def _sector_filter(self, pool: list[Quote], now: datetime) -> list[Quote]:
-        """板块条件（用户 2026-10-15）：黑名单板块、个股自己跌（板块没跟着跌）不买。每只票每天记一条 skip。"""
-        if self.sector_view is None:
+        """板块条件（用户 2026-10-15）：黑名单板块、个股自己跌（板块没跟着跌）不买；
+        个股条件（用户 2026-10-19）：股东户数太多、股性不活跃不买。每只票每天记一条 skip。"""
+        if self.sector_view is None and self.stock_filter is None:
             return pool
         self._sector_new_day(now.date())
         out = []
         for q in pool:
-            why = self.sector_view.reason_blocked(q.code)
+            why = None if self.sector_view is None else self.sector_view.reason_blocked(q.code)
+            if why is None and self.stock_filter is not None:
+                why = self.stock_filter.blocked(q.code)
             if why is None:
                 out.append(q)
                 continue
@@ -147,7 +151,7 @@ class ReboundStrategy:
                 self._blocked_logged.add(q.code)
                 self._log(now, q.code, "skip", why, {"strategy": SID, "candidate": {
                     "name": q.name, "price": q.price, "pct": q.pct, "ret5": self.ret5.get(q.code),
-                    "sectors": self.sector_view.names(q.code)[:12]}})
+                    "sectors": [] if self.sector_view is None else self.sector_view.names(q.code)[:12]}})
         return out
 
     def _sector_new_day(self, day: date) -> None:

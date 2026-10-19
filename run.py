@@ -12,7 +12,7 @@ from jevq import accounts as accounts_mod
 from jevq import config, db, notify_content
 from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
 from jevq.data import (akdata, board_events, candidates, closes, concepts, custom_store, hi189, news7x24, own_sectors,
-                       catalyst, market_extra, sectors, sell_followups, tencent, ztpool)
+                       catalyst, holders, market_extra, sectors, sell_followups, tencent, ztpool)
 from jevq.data.features import history_features
 from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
@@ -239,6 +239,12 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         if not concept_map:
             _warn(state, log, notifier, "题材数据缺失，扫首板今日只卖不买")
         board_enabled = bool(concept_map) and bool(ret5)   # 扫首板排名要用 ret5，覆盖率不够也只卖不买
+        if config.HOLDERS_REFRESH_ENABLED:           # 股东户数（超跌、低吸主账户过滤用），7 天一刷，失败用旧的
+            try:
+                if holders.needs_refresh(conn, today):
+                    holders.refresh(conn, today, log=log)
+            except Exception as e:
+                log(f"股东户数刷新失败：{e!r}")
         if config.INDUSTRY_REFRESH_ENABLED:          # 新浪行业（超跌看板块用），7 天一刷，失败用旧的
             try:
                 if sectors.needs_refresh(conn, today):
@@ -343,10 +349,15 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if rebound is not None:
         rebound.turn_provider = lambda: bool(getattr(engine, "turn_on", False))
         _attach_sectors(rebound, conn, today, ret5, flash, log, state, notifier)
+    stock_filter = None if late else _stock_filter(conn, universe, today, log)
+    if rebound is not None:
+        rebound.stock_filter = stock_filter
     lowbuy = None if late else _load_lowbuy(conn, ledger, universe, ret5, sell_only, notice_judge, news_judge,
                                             engine, prev_day, log, concept_map=concept_map,
                                             features=getattr(rebound, "features", None), today=today,
                                             trade_days=days)
+    if lowbuy is not None:
+        lowbuy.stock_filter = stock_filter
     # 情绪轮动（实盘跟它）：只跟各策略主账户的成交，晚启动不跑；只卖日照样跟卖
     regime = None if late else RegimeStrategy(conn, ledger, lambda: engine.sentiment_label,
                                               lambda: bool(getattr(engine, "turn_on", False)),
@@ -749,6 +760,21 @@ def _load_rebound(conn, ledger: Ledger, today: date, universe: dict, ret5: dict,
     if not enabled:
         log("超跌反弹：今日只卖不买")
     return strat
+
+
+def _stock_filter(conn, universe: dict, today: date, log) -> "holders.StockFilter | None":
+    """超跌、低吸主账户的个股过滤（股东户数 > 8 万、股性不活跃不买，用户 2026-10-19）。出错 = 不过滤，照常买卖。"""
+    try:
+        f = holders.StockFilter.load(conn, sorted(universe), today)
+        many = sum(1 for c in universe if (f.holders.get(c) or 0) > config.HOLDERS_MAX)
+        quiet = sum(1 for c in universe if c in f.activity and f.activity[c] < config.LOW_ACTIVITY_ABSRET)
+        log(f"个股过滤：股东户数 {len(f.holders)} 只有数据，> {config.HOLDERS_MAX // 10000} 万户 {many} 只；"
+            f"股性不活跃 {quiet} 只（主账户不买）")
+        return f
+    except Exception as e:
+        conn.rollback()
+        log(f"个股过滤数据失败，今天主账户不看股东户数/活跃度：{e!r}")
+        return None
 
 
 def _attach_sectors(rebound: ReboundStrategy, conn, today: date, ret5: dict, flash, log, state, notifier) -> None:

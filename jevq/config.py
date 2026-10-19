@@ -104,6 +104,12 @@ REBOUND_SECTOR_BLACKLIST_IDS = ("liquor",)
 REBOUND_SECTOR_BLACKLIST_WORDS = ("酿酒", "白酒", "黄酒", "啤酒", "葡萄酒")
 REBOUND_LONE_RET5 = -5.0
 REBOUND_LONE_SECTOR_MAX = -3.0
+# 买入（超跌、低吸主账户，用户 2026-10-19「低活跃股和八万以上股东的股不买」，见 jevq/data/holders.py）；扫首板不用（回测相反）
+HOLDERS_MAX = 80_000              # 股东户数超过这个不买
+LOW_ACTIVITY_DAYS = 20
+LOW_ACTIVITY_ABSRET = 1.5         # 近 20 日平均每天涨跌幅绝对值（%）低于这个 = 股性不活跃，不买
+HOLDERS_REFRESH_ENABLED = True    # 盘前刷新股东户数（7 天一次）
+HOLDERS_FETCH_TIMEOUT = 90.0
 INDUSTRY_REFRESH_ENABLED = True   # 盘前刷新新浪行业（7 天一次，超跌看板块用）
 SECTOR_MIN_MEMBERS = 5          # 板块成员（有 5 日涨幅的）不足这么多不算板块涨跌
 # 买入（主账户，用户 2026-10-15「结合新闻选板块、冷门板块不要买」）：排名靠前的候选连同所属板块、近期新闻交给 Claude，

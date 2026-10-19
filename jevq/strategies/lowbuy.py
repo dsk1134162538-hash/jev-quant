@@ -39,6 +39,8 @@ class LowbuyStrategy:
         self.features, self.concept_map = features, concept_map
         self.sectors_provider = sectors_provider     # () -> hi189 文章板块，主线判断「文章点名」用
         self.calendar = sorted(trade_days) if trade_days else None   # 交易日历；None = 主账户也只拿 1 天
+        self.stock_filter = None        # jevq.data.holders.StockFilter（股东户数、股性活跃度，主账户用）；None = 不看
+        self._blocked_logged: set[str] = set()
 
     def sell_step(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         if self._rejected_day != now.date():
@@ -104,6 +106,9 @@ class LowbuyStrategy:
             "SELECT DISTINCT code FROM decisions WHERE verdict IN ('reject', 'error') AND code != '' "
             "AND strategy = ? AND substr(ts, 1, 10) = ?", (SID, day.isoformat())).fetchall()
         self.rejected = {r[0] for r in rows}
+        self._blocked_logged = {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT code FROM decisions WHERE verdict = 'skip' AND code != '' AND strategy = ? "
+            "AND substr(ts, 1, 10) = ?", (SID, day.isoformat()))}
         self._rejected_day = day
 
     def _buy_shadow(self, ranked: list[Quote], now: datetime) -> list[Fill]:
@@ -124,6 +129,13 @@ class LowbuyStrategy:
             if self.ledger.free_slots(main) <= 0 or checked >= MAX_CHECKS_PER_TICK or errors >= MAX_ERRORS_PER_TICK:
                 break
             if q.code in self.rejected or self.ledger.holds(main, q.code):
+                continue
+            why = None if self.stock_filter is None else self.stock_filter.blocked(q.code)
+            if why is not None:          # 股东户数太多 / 股性不活跃（用户 2026-10-19），每只每天记一条
+                if q.code not in self._blocked_logged:
+                    self._blocked_logged.add(q.code)
+                    self._log(now, q.code, "skip", why, {"strategy": SID, "candidate": {
+                        "name": q.name, "price": q.price, "pct": q.pct, "ret5": self.ret5.get(q.code)}})
                 continue
             if affordable_shares(min(self.ledger.cash(main), MAX_PER_TRADE), q.price) == 0:
                 continue

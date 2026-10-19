@@ -103,6 +103,8 @@ def builtin_summaries() -> list[dict]:
                  *([f"个股自己跌不买：个股 5 日跌超 {-config.REBOUND_LONE_RET5:g}%、所属板块 5 日跌不到 "
                     f"{-config.REBOUND_LONE_SECTOR_MAX:g}%（板块 = 新浪概念 + 新浪行业 + 自建板块，取跌得最多的那个）"]
                    if config.REBOUND_LONE_FILTER else []),
+                 f"股东户数超过 {config.HOLDERS_MAX / 1e4:g} 万户、股性不活跃（近 {config.LOW_ACTIVITY_DAYS} 日平均每天涨跌"
+                 f"不到 {config.LOW_ACTIVITY_ABSRET:g}%）的不买",
                  ("Claude 看候选所属板块和隔夜消息催化、7x24 快讯，否决冷门板块（只否决、拿不准保留；没答上按规则买）"
                   if config.REBOUND_SECTOR_VETO else "Claude 冷门板块否决：已关闭"),
                  f"卖出：止损 {config.REBOUND_MAIN_STOP:g}%（连续 {config.REBOUND_STOP_CONFIRM} 分钟）、硬止损 "
@@ -156,7 +158,9 @@ def builtin_summaries() -> list[dict]:
                  f"{hm(config.EOD_SELL)} 还没卖就清仓，不隔第二夜（以上是影子账户）",
                  f"主账户（实盘跟的）：跟踪止盈回落 {config.LOWBUY_MAIN_TRAIL_PULLBACK:g} 个点、最多拿 "
                  f"{config.LOWBUY_MAIN_MAX_HOLD_DAYS} 个交易日（最后一天 {hm(config.EOD_SELL)} 清仓）"
-                 + ("" if config.LOWBUY_MAIN_LOW_OPEN_SELL else "、低开反抽/回 0 轴不卖") + "，止损同上"]},
+                 + ("" if config.LOWBUY_MAIN_LOW_OPEN_SELL else "、低开反抽/回 0 轴不卖") + "，止损同上",
+                 f"主账户买入另外剔除：股东户数超过 {config.HOLDERS_MAX / 1e4:g} 万户、股性不活跃（近 "
+                 f"{config.LOW_ACTIVITY_DAYS} 日平均每天涨跌不到 {config.LOW_ACTIVITY_ABSRET:g}%）"]},
              {"title": "情绪", "lines": [
                  f"情绪偏弱、冰点、没判出来，或外围偏弱：只在尾盘 {hm(config.TAIL_BUY_START)}~{hm(config.BUY_END)} 买"
                  "（知识库：买在修复日前一天的尾盘）",
