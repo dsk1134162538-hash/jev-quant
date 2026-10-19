@@ -110,6 +110,14 @@ LOW_ACTIVITY_DAYS = 20
 LOW_ACTIVITY_ABSRET = 1.5         # 近 20 日平均每天涨跌幅绝对值（%）低于这个 = 股性不活跃，不买
 HOLDERS_REFRESH_ENABLED = True    # 盘前刷新股东户数（7 天一次）
 HOLDERS_FETCH_TIMEOUT = 90.0
+# 每周核对（用户 2026-10-19）：主账户按回合对比回测期望（胜率%, 每笔平均%, 说明）；笔数够了还明显差 → 提醒复盘
+REVIEW_SINCE = "2026-10-16"        # 这批规则（超跌 -3%/3 天、低吸 2 天等）上线那天
+REVIEW_EXPECT = {"rebound_main": (76.0, 2.7, "普跌日、-3%/3 天"), "lowbuy_main": (50.0, 0.4, "拿 2 天"),
+                 "board_main": (49.0, 0.9, "次日收盘")}
+REVIEW_ALSO = ("regime_main",)
+REVIEW_MIN_TRADES = 8
+REVIEW_MEAN_GAP = 2.0              # 每笔平均比回测差这么多个点
+REVIEW_WIN_GAP = 20.0              # 胜率比回测低这么多个百分点
 PREMARKET_CHECK_ENABLED = True    # 盘前（等 09:15 之前）试一遍外部依赖，推送一条结果（用户 2026-10-19）
 PREMARKET_CLAUDE_TIMEOUT = 40.0
 # 买入（超跌、低吸、扫首板主账户，用户 2026-10-19）：持有期内有财报、大额解禁的不买，见 jevq/data/events.py

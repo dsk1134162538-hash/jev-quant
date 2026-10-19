@@ -517,6 +517,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     report_accounts = accounts_mod.all_accounts(conn, today)
     log(f"复盘报告 {path}；" + "，".join(f"{a} {ledger.equity(a, prices):,.2f}" for a in report_accounts))
     _notify_close_summary(notifier, ledger, today, prices, log, conn)
+    _weekly_review(conn, today, days, path, notifier, log)
     if universe:        # 自建板块（只记录）：报告之后慢慢刷新成员（有时间预算），下个交易日的快照用
         stats = own_sectors.refresh_step(conn, today, universe, own_judge, budget=config.OWN_SECTORS_BUDGET, log=log)
         log(f"自建板块成员刷新：{stats}")
@@ -797,6 +798,25 @@ def _stock_filter(conn, universe: dict, today: date, log) -> "holders.StockFilte
         conn.rollback()
         log(f"个股过滤数据失败，今天主账户不看股东户数/活跃度：{e!r}")
         return None
+
+
+def _weekly_review(conn, today: date, calendar, report_path, notifier, log) -> None:
+    """每周最后一个交易日：实盘规则 vs 回测核对，追加到当天报告并推送（用户 2026-10-19「都做」第 3 条）。只提醒。"""
+    from jevq import review
+    try:
+        if not review.is_week_end(today, calendar):
+            return
+        lines, flagged = review.weekly_review(conn, today)
+        if report_path is not None:
+            with open(report_path, "a", encoding="utf-8") as f:
+                f.write("
+" + "
+".join(lines) + "
+")
+        notifier.send("每周核对" + ("：有账户明显比回测差，建议复盘" if flagged else ""), review.push_text(lines))
+        log("每周核对：" + review.push_text(lines))
+    except Exception as e:
+        log(f"每周核对失败：{e!r}")
 
 
 def _premarket_check(conn, today: date, prev_day: date, universe: dict, log, notifier,
