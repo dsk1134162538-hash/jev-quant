@@ -56,17 +56,33 @@ def test_send_posts_correct_json():
     url, payload, timeout = calls[0]
     assert url == "https://www.pushplus.plus/send"
     assert payload == {"token": "tok123", "title": "标题", "content": "正文", "template": "txt"}
-    assert timeout == 5
+    assert timeout == 8
 
 
 # ---- send: failures never raise, only log ----
 
 def test_send_post_exception_is_logged_not_raised():
-    logs = []
-    n = Notifier("tok", post=make_post([], exc=RuntimeError("network down")), log=logs.append)
+    logs, calls = [], []
+    n = Notifier("tok", post=make_post(calls, exc=RuntimeError("network down")), log=logs.append,
+                 sleep=lambda s: None)
     n.send("t", "c")
     n.flush()
-    assert any("network down" in m for m in logs)
+    assert any("network down" in m and "试了 3 次" in m for m in logs)
+
+
+def test_send_retries_after_a_timeout_then_succeeds():
+    """10-15 pushplus 读超时，提醒丢了：超时后换更长的超时再试。"""
+    logs, timeouts = [], []
+
+    def post(url, json=None, timeout=None):
+        timeouts.append(timeout)
+        if len(timeouts) == 1:
+            raise TimeoutError("read timed out")
+        return FakeResp()
+    n = Notifier("tok", post=post, log=logs.append, sleep=lambda s: None)
+    n.send("t", "c")
+    n.flush()
+    assert timeouts == [8, 15] and not any("推送失败" in m for m in logs)
 
 
 def test_send_non_200_is_logged():

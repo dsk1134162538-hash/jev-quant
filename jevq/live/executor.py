@@ -834,13 +834,24 @@ class Executor:
         live_store.set_state(self.conn, "self_check_day", today)
         try:
             balance = self._read(self.broker.balance)
-            self._read(self.broker.positions)
+            client = self._read(self.broker.positions)
         except Exception as e:
             self._notify("自检失败", f"读客户端失败：{e}")
             return
         held = live_store.positions(self.conn)
         desc = "、".join(f"{self._label(code)} {p.shares}股" for code, p in sorted(held.items())) or "空仓"
-        self._notify("自检通过", f"模式 {live_store.mode(self.conn)}，可用资金 {balance:.2f} 元，程序持仓 {desc}")
+        manual = self._manual_desc(client, held)
+        self._notify("自检通过", f"模式 {live_store.mode(self.conn)}，可用资金 {balance:.2f} 元，程序持仓 {desc}"
+                     + (f"；你手动持有（程序不管、不会替你卖）：{manual}" if manual else ""))
+
+    def _manual_desc(self, client: dict, held: dict) -> str:
+        """客户端比程序账多出来的股数 = 用户手动买的（用户 2026-10-19「都做」第 6 条：实盘和程序的账要分得清）。"""
+        out = []
+        for code, h in sorted((client or {}).items()):
+            extra = int(getattr(h, "shares", 0) or 0) - (held[code].shares if code in held else 0)
+            if extra > 0:
+                out.append(f"{self._label(code)} {extra}股")
+        return "、".join(out)
 
     def _scheduled_reconcile(self, now: datetime) -> None:
         """只在卖出时段（午休、收盘后不对账）：有持仓每 LIVE_RECONCILE_HOLDING 分钟对账；空仓每

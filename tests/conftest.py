@@ -40,4 +40,5 @@ def _no_extra_market_data(monkeypatch):
     monkeypatch.setattr("jevq.config.INDUSTRY_REFRESH_ENABLED", False)    # 新浪行业要联网
     monkeypatch.setattr("jevq.config.HOLDERS_REFRESH_ENABLED", False)     # 股东户数要联网
     monkeypatch.setattr("jevq.config.EVENTS_REFRESH_ENABLED", False)      # 财报日、解禁要联网
+    monkeypatch.setattr("jevq.config.PREMARKET_CHECK_ENABLED", False)     # 盘前自检要联网、问 Claude
     monkeypatch.setattr("jevq.config.REBOUND_SECTOR_VETO", False)

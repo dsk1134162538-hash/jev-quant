@@ -110,6 +110,8 @@ LOW_ACTIVITY_DAYS = 20
 LOW_ACTIVITY_ABSRET = 1.5         # 近 20 日平均每天涨跌幅绝对值（%）低于这个 = 股性不活跃，不买
 HOLDERS_REFRESH_ENABLED = True    # 盘前刷新股东户数（7 天一次）
 HOLDERS_FETCH_TIMEOUT = 90.0
+PREMARKET_CHECK_ENABLED = True    # 盘前（等 09:15 之前）试一遍外部依赖，推送一条结果（用户 2026-10-19）
+PREMARKET_CLAUDE_TIMEOUT = 40.0
 # 买入（超跌、低吸、扫首板主账户，用户 2026-10-19）：持有期内有财报、大额解禁的不买，见 jevq/data/events.py
 EVENTS_REFRESH_ENABLED = True     # 盘前每天刷新财报预约披露日、未来解禁
 EVENTS_FETCH_TIMEOUT = 60.0

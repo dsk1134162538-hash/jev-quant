@@ -98,3 +98,36 @@ def test_run_stock_filter_loads_and_survives_missing_table():
     assert f is not None and f.blocked("600001") and "8 万户 1 只" in logs[0]
     conn.execute("DROP TABLE holders")
     assert run._stock_filter(conn, UNIVERSE, TODAY, logs.append) is None and "个股过滤数据失败" in logs[-1]
+
+
+def test_premarket_check_reports_each_dependency_and_pushes_once(monkeypatch):
+    import run
+    monkeypatch.setattr(config, "SENTIMENT_BY_CLAUDE", True)
+    conn = db.connect(":memory:")
+    sent, logs = [], []
+
+    class N:
+        def send(self, title, text):
+            sent.append((title, text))
+
+    class Cli:
+        exe = "x"
+
+        def available(self):
+            return True
+
+        def ask_json(self, *a, **k):
+            return None                                     # Claude 没答上
+
+    class Flash:
+        def recent(self, *a, **k):
+            return ["09:00 财联社｜x"]
+    items = run._premarket_check(conn, TODAY, PREV_DAY, {}, logs.append, N(),
+                                 quotes=lambda codes: {c: 1 for c in codes},
+                                 pools=lambda d: (_ for _ in ()).throw(TimeoutError("超时")),
+                                 claude=Cli(), flash=Flash())
+    status = {n: ok for n, ok, _ in items}
+    assert status["腾讯行情"] and status["7x24 快讯"]
+    assert not status["东财涨停池"] and not status["Claude"] and not status["股东户数"]
+    [(title, text)] = sent
+    assert title == "盘前自检：有问题" and "✗东财涨停池" in text and "✓腾讯行情" in text

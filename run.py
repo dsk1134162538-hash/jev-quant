@@ -293,6 +293,13 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             except Exception as e:
                 log(f"隔夜消息催化失败：{e!r}")
 
+    if config.PREMARKET_CHECK_ENABLED and not late and not once:
+        state["phase"] = "盘前自检"
+        try:
+            _premarket_check(conn, today, prev_day, universe, log, notifier)
+        except Exception as e:
+            log(f"盘前自检出错：{e!r}")
+
     state["phase"] = "等待 09:15"
     if not once and not late and not wait_until(time(9, 15), stop):
         return None
@@ -790,6 +797,62 @@ def _stock_filter(conn, universe: dict, today: date, log) -> "holders.StockFilte
         conn.rollback()
         log(f"个股过滤数据失败，今天主账户不看股东户数/活跃度：{e!r}")
         return None
+
+
+def _premarket_check(conn, today: date, prev_day: date, universe: dict, log, notifier,
+                     quotes=None, pools=None, claude=None, flash=None) -> list[tuple[str, bool, str]]:
+    """盘前自检（用户 2026-10-19「都做」第 7 条）：外部依赖逐个试一下，结果推送一条，坏了的那几项也进面板告警。
+    任何一项只是报告，不影响交易流程（各模块自己有降级）。"""
+    items: list[tuple[str, bool, str]] = []
+
+    def check(name, fn):
+        try:
+            ok, detail = fn()
+        except Exception as e:
+            ok, detail = False, f"{type(e).__name__}: {str(e)[:80]}"
+        items.append((name, ok, detail))
+
+    def _quotes():
+        got = (quotes or tencent.fetch_quotes)(["600519", "000001"])
+        return len(got) == 2, f"{len(got)}/2"
+    check("腾讯行情", _quotes)
+
+    def _pools():
+        s = (pools or akdata.fetch_pool_stats)(prev_day)
+        return bool(s), f"上一交易日涨停 {s.get('涨停家数', '?')} 家"
+    check("东财涨停池", _pools)
+
+    if config.SENTIMENT_BY_CLAUDE or config.TURN_CLAUDE_REQUIRED or config.REBOUND_SECTOR_VETO:
+        def _claude():
+            cli = claude or ClaudeCLI()
+            if not cli.available():
+                return False, f"找不到 {cli.exe}"
+            got = cli.ask_json("只输出 JSON。", '回答 {"ok": true}', timeout=config.PREMARKET_CLAUDE_TIMEOUT)
+            return bool(got and got.get("ok")), "能答" if got else "没答上（代理/额度/登录？）"
+        check("Claude", _claude)
+
+    def _flash():
+        n = len((flash or news7x24.Flash(log=lambda *_: None)).recent(now(), minutes=600, limit=50))
+        return n > 0, f"近 10 小时 {n} 条"
+    check("7x24 快讯", _flash)
+
+    def _table(sql, need, label):
+        n = conn.execute(sql).fetchone()[0] or 0
+        return n >= need, f"{n} {label}"
+    check("股东户数", lambda: _table("SELECT COUNT(*) FROM holders", 1000, "只"))
+    check("财报预约日", lambda: _table(f"SELECT COUNT(*) FROM report_dates WHERE updated='{today.isoformat()}'",
+                                    1000, "条（今天刷新）"))
+    check("新浪行业", lambda: _table("SELECT COUNT(*) FROM industries", 1000, "条"))
+    check("收盘价", lambda: _table(f"SELECT COUNT(*) FROM closes WHERE date='{prev_day.isoformat()}'",
+                                max(1000, len(universe) // 2), f"只（{prev_day:%m-%d}）"))
+    bad = [n for n, ok, _ in items if not ok]
+    text = "；".join(f"{'✓' if ok else '✗'}{n} {d}" for n, ok, d in items)
+    log(f"盘前自检：{text}")
+    try:
+        notifier.send("盘前自检" + ("：有问题" if bad else "：全部正常"), text)
+    except Exception as e:
+        log(f"盘前自检推送失败：{e!r}")
+    return items
 
 
 def _event_filter(conn, today: date, calendar, log) -> "events.EventFilter | None":

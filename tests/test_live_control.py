@@ -968,3 +968,14 @@ def test_gateway_precheck_needs_a_health_endpoint():
     c, clock, broker, notifier, ex = env(at=datetime(2026, 10, 12, 8, 52), checked=False)
     ex.step()                                                     # FakeBroker 默认没有 health：跳过，不报错
     assert broker.calls == [] and notifier.sent == []
+
+
+def test_self_check_lists_shares_the_user_bought_by_hand():
+    """10-19「都做」第 6 条：客户端比程序账多出来的股数 = 手动买的，自检里写清楚程序不会替你卖。"""
+    c, clock, broker, notifier, ex = env(at=datetime(2026, 9, 29, 9, 5, 0), checked=False,
+                                         holdings={"600001": [800, 800], "600002": [3200, 3200]})
+    hold(c)
+    sim_holds(c)
+    ex.step()
+    [text] = texts(notifier, "自检通过")
+    assert "你手动持有（程序不管、不会替你卖）：" in text and "600002 3200股" in text and "300股" in text

@@ -2,12 +2,15 @@
 import os
 import queue
 import threading
+import time
 from collections.abc import Callable
 from datetime import date
 
 import requests
 
 PUSHPLUS_URL = "https://www.pushplus.plus/send"
+PUSH_TIMEOUTS = (8, 15, 20)     # 每次尝试的超时（秒）；连不上/超时就用下一个再试
+PUSH_RETRY_PAUSE = 3.0
 
 
 def _redact_value(value):
@@ -29,8 +32,10 @@ class Notifier:
     """
 
     def __init__(self, token: str | None, post=None, log: Callable[[str], None] = print,
-                 max_per_day: int = 50, today: Callable[[], date] = date.today):
+                 max_per_day: int = 50, today: Callable[[], date] = date.today,
+                 sleep: Callable[[float], None] = time.sleep):
         self.token = token
+        self._sleep = sleep
         self.enabled = bool(token)
         self._post = post or requests.post
         self._log = log
@@ -110,13 +115,20 @@ class Notifier:
                     self._cv.notify_all()
 
     def _do_send(self, title: str, content: str) -> None:
-        try:
-            resp = self._post(PUSHPLUS_URL, json={"token": self.token, "title": title,
-                                                    "content": content, "template": "txt"},
-                              timeout=5)
-        except Exception as e:
-            self._log(self._redact(f"推送失败：{e!r}"))
-            return
+        # 连不上/超时再试：10-15 起 pushplus 偶尔 5 秒读超时，提醒就丢了（用户 2026-10-19「都做」第 7 条）。
+        # 在后台线程里发，重试不拖交易；HTTP 返回了错误码不重试（重发也一样）
+        resp = None
+        for attempt, timeout in enumerate(PUSH_TIMEOUTS):
+            try:
+                resp = self._post(PUSHPLUS_URL, json={"token": self.token, "title": title,
+                                                        "content": content, "template": "txt"},
+                                  timeout=timeout)
+                break
+            except Exception as e:
+                if attempt == len(PUSH_TIMEOUTS) - 1:
+                    self._log(self._redact(f"推送失败（试了 {len(PUSH_TIMEOUTS)} 次）：{e!r}"))
+                    return
+                self._sleep(PUSH_RETRY_PAUSE)
         try:
             if resp.status_code != 200:
                 self._log(self._redact(f"推送失败：HTTP {resp.status_code}"))
