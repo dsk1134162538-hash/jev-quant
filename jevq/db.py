@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS closes(date TEXT, code TEXT, close REAL, PRIMARY KEY(
 CREATE TABLE IF NOT EXISTS concepts(code TEXT, concept TEXT, updated TEXT, PRIMARY KEY(code, concept));
 CREATE TABLE IF NOT EXISTS industries(code TEXT, industry TEXT, updated TEXT, PRIMARY KEY(code, industry));
 CREATE TABLE IF NOT EXISTS holders(code TEXT PRIMARY KEY, holders INTEGER, as_of TEXT, updated TEXT);
+CREATE TABLE IF NOT EXISTS report_dates(code TEXT, period TEXT, date TEXT, disclosed INTEGER, updated TEXT,
+  PRIMARY KEY(code, period));
+CREATE TABLE IF NOT EXISTS unlocks(code TEXT, date TEXT, ratio REAL, kind TEXT, updated TEXT, PRIMARY KEY(code, date, kind));
 CREATE TABLE IF NOT EXISTS board_events(
   date TEXT, code TEXT, name TEXT, first_seal TEXT, bucket TEXT, concept TEXT,
   next_open_pct REAL, next_close_pct REAL, next_board INTEGER, PRIMARY KEY(date, code));
@@ -64,7 +67,8 @@ CREATE TABLE IF NOT EXISTS live_state(key TEXT PRIMARY KEY, value TEXT);
 
 MIGRATIONS = [("decisions", "trace", "TEXT"), ("notice_verdicts", "probs", "TEXT"),
               ("decisions", "strategy", "TEXT"), ("fills", "version", "INTEGER"),
-              ("decisions", "version", "INTEGER"), ("closes", "volume", "REAL")]   # closes.volume：日成交量（手）
+              ("decisions", "version", "INTEGER"), ("closes", "volume", "REAL"),   # closes.volume：日成交量（手）
+              ("closes", "pre_close", "REAL")]   # 当天行情的昨收（已按除权除息调整过），算涨跌幅用（10-19 起存）
 
 
 def _migrate(conn: sqlite3.Connection):

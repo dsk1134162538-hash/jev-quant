@@ -40,6 +40,7 @@ class LowbuyStrategy:
         self.sectors_provider = sectors_provider     # () -> hi189 文章板块，主线判断「文章点名」用
         self.calendar = sorted(trade_days) if trade_days else None   # 交易日历；None = 主账户也只拿 1 天
         self.stock_filter = None        # jevq.data.holders.StockFilter（股东户数、股性活跃度，主账户用）；None = 不看
+        self.event_filter = None        # jevq.data.events.EventFilter（持有期内财报/大额解禁，主账户用）；None = 不看
         self._blocked_logged: set[str] = set()
 
     def sell_step(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
@@ -131,7 +132,9 @@ class LowbuyStrategy:
             if q.code in self.rejected or self.ledger.holds(main, q.code):
                 continue
             why = None if self.stock_filter is None else self.stock_filter.blocked(q.code)
-            if why is not None:          # 股东户数太多 / 股性不活跃（用户 2026-10-19），每只每天记一条
+            if why is None and self.event_filter is not None:
+                why = self.event_filter.blocked(q.code, config.LOWBUY_MAIN_MAX_HOLD_DAYS)
+            if why is not None:          # 股东户数太多 / 股性不活跃 / 持有期内财报、解禁（用户 2026-10-19），每只每天记一条
                 if q.code not in self._blocked_logged:
                     self._blocked_logged.add(q.code)
                     self._log(now, q.code, "skip", why, {"strategy": SID, "candidate": {

@@ -12,7 +12,7 @@ from jevq import accounts as accounts_mod
 from jevq import config, db, notify_content
 from jevq.config import ACCOUNT_NAMES, DB_PATH, REPORT_DIR
 from jevq.data import (akdata, board_events, candidates, closes, concepts, custom_store, hi189, news7x24, own_sectors,
-                       catalyst, holders, market_extra, sectors, sell_followups, tencent, ztpool)
+                       catalyst, events, holders, market_extra, sectors, sell_followups, tencent, ztpool)
 from jevq.data.features import history_features
 from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
@@ -181,6 +181,11 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         try:
             universe = akdata.load_universe(today, days)
             log(f"股票池 {len(universe)} 只")
+            if config.EVENTS_REFRESH_ENABLED:    # 先补历史除权除息，5 日涨幅、活跃度才不会把分红送转当成下跌
+                try:
+                    log(f"除权除息补录 {events.backfill_ex_rights(conn, today, log=log)} 条")
+                except Exception as e:
+                    log(f"除权除息补录失败：{e!r}")
             ret5 = closes.ret5_from_db(conn, universe, today)
             log(f"5 日涨幅 {len(ret5)} 只")
             # 后台某天没跑 → 那天整天没有收盘价，历史类指标会把缺口两边当成相邻交易日悄悄算错，要按日历补
@@ -245,6 +250,12 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                     holders.refresh(conn, today, log=log)
             except Exception as e:
                 log(f"股东户数刷新失败：{e!r}")
+        if config.EVENTS_REFRESH_ENABLED:            # 财报预约披露日、未来解禁（主账户持有期过滤），每天刷新
+            try:
+                log(f"财报日/解禁刷新：{events.refresh(conn, today, log=log)}")
+            except Exception as e:
+                log(f"财报日/解禁刷新失败：{e!r}")
+
         if config.INDUSTRY_REFRESH_ENABLED:          # 新浪行业（超跌看板块用），7 天一刷，失败用旧的
             try:
                 if sectors.needs_refresh(conn, today):
@@ -350,14 +361,17 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
         rebound.turn_provider = lambda: bool(getattr(engine, "turn_on", False))
         _attach_sectors(rebound, conn, today, ret5, flash, log, state, notifier)
     stock_filter = None if late else _stock_filter(conn, universe, today, log)
+    event_filter = None if late else _event_filter(conn, today, days, log)
     if rebound is not None:
-        rebound.stock_filter = stock_filter
+        rebound.stock_filter, rebound.event_filter = stock_filter, event_filter
+    if board is not None:
+        board.event_filter = event_filter
     lowbuy = None if late else _load_lowbuy(conn, ledger, universe, ret5, sell_only, notice_judge, news_judge,
                                             engine, prev_day, log, concept_map=concept_map,
                                             features=getattr(rebound, "features", None), today=today,
                                             trade_days=days)
     if lowbuy is not None:
-        lowbuy.stock_filter = stock_filter
+        lowbuy.stock_filter, lowbuy.event_filter = stock_filter, event_filter
     # 情绪轮动（实盘跟它）：只跟各策略主账户的成交，晚启动不跑；只卖日照样跟卖
     regime = None if late else RegimeStrategy(conn, ledger, lambda: engine.sentiment_label,
                                               lambda: bool(getattr(engine, "turn_on", False)),
@@ -449,7 +463,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             names = {**{c: q.name for c, q in quotes.items()}, **names}
             today_quotes = {c: q for c, q in quotes.items() if q.ts.date() == today}
             saved = closes.save_closes(conn, today, {c: q.price for c, q in today_quotes.items()},
-                                       volumes={c: q.volume for c, q in today_quotes.items()})
+                                       volumes={c: q.volume for c, q in today_quotes.items()},
+                                       pre_closes={c: q.pre_close for c, q in today_quotes.items()})
             log(f"收盘价存库 {saved} 条")
         except Exception as e:
             log(f"收盘价刷新失败，沿用最后快照：{e!r}")
@@ -774,6 +789,18 @@ def _stock_filter(conn, universe: dict, today: date, log) -> "holders.StockFilte
     except Exception as e:
         conn.rollback()
         log(f"个股过滤数据失败，今天主账户不看股东户数/活跃度：{e!r}")
+        return None
+
+
+def _event_filter(conn, today: date, calendar, log) -> "events.EventFilter | None":
+    """持有期内有财报 / 大额解禁的不买（用户 2026-10-19）。出错 = 不过滤。"""
+    try:
+        f = events.EventFilter.load(conn, today, calendar)
+        log(f"持有期过滤：{len(f.reports)} 只有未披露的财报预约日，{len(f.unlocks)} 只未来有大额解禁")
+        return f
+    except Exception as e:
+        conn.rollback()
+        log(f"财报日/解禁数据失败，今天主账户不看这一条：{e!r}")
         return None
 
 

@@ -110,6 +110,12 @@ LOW_ACTIVITY_DAYS = 20
 LOW_ACTIVITY_ABSRET = 1.5         # 近 20 日平均每天涨跌幅绝对值（%）低于这个 = 股性不活跃，不买
 HOLDERS_REFRESH_ENABLED = True    # 盘前刷新股东户数（7 天一次）
 HOLDERS_FETCH_TIMEOUT = 90.0
+# 买入（超跌、低吸、扫首板主账户，用户 2026-10-19）：持有期内有财报、大额解禁的不买，见 jevq/data/events.py
+EVENTS_REFRESH_ENABLED = True     # 盘前每天刷新财报预约披露日、未来解禁
+EVENTS_FETCH_TIMEOUT = 60.0
+UNLOCK_LOOKAHEAD_DAYS = 15        # 自然日
+EX_RIGHTS_BACKFILL_DAYS = 60      # 盘前按东财分红送配补最近这么多天的除权除息（10-19 前没存调整后的昨收）
+UNLOCK_MIN_RATIO = 0.03           # 解禁占解禁前流通市值 ≥ 3% 才算大额（股权激励那种零点几的不拦）
 INDUSTRY_REFRESH_ENABLED = True   # 盘前刷新新浪行业（7 天一次，超跌看板块用）
 SECTOR_MIN_MEMBERS = 5          # 板块成员（有 5 日涨幅的）不足这么多不算板块涨跌
 # 买入（主账户，用户 2026-10-15「结合新闻选板块、冷门板块不要买」）：排名靠前的候选连同所属板块、近期新闻交给 Claude，

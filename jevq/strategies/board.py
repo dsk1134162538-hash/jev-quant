@@ -42,6 +42,9 @@ class BoardStrategy:
         self.fetch_day_minutes = fetch_day_minutes
         self._curves: dict[str, dict] = {}
         self.shrink_logged: set[str] = set()
+        # 持有期内（次日）要发财报 / 大额解禁的不买（用户 2026-10-19），jevq.data.events.EventFilter；None = 不看。
+        # 影子账户不看判断结果，照旧扫
+        self.event_filter = None
 
     def has_watch(self) -> bool:
         return bool(self.watch)
@@ -259,8 +262,12 @@ class BoardStrategy:
         return lambda concept, members: article_hot(concept, members, self.universe, sectors)
 
     def _judge(self, cand: Candidate, q: Quote, now: datetime):
-        verdict, why = self._check(self.notice_judge, cand.code, now.date())
-        notice_trace = getattr(self.notice_judge, "last_trace", None)
+        event = None if self.event_filter is None else self.event_filter.blocked(cand.code, 1)
+        if event is not None:
+            verdict, why, notice_trace = "reject", event, None
+        else:
+            verdict, why = self._check(self.notice_judge, cand.code, now.date())
+            notice_trace = getattr(self.notice_judge, "last_trace", None)
         news_trace = None
         if verdict == "pass":
             verdict, why = self._check(self.news_judge, cand.code, q.name, now)

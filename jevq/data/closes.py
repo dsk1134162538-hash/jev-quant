@@ -4,9 +4,10 @@ from collections.abc import Callable, Iterable
 from datetime import date, datetime
 
 
-UPSERT_SQL = ("INSERT INTO closes(date, code, close, volume) VALUES (?, ?, ?, ?) "
+UPSERT_SQL = ("INSERT INTO closes(date, code, close, volume, pre_close) VALUES (?, ?, ?, ?, ?) "
               "ON CONFLICT(date, code) DO UPDATE SET close = excluded.close, "
-              "volume = COALESCE(excluded.volume, closes.volume)")
+              "volume = COALESCE(excluded.volume, closes.volume), "
+              "pre_close = COALESCE(excluded.pre_close, closes.pre_close)")
 
 
 def _lots(v) -> float | None:
@@ -15,13 +16,15 @@ def _lots(v) -> float | None:
 
 
 def save_closes(conn, day: date, prices: dict[str, float],
-                volumes: dict[str, float] | None = None) -> int:
+                volumes: dict[str, float] | None = None, pre_closes: dict[str, float] | None = None) -> int:
     """把当天的收盘价（或当日报价）写入 closes 表；价格 <= 0 的跳过。返回写入条数。
 
-    volumes：code → 当日成交量（手，Quote.volume 的口径）。没给量的代码保留库里已有的量。"""
-    volumes = volumes or {}
-    rows = [(day.isoformat(), code, price, _lots(volumes.get(code))) for code, price in prices.items()
-            if price is not None and price > 0]
+    volumes：code → 当日成交量（手，Quote.volume 的口径）。没给量的代码保留库里已有的量。
+    pre_closes：code → 当天行情里的昨收（已按除权除息调整），算真实涨跌幅用；没给的保留库里已有的。"""
+    volumes, pre_closes = volumes or {}, pre_closes or {}
+    rows = [(day.isoformat(), code, price, _lots(volumes.get(code)),
+             (pre_closes.get(code) if (pre_closes.get(code) or 0) > 0 else None))
+            for code, price in prices.items() if price is not None and price > 0]
     if not rows:
         return 0
     conn.executemany(UPSERT_SQL, rows)
@@ -29,29 +32,78 @@ def save_closes(conn, day: date, prices: dict[str, float],
     return len(rows)
 
 
+def daily_ratios(conn, codes: Iterable[str], dates: list[str]) -> dict[str, list[float | None]]:
+    """每只票在 dates（升序）相邻两天之间的「真实」涨跌比（今收 ÷ 昨收）：有存当天行情昨收（已按除权除息调整）就用它，
+    没有就用库里上一个交易日的收盘价（10-19 之前的历史只能这样，除权日会被当成下跌——见 backfill_ex_rights）。
+    第 k 项是 dates[k] 相对 dates[k-1] 的；缺数据为 None。"""
+    codes = set(codes)
+    if len(dates) < 2 or not codes:
+        return {}
+    marks = ",".join("?" * len(dates))
+    px: dict[str, dict[str, tuple[float, float | None]]] = {}
+    for code, d, close, pre in conn.execute(
+            f"SELECT code, date, close, pre_close FROM closes WHERE date IN ({marks}) AND close > 0", dates):
+        if code in codes:
+            px.setdefault(code, {})[d] = (close, pre)
+    out = {}
+    for code, s in px.items():
+        ratios: list[float | None] = []
+        last = None
+        for d in dates:
+            cur = s.get(d)
+            if cur is None:
+                ratios.append(None)
+                continue
+            base = cur[1] if cur[1] else (last if last else None)
+            ratios.append(cur[0] / base if base else None)
+            last = cur[0]
+        out[code] = ratios[1:]
+    return out
+
+
 def ret5_from_db(conn, codes: Iterable[str], today: date) -> dict[str, float]:
-    """用 closes 表里 date < today 的最近 6 个不同日期算 5 日涨幅。不足 6 个日期返回 {}。"""
+    """用 closes 表里 date < today 的最近 6 个不同日期算 5 日涨幅（逐日涨跌比连乘，除权除息日按调整后的昨收算，
+    10-19 起）。首尾两天都要有收盘价；不足 6 个日期返回 {}。"""
     codes = list(codes)
     if not codes:
         return {}
     dates = [r[0] for r in conn.execute(
         "SELECT DISTINCT date FROM closes WHERE date < ? ORDER BY date DESC LIMIT 6",
-        (today.isoformat(),)).fetchall()]
+        (today.isoformat(),)).fetchall()][::-1]
     if len(dates) < 6:
         return {}
-    latest, sixth = dates[0], dates[5]
-    placeholders = ",".join("?" * len(codes))
-    rows = conn.execute(
-        f"SELECT code, date, close FROM closes WHERE date IN (?, ?) AND code IN ({placeholders})",
-        (latest, sixth, *codes)).fetchall()
-    by_code: dict[str, dict[str, float]] = {}
-    for code, d, close in rows:
-        by_code.setdefault(code, {})[d] = close
+    have = {(c, d) for c, d in conn.execute(
+        f"SELECT code, date FROM closes WHERE date IN (?, ?) AND close > 0", (dates[0], dates[-1]))}
     out = {}
-    for code, vals in by_code.items():
-        if latest in vals and sixth in vals and vals[sixth]:
-            out[code] = round((vals[latest] / vals[sixth] - 1) * 100, 2)
+    for code, ratios in daily_ratios(conn, codes, dates).items():
+        if (code, dates[0]) not in have or (code, dates[-1]) not in have:
+            continue
+        prod = 1.0
+        for r in ratios:
+            if r is not None:
+                prod *= r
+        out[code] = round((prod - 1) * 100, 2)
     return out
+
+
+def backfill_ex_rights(conn, rows: list[tuple[str, str, float, float]]) -> int:
+    """补历史的除权除息：rows = [(代码, 除权除息日, 每 10 股送转股数, 每 10 股派现金)]。
+    那天库里有收盘价、还没有 pre_close 的，按「(上一交易日收盘 - 每股派现) ÷ (1 + 每股送转)」补上。返回补了几条。"""
+    n = 0
+    for code, d, bonus10, cash10 in rows:
+        row = conn.execute("SELECT pre_close FROM closes WHERE code=? AND date=?", (code, d)).fetchone()
+        if row is None or row[0]:
+            continue
+        prev = conn.execute("SELECT close FROM closes WHERE code=? AND date<? AND close > 0 ORDER BY date DESC LIMIT 1",
+                            (code, d)).fetchone()
+        if not prev:
+            continue
+        pre = (prev[0] - (cash10 or 0) / 10) / (1 + (bonus10 or 0) / 10)
+        if pre > 0:
+            conn.execute("UPDATE closes SET pre_close=? WHERE code=? AND date=?", (round(pre, 4), code, d))
+            n += 1
+    conn.commit()
+    return n
 
 
 def prev_closes_from_db(conn, codes: Iterable[str], today: date, prev_day: date,
@@ -196,7 +248,7 @@ def backfill_closes(conn, codes: Iterable[str], today: date,
             time.sleep(pause)
             continue
         consecutive_failures = 0
-        rows = [(r[0], code, r[1], _lots(r[2]) if len(r) > 2 else None)
+        rows = [(r[0], code, r[1], _lots(r[2]) if len(r) > 2 else None, None)    # 补数的 K 线没有调整后的昨收
                 for r in rows if r[0] < today_iso and r[1] > 0]
         if rows:
             conn.executemany(UPSERT_SQL, rows)

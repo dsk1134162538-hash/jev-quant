@@ -59,6 +59,7 @@ class ReboundStrategy:
         self.sector_view = None
         self.sector_veto = None
         self.stock_filter = None                       # jevq.data.holders.StockFilter（股东户数、股性活跃度）；None = 不看
+        self.event_filter = None                       # jevq.data.events.EventFilter（持有期内财报/大额解禁）；None = 不看
         self._sector_ok: dict[str, str] = {}          # 当天 Claude 判过「保留」的票 → 理由
         self._sector_day: date | None = None
         self._veto_retry_at: datetime | None = None    # Claude 没答上：这之前不再问，按规则买
@@ -136,7 +137,7 @@ class ReboundStrategy:
     def _sector_filter(self, pool: list[Quote], now: datetime) -> list[Quote]:
         """板块条件（用户 2026-10-15）：黑名单板块、个股自己跌（板块没跟着跌）不买；
         个股条件（用户 2026-10-19）：股东户数太多、股性不活跃不买。每只票每天记一条 skip。"""
-        if self.sector_view is None and self.stock_filter is None:
+        if self.sector_view is None and self.stock_filter is None and self.event_filter is None:
             return pool
         self._sector_new_day(now.date())
         out = []
@@ -144,6 +145,8 @@ class ReboundStrategy:
             why = None if self.sector_view is None else self.sector_view.reason_blocked(q.code)
             if why is None and self.stock_filter is not None:
                 why = self.stock_filter.blocked(q.code)
+            if why is None and self.event_filter is not None:
+                why = self.event_filter.blocked(q.code, config.REBOUND_MAIN_MAX_HOLD_DAYS)
             if why is None:
                 out.append(q)
                 continue

@@ -63,16 +63,10 @@ def mean_abs_change(conn: sqlite3.Connection, codes, today: date, days: int | No
                                         (today.isoformat(), n + 1))][::-1]
     if len(dates) < 2:
         return {}
-    want = set(codes)
-    px: dict[str, dict[str, float]] = {}
-    marks = ",".join("?" * len(dates))
-    for code, d, close in conn.execute(f"SELECT code, date, close FROM closes WHERE date IN ({marks}) AND close > 0",
-                                       dates):
-        if code in want:
-            px.setdefault(code, {})[d] = close
+    from jevq.data.closes import daily_ratios          # 逐日涨跌比，除权除息日按调整后的昨收算
     out = {}
-    for code, s in px.items():
-        v = [abs(s[b] / s[a] - 1) * 100 for a, b in zip(dates, dates[1:]) if a in s and b in s]
+    for code, ratios in daily_ratios(conn, codes, dates).items():
+        v = [abs(r - 1) * 100 for r in ratios if r is not None]
         if len(v) >= max(2, n // 2):
             out[code] = round(statistics.mean(v), 2)
     return out
