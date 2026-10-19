@@ -809,10 +809,7 @@ def _weekly_review(conn, today: date, calendar, report_path, notifier, log) -> N
         lines, flagged = review.weekly_review(conn, today)
         if report_path is not None:
             with open(report_path, "a", encoding="utf-8") as f:
-                f.write("
-" + "
-".join(lines) + "
-")
+                f.write("\n" + "\n".join(lines) + "\n")
         notifier.send("每周核对" + ("：有账户明显比回测差，建议复盘" if flagged else ""), review.push_text(lines))
         log("每周核对：" + review.push_text(lines))
     except Exception as e:

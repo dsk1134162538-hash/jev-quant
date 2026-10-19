@@ -37,3 +37,20 @@ def test_weekly_review_flags_a_clearly_worse_account(monkeypatch):
     assert flagged and "建议复盘" in row and "4 笔 / 0%" in row
     assert "笔数还少" in next(ln for ln in lines if ln.startswith("| 低吸"))
     assert "建议复盘" in review.push_text(lines)
+
+
+def test_run_weekly_review_appends_to_report_and_pushes(tmp_path):
+    import run
+    conn = db.connect(":memory:")
+    report = tmp_path / "r.md"
+    report.write_text("# 报告", encoding="utf-8")
+    sent, logs = [], []
+
+    class N:
+        def send(self, t, c):
+            sent.append(t)
+    cal = [date(2026, 10, 23), date(2026, 10, 26)]
+    run._weekly_review(conn, date(2026, 10, 23), cal, report, N(), logs.append)
+    assert "## 每周核对" in report.read_text(encoding="utf-8") and sent == ["每周核对"]
+    run._weekly_review(conn, date(2026, 10, 22), cal + [date(2026, 10, 22)], report, N(), logs.append)
+    assert sent == ["每周核对"]                                  # 不是周末最后一个交易日：不发
