@@ -305,6 +305,8 @@ VIBE_START_TIMEOUT = 60           # 秒：临时起 Vibe API 等它就绪的上�
 
 # 实盘跟单（docs/specs/2026-09-29-live-trading-design.md）
 LIVE_ACCOUNT = "regime_main"     # 2026-10-09 起实盘跟情绪轮动（原来跟 rebound_main）
+AI_ACCOUNT = "ai_experiment"     # 独立 AI 模拟账户；当前只允许桥接到 dryrun，不改变旧实盘跟单来源
+AI_TOTAL_BUDGET = 10000.0        # AI 实验本金硬上限，不用旧 LIVE_BUDGET 的全部可用资金口径
 LIVE_BUDGET = None               # 实盘单笔最多用多少资金；None = 全部可用资金（2026-10-08 用户允许用全部资金，原来是 2 万）
 LIVE_MAX_POSITIONS = 1
 LIVE_MAX_BUYS_PER_DAY = 2

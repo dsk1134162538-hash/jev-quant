@@ -19,6 +19,7 @@ from datetime import date, datetime, timedelta
 from jevq import config, ledger
 from jevq.data import tencent
 from jevq.live import store as live_store
+from jevq.live.ai_bridge import sync_ai_fills
 from jevq.live.broker import BrokerError, INFLIGHT_CODES, REJECT_CODES
 from jevq.live.store import Intent, LivePosition
 
@@ -80,6 +81,8 @@ class Executor:
             self._while_paused(now)
             return   # 暂停中零 broker 调用
 
+        if live_store.mode(self.conn) == "dryrun":
+            sync_ai_fills(self.conn)   # AI 成交只在演练模式桥接；live/off 下不会生成新意图
         self._gateway_precheck(now)
         self._self_check(now)
         self._note_sell_intents(now)
@@ -109,6 +112,10 @@ class Executor:
     def _buy(self, intent: Intent) -> None:
         conn, now = self.conn, self.clock()
 
+        if intent.source == "ai" and live_store.mode(conn) != "dryrun":
+            # 双保险：即使有人直接写入 AI 意图或把全局模式切到 live，也绝不走真实 place()。
+            live_store.finish_intent(conn, intent.id, "skipped", "AI 桥接尚未启用实盘", now)
+            return
         if self._has_order(intent.id):
             # 兜底：正常流程里 add_order(sending) 后立刻 finish_intent，这里走到说明中途出过意外
             # （比如两次写库之间进程死过），无论如何都不能再下一次单。
@@ -157,8 +164,14 @@ class Executor:
         except Exception:
             return
         cap = balance if config.LIVE_BUDGET is None else min(balance, config.LIVE_BUDGET)
+        if intent.source == "ai":
+            sim_amount = intent.sim_shares * intent.sim_price
+            sim_budget = sim_amount + ledger.buy_fee(sim_amount)
+            cap = min(balance, config.AI_TOTAL_BUDGET, sim_budget)
         budget = cap * (1 - config.LIVE_CASH_BUFFER)
         shares = ledger.affordable_shares(budget, price)
+        if intent.source == "ai":
+            shares = min(shares, intent.sim_shares)   # 行情字段异常时也不能超过 AI 已决策股数
         if shares == 0:
             live_store.finish_intent(conn, intent.id, "skipped", "买不起一手", now)
             return
@@ -194,7 +207,8 @@ class Executor:
         live_store.add_order(conn, intent.id, now, "buy", intent.code, price, shares, "dryrun")
         cost = shares * intent.sim_price + ledger.buy_fee(shares * intent.sim_price)
         live_store.put_position(conn, LivePosition(intent.code, shares, cost, intent.sim_price, now.date(),
-                                                    intent.sim_price))
+                                                    intent.sim_price,
+                                                    live_store.account_for_source(intent.source)))
         live_store.finish_intent(conn, intent.id, "done", "演练", now)
         self._notify("买入（演练）", f"{intent.name} {shares}股 @{intent.sim_price}（限价 {price}，没下单）")
 
@@ -266,7 +280,8 @@ class Executor:
             avg_price = matched.avg_price if matched.avg_price else price
             cost = filled * avg_price + ledger.buy_fee(filled * avg_price)
             live_store.put_position(conn, LivePosition(intent.code, filled, cost, avg_price, now.date(),
-                                                        intent.sim_price))
+                                                        intent.sim_price,
+                                                        live_store.account_for_source(intent.source)))
             status = "filled" if filled >= shares else "partial"
             note = "已成交" if status == "filled" else "部分成交，已撤单"
             live_store.update_order(conn, order_id, now, status=status, filled=filled, avg_price=avg_price,
@@ -393,13 +408,14 @@ class Executor:
     # ---- 卖出（按状态对齐）----
 
     def _note_sell_intents(self, now: datetime) -> None:
-        """模拟盘的卖出意图只记「这次怎么决定的」，结果看 live_orders；remote 意图保持 new（收尾见 _finish_remote_sells）。"""
+        """模拟盘/AI 的卖出意图只记「这次怎么决定的」，结果看 live_orders；remote 意图保持 new。"""
         held = live_store.positions(self.conn)
         for intent in live_store.new_intents(self.conn):
-            if intent.side != "sell" or intent.source != "sim":
+            if intent.side != "sell" or intent.source not in ("sim", "ai"):
                 continue
             p = held.get(intent.code)
-            if p is None:
+            account = live_store.account_for_source(intent.source)
+            if p is None or p.sim_account != account:
                 note = "程序没有这只"
             elif p.buy_date >= now.date():
                 note = "当天买的，下个交易日卖"
@@ -408,13 +424,16 @@ class Executor:
             live_store.finish_intent(self.conn, intent.id, "done", note, now)
 
     def _to_sell(self, now: datetime) -> list[str]:
-        """待卖：程序持仓里昨天或更早买的，且模拟账户已不持有，或有 remote 卖出意图（手机立即卖出）。"""
-        sim_held = {code for (code,) in self.conn.execute(
-            "SELECT code FROM positions WHERE account=? AND shares>0", (config.LIVE_ACCOUNT,))}
+        """待卖：程序持仓里昨天或更早买的，且该持仓对应的模拟账户已不持有，或有 remote 卖出意图。"""
+        sim_held = {(account, code) for account, code in self.conn.execute(
+            "SELECT account, code FROM positions WHERE account IN (?, ?) AND shares>0",
+            (config.LIVE_ACCOUNT, config.AI_ACCOUNT))}
         remote = self.conn.execute("SELECT 1 FROM live_intents WHERE status='new' AND source='remote' "
                                    "AND side='sell' LIMIT 1").fetchone() is not None
+        ai_dryrun_only = live_store.mode(self.conn) == "dryrun"
         return sorted(code for code, p in live_store.positions(self.conn).items()
-                      if p.buy_date < now.date() and (remote or code not in sim_held))
+                      if (p.sim_account != config.AI_ACCOUNT or ai_dryrun_only)
+                      and p.buy_date < now.date() and (remote or (p.sim_account, code) not in sim_held))
 
     def _in_sell_window(self, now: datetime) -> bool:
         t = now.time()
@@ -745,7 +764,7 @@ class Executor:
         for intent in live_store.new_intents(self.conn):
             if intent.side == "buy":
                 live_store.finish_intent(self.conn, intent.id, "skipped", "暂停中", now)
-            elif intent.source == "sim":
+            elif intent.source in ("sim", "ai"):
                 live_store.finish_intent(self.conn, intent.id, "done", "暂停中延后", now)
             elif intent.source == "remote":
                 remote = True   # 保持 new，恢复后照常卖
@@ -1033,8 +1052,10 @@ class Executor:
         if filled > 0:
             cost = filled * avg_price + ledger.buy_fee(filled * avg_price)
             sim_price = self._intent_sim_price(row["intent_id"])
+            sim_account = self._intent_sim_account(row["intent_id"])
             live_store.put_position(conn, LivePosition(row["code"], filled, cost, avg_price,
-                                                        datetime.fromisoformat(row["ts"]).date(), sim_price))
+                                                        datetime.fromisoformat(row["ts"]).date(), sim_price,
+                                                        sim_account))
             self._notify("买入", f"{self._name(row['code'])} {filled}股 @{avg_price}（核对补记）")
         else:   # 买单落成没成交就没有对账兜底了（对账只减不加）：告诉用户去 App 看一眼
             self._notify("买入", f"{self._name(row['code'])} 核对为没成交（{note}），请在 App 里确认")
@@ -1049,6 +1070,12 @@ class Executor:
             return 0.0
         row = self.conn.execute("SELECT sim_price FROM live_intents WHERE id=?", (intent_id,)).fetchone()
         return row[0] if row else 0.0
+
+    def _intent_sim_account(self, intent_id) -> str:
+        if intent_id is None:
+            return config.LIVE_ACCOUNT
+        row = self.conn.execute("SELECT source FROM live_intents WHERE id=?", (intent_id,)).fetchone()
+        return live_store.account_for_source(row[0] if row else None)
 
     # ---- 读取 / 通知 / 自动暂停（公共基础设施）----
 

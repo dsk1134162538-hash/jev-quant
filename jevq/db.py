@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS live_orders(
   price REAL, shares INTEGER, filled INTEGER, avg_price REAL, entrust_no TEXT, status TEXT,
   note TEXT, updated_ts TEXT);
 CREATE TABLE IF NOT EXISTS live_positions(
-  code TEXT PRIMARY KEY, shares INTEGER, cost REAL, buy_price REAL, buy_date TEXT, sim_buy_price REAL);
+  code TEXT PRIMARY KEY, shares INTEGER, cost REAL, buy_price REAL, buy_date TEXT, sim_buy_price REAL,
+  sim_account TEXT);
 CREATE TABLE IF NOT EXISTS live_state(key TEXT PRIMARY KEY, value TEXT);
 """
 
@@ -68,7 +69,8 @@ CREATE TABLE IF NOT EXISTS live_state(key TEXT PRIMARY KEY, value TEXT);
 MIGRATIONS = [("decisions", "trace", "TEXT"), ("notice_verdicts", "probs", "TEXT"),
               ("decisions", "strategy", "TEXT"), ("fills", "version", "INTEGER"),
               ("decisions", "version", "INTEGER"), ("closes", "volume", "REAL"),   # closes.volume：日成交量（手）
-              ("closes", "pre_close", "REAL")]   # 当天行情的昨收（已按除权除息调整过），算涨跌幅用（10-19 起存）
+              ("closes", "pre_close", "REAL"),   # 当天行情的昨收（已按除权除息调整过），算涨跌幅用（10-19 起存）
+              ("live_positions", "sim_account", "TEXT")]   # 旧行为 NULL，读取时回退 LIVE_ACCOUNT
 
 
 def _migrate(conn: sqlite3.Connection):

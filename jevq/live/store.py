@@ -30,6 +30,12 @@ class LivePosition:
     buy_price: float
     buy_date: date
     sim_buy_price: float
+    sim_account: str = config.LIVE_ACCOUNT
+
+
+def account_for_source(source: str | None) -> str:
+    """只有显式 AI 来源才映射到 AI 账户；旧数据、空值和其它来源保持原行为。"""
+    return config.AI_ACCOUNT if source == "ai" else config.LIVE_ACCOUNT
 
 
 # ---- live_state / 模式 ----
@@ -120,16 +126,17 @@ def finish_intent(conn: sqlite3.Connection, intent_id: int, status: str, note: s
 
 def positions(conn: sqlite3.Connection) -> dict[str, LivePosition]:
     rows = conn.execute(
-        "SELECT code, shares, cost, buy_price, buy_date, sim_buy_price FROM live_positions").fetchall()
-    return {code: LivePosition(code, shares, cost, buy_price, date.fromisoformat(buy_date), sim_buy_price)
-            for code, shares, cost, buy_price, buy_date, sim_buy_price in rows}
+        "SELECT code, shares, cost, buy_price, buy_date, sim_buy_price, sim_account FROM live_positions").fetchall()
+    return {code: LivePosition(code, shares, cost, buy_price, date.fromisoformat(buy_date), sim_buy_price,
+                               sim_account or config.LIVE_ACCOUNT)
+            for code, shares, cost, buy_price, buy_date, sim_buy_price, sim_account in rows}
 
 
 def put_position(conn: sqlite3.Connection, p: LivePosition) -> None:
     conn.execute(
-        "INSERT OR REPLACE INTO live_positions(code, shares, cost, buy_price, buy_date, sim_buy_price) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (p.code, p.shares, p.cost, p.buy_price, p.buy_date.isoformat(), p.sim_buy_price))
+        "INSERT OR REPLACE INTO live_positions(code, shares, cost, buy_price, buy_date, sim_buy_price, sim_account) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (p.code, p.shares, p.cost, p.buy_price, p.buy_date.isoformat(), p.sim_buy_price, p.sim_account))
     conn.commit()
 
 

@@ -1,3 +1,4 @@
+import math
 import sqlite3
 from datetime import date, datetime
 
@@ -54,12 +55,17 @@ class Ledger:
     def free_slots(self, account: str) -> int:
         return MAX_POSITIONS - len(self.positions(account))
 
-    def buy(self, account: str, q: Quote, ts: datetime, reason: str) -> Fill | None:
+    def buy(self, account: str, q: Quote, ts: datetime, reason: str,
+            budget: float | None = None) -> Fill | None:
+        """budget 是含买入费用的单笔总预算；缺省保持原有账户配置行为。"""
+        if budget is not None and (not math.isfinite(budget) or budget <= 0):
+            raise ValueError("单笔买入预算必须是有限正数")
         if self.free_slots(account) <= 0 or self.holds(account, q.code):
             return None
         if q.suspended or q.price >= q.limit_up:
             return None
-        shares = affordable_shares(min(self.cash(account), MAX_PER_TRADE), q.price)
+        configured_budget = MAX_PER_TRADE if budget is None else budget
+        shares = affordable_shares(min(self.cash(account), configured_budget), q.price)
         if shares == 0:
             return None
         amount = shares * q.price
