@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "vite build",
+    "build": "vite build && node scripts/build-desktop.mjs",
     "preview": "vite preview --host 0.0.0.0",
-    "test:ui": "npm run build && node scripts/smoke.mjs"
+    "test:ui": "npm run build && node scripts/smoke.mjs",
+    "desktop:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-desktop.ps1",
+    "desktop:test": "npm run build && node scripts/desktop-smoke.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

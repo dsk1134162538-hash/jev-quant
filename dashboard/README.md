@@ -6,7 +6,31 @@
 
 > **当前全部为演示数据。** 本目录没有后端、真实持久化、实时行情或交易能力；策略状态仍为 `insufficient_data`，AI 真实委托未启用。
 
-## 本地运行
+## Windows 桌面版
+
+在本目录执行：
+
+```bash
+npm run desktop:install
+```
+
+脚本会在依赖缺失时自动安装依赖、构建离线单文件，并在当前 Windows 用户桌面创建 **“衡策 AI 量化研究室”** 快捷方式。以后直接双击桌面图标即可，不需要启动开发服务器或保持终端运行。
+
+桌面快捷方式使用本机 Microsoft Edge 的应用窗口模式，直接打开 `dist/desktop.html`，不显示普通浏览器地址栏。它不是独立 exe，也不要求额外下载 Electron。家里电脑拉取仓库后，在 `dashboard` 目录执行同一命令即可按本机路径重新创建图标。
+
+如已构建且只想重建快捷方式：
+
+```bash
+npm run desktop:install -- -NoBuild
+```
+
+桌面窗口回归测试：
+
+```bash
+npm run desktop:test
+```
+
+## 本地开发
 
 建议使用 Node.js 20 或更高版本。
 
@@ -23,7 +47,7 @@ npm run dev -- --port 7100 --strictPort
 npm run build
 ```
 
-静态产物输出到 `dist/`。该目录和 `node_modules/`、`artifacts/` 均已加入仓库根目录的 `.gitignore`，`package-lock.json` 应保留提交。
+静态产物输出到 `dist/`：普通站点入口为 `index.html`，桌面离线单文件为 `desktop.html`。该目录和 `node_modules/`、`artifacts/` 均已加入仓库根目录的 `.gitignore`，`package-lock.json` 应保留提交。
 
 ## 浏览器回归测试
 
