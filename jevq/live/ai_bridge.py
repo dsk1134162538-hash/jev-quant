@@ -11,6 +11,16 @@ from jevq.live import store as live_store
 CURSOR_KEY = "ai_bridge:last_fill_id"
 
 
+def pending_codes(conn: sqlite3.Connection) -> list[str]:
+    """游标之后还没桥接的 AI 成交涉及的股票代码（只读，不开事务）。"""
+    try:
+        cursor = int(live_store.get_state(conn, CURSOR_KEY) or 0)
+    except ValueError:
+        return []
+    return [c for (c,) in conn.execute(
+        "SELECT DISTINCT code FROM fills WHERE account=? AND id>? ORDER BY code", (config.AI_ACCOUNT, cursor))]
+
+
 def sync_ai_fills(conn: sqlite3.Connection, names: dict[str, str] | None = None) -> int:
     """把尚未桥接的 AI 模拟成交写成 source='ai' 的意图，返回新增条数。"""
     if live_store.mode(conn) != "dryrun":
