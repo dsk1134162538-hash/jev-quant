@@ -34,11 +34,10 @@ try {
   page.on('console', (message) => message.type() === 'error' && errors.push(message.text()))
 
   await page.goto('http://dashboard.local/', { waitUntil: 'networkidle' })
-  await page.getByRole('heading', { name: '早上好，Jamo' }).waitFor()
+  await page.getByRole('heading', { name: '今日策略：防守观察' }).waitFor()
+  await page.getByText('万向钱潮', { exact: true }).waitFor()
+  if ((await page.locator('body').innerText()).includes('演示数据')) throw new Error('真实快照页面仍包含演示数据标记')
   await page.screenshot({ path: resolve(artifacts, 'dashboard-desktop.png'), fullPage: true })
-
-  await page.getByRole('button', { name: '深证成指', exact: true }).click()
-  await page.getByRole('img', { name: '深证成指演示走势' }).waitFor()
   await page.getByRole('button', { name: '查看完整决策依据' }).click()
   await page.getByRole('dialog').waitFor()
   await page.getByRole('button', { name: '关闭决策详情' }).click()
@@ -48,7 +47,7 @@ try {
   await page.getByPlaceholder('搜索决策、动作或类型').fill('不存在的决策')
   await page.getByRole('heading', { name: '没有匹配的决策' }).waitFor()
   await page.getByPlaceholder('搜索决策、动作或类型').fill('')
-  await page.getByRole('button', { name: '复盘', exact: true }).click()
+  await page.getByRole('button', { name: '空仓', exact: true }).click()
   await page.locator('.decision-row').waitFor()
   if (await page.locator('.decision-row').count() !== 1) throw new Error('决策动作筛选结果不正确')
 
@@ -59,9 +58,9 @@ try {
 
   await page.getByRole('button', { name: '复盘时间线', exact: true }).click()
   await page.getByRole('heading', { name: '复盘决策质量，而非只看盈亏' }).waitFor()
-  await page.getByRole('button', { name: /盘中复盘/ }).click()
+  await page.locator('.review-nav').getByRole('button', { name: /盘中复盘/ }).click()
   await page.getByRole('button', { name: '导出盘中复盘' }).waitFor()
-  await page.getByRole('button', { name: /盘前复盘/ }).click()
+  await page.locator('.review-nav').getByRole('button', { name: /盘前复盘/ }).click()
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: '导出盘前复盘' }).click()
   const download = await downloadPromise

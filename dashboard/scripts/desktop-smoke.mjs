@@ -27,13 +27,13 @@ try {
   page.on('pageerror', (error) => errors.push(error.message))
   page.on('console', (message) => message.type() === 'error' && errors.push(message.text()))
 
-  await page.getByRole('heading', { name: '早上好，Jamo' }).waitFor()
+  await page.getByRole('heading', { name: '今日策略：防守观察' }).waitFor()
   await page.getByRole('button', { name: '复盘时间线', exact: true }).click()
   await page.getByRole('heading', { name: '复盘决策质量，而非只看盈亏' }).waitFor()
   await page.getByRole('button', { name: '决策记录' }).click()
   await page.getByRole('heading', { name: '每一次判断，都留下依据' }).waitFor()
   await page.getByRole('button', { name: '今日总览', exact: true }).click()
-  await page.getByRole('heading', { name: '早上好，Jamo' }).waitFor()
+  await page.getByRole('heading', { name: '今日策略：防守观察' }).waitFor()
   await page.screenshot({ path: resolve(artifacts, 'desktop-app.png') })
 
   if (!page.url().startsWith('file:')) throw new Error(`桌面窗口未直接加载本地文件：${page.url()}`)
