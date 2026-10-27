@@ -138,6 +138,40 @@ class AIBridgeTest(unittest.TestCase):
         self.conn.commit()
         self.assertEqual(live_store.positions(self.conn)["600001"].sim_account, config.LIVE_ACCOUNT)
 
+    def test_put_position_refuses_to_overwrite_other_accounts_holding(self):
+        live_store.put_position(self.conn, LivePosition("600001", 100, 1005, 10, date(2026, 10, 20), 10))
+        with self.assertRaisesRegex(ValueError, "拒绝覆盖"):
+            live_store.put_position(self.conn, LivePosition(
+                "600001", 200, 2005, 10, date(2026, 10, 21), 10, config.AI_ACCOUNT))
+        held = live_store.positions(self.conn)["600001"]
+        self.assertEqual((held.shares, held.sim_account), (100, config.LIVE_ACCOUNT))
+        # 同账户加仓/改写仍然允许
+        live_store.put_position(self.conn, LivePosition("600001", 300, 3005, 10, date(2026, 10, 21), 10))
+        self.assertEqual(live_store.positions(self.conn)["600001"].shares, 300)
+
+    def test_ai_buy_skips_code_held_by_other_account(self):
+        self.ready()
+        old = config.LIVE_MAX_POSITIONS
+        config.LIVE_MAX_POSITIONS = 2
+        self.addCleanup(setattr, config, "LIVE_MAX_POSITIONS", old)
+        live_store.put_position(self.conn, LivePosition("600001", 100, 1005, 10, date(2026, 10, 20), 10))
+        self.conn.execute("INSERT INTO positions(account, code, shares, cost, buy_price, buy_date) "
+                          "VALUES (?, '600001', 100, 1005, 10, '2026-10-20')", (config.LIVE_ACCOUNT,))
+        self.conn.commit()   # 旧策略模拟账户仍持有，否则执行器会把这条演练持仓当成待卖
+        self.fill(code="600001", shares=100)
+        self.executor.step()
+        row = self.conn.execute("SELECT status, note FROM live_intents WHERE source='ai'").fetchone()
+        self.assertEqual(row, ("skipped", "这只已被另一个账户持有"))
+        self.assertEqual(live_store.positions(self.conn)["600001"].sim_account, config.LIVE_ACCOUNT)
+
+    def test_ai_intent_gets_name_from_quote(self):
+        self.ready()
+        self.fill(code="600001", shares=100)
+        self.executor.quotes = lambda codes: {c: quote(code=c, name="甲公司") for c in codes}
+        self.executor.step()
+        self.assertEqual(self.conn.execute("SELECT name FROM live_intents WHERE source='ai'").fetchone()[0],
+                         "甲公司")
+
     def test_ocr_read_failures_auto_pause_without_place(self):
         self.ready()
         self.fill(shares=100)

@@ -2,4 +2,4 @@ akshare>=1.18
 pandas
 requests
 pytest
-pywebview
+pywebview; sys_platform == "win32"

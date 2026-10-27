@@ -133,6 +133,10 @@ def positions(conn: sqlite3.Connection) -> dict[str, LivePosition]:
 
 
 def put_position(conn: sqlite3.Connection, p: LivePosition) -> None:
+    """live_positions 主键是 code：同一只票不能同时记在两个模拟账户名下，否则后写的会静默覆盖先写的。"""
+    row = conn.execute("SELECT sim_account FROM live_positions WHERE code=?", (p.code,)).fetchone()
+    if row is not None and (row[0] or config.LIVE_ACCOUNT) != p.sim_account:
+        raise ValueError(f"{p.code} 已记在账户 {row[0] or config.LIVE_ACCOUNT} 名下，拒绝覆盖为 {p.sim_account}")
     conn.execute(
         "INSERT OR REPLACE INTO live_positions(code, shares, cost, buy_price, buy_date, sim_buy_price, sim_account) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",

@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta
 from jevq import config, ledger
 from jevq.data import tencent
 from jevq.live import store as live_store
-from jevq.live.ai_bridge import sync_ai_fills
+from jevq.live.ai_bridge import pending_codes as live_store_pending_ai_codes, sync_ai_fills
 from jevq.live.broker import BrokerError, INFLIGHT_CODES, REJECT_CODES
 from jevq.live.store import Intent, LivePosition
 
@@ -82,7 +82,7 @@ class Executor:
             return   # 暂停中零 broker 调用
 
         if live_store.mode(self.conn) == "dryrun":
-            sync_ai_fills(self.conn)   # AI 成交只在演练模式桥接；live/off 下不会生成新意图
+            sync_ai_fills(self.conn, self._ai_names())   # AI 成交只在演练模式桥接；live/off 下不会生成新意图
         self._gateway_precheck(now)
         self._self_check(now)
         self._note_sell_intents(now)
@@ -143,6 +143,10 @@ class Executor:
         self._reconcile(now, client_positions)   # 下单前对账，复用刚读到的持仓
         if intent.code in client_positions and intent.code not in live_store.positions(conn):
             live_store.finish_intent(conn, intent.id, "skipped", "你持有这只", now)
+            return
+        owner = live_store.positions(conn).get(intent.code)
+        if owner is not None and owner.sim_account != live_store.account_for_source(intent.source):
+            live_store.finish_intent(conn, intent.id, "skipped", "这只已被另一个账户持有", now)
             return
         if live_store.buys_today(conn, now.date()) >= config.LIVE_MAX_BUYS_PER_DAY:
             live_store.finish_intent(conn, intent.id, "skipped", "今日买入已达上限", now)
@@ -457,6 +461,16 @@ class Executor:
     def _retry_later(self, code: str) -> None:
         # 从这一刻算起（不是从 step 开头算）：一轮下单+等待+撤单要一分多钟，从开头算会立刻重试
         self._next_sell_try[code] = self.clock() + timedelta(seconds=config.LIVE_SELL_RETRY)
+
+    def _ai_names(self) -> dict[str, str]:
+        """还没桥接的 AI 成交涉及的股票名（取行情里的名字）；取不到就空，意图里退回代码。"""
+        codes = live_store_pending_ai_codes(self.conn)
+        if not codes:
+            return {}
+        try:
+            return {c: q.name for c, q in self.quotes(codes).items() if q.name}
+        except Exception:
+            return {}
 
     def _name(self, code: str) -> str:
         row = self.conn.execute("SELECT name FROM live_intents WHERE code=? AND name<>'' ORDER BY id DESC LIMIT 1",
