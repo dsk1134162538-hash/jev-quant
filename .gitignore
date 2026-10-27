@@ -3,3 +3,6 @@ __pycache__/
 /data/
 *.sqlite
 .superpowers/**/*.diff
+dashboard/node_modules/
+dashboard/dist/
+dashboard/artifacts/
