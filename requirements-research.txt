@@ -1,0 +1,3 @@
+-r requirements.txt
+pyqlib==0.9.7
+matplotlib

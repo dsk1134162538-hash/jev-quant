@@ -6,3 +6,10 @@ __pycache__/
 dashboard/node_modules/
 dashboard/dist/
 dashboard/artifacts/
+dashboard/runtime/
+.cache/
+.test-bin/
+research/artifacts/
+research/*.log
+research/*.csv
+research/*.txt

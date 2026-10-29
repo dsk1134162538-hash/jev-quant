@@ -218,7 +218,8 @@ CAL = [date(2026, 10, d) for d in (8, 9, 12, 13, 14, 15)]
 
 def _held_conn(source="rebound"):
     conn = _conn()
-    conn.execute("INSERT INTO live_positions VALUES ('002658', 500, 3570.0, 7.14, '2026-10-08', 7.17)")
+    conn.execute("INSERT INTO live_positions(code, shares, cost, buy_price, buy_date, sim_buy_price) "
+                 "VALUES ('002658', 500, 3570.0, 7.14, '2026-10-08', 7.17)")
     if source:
         conn.execute("INSERT INTO regime_sources VALUES ('002658', ?, '2026-10-08T10:29:00')", (source,))
     conn.commit()
