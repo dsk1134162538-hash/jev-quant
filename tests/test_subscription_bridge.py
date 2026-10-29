@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from dashboard.decision_journal import DecisionJournal
-from dashboard.subscription_bridge import submit_answers
+from dashboard.subscription_bridge import create_snapshot, submit_answers
 from jevq.config import AI_ACCOUNT
 from jevq.models import Quote
 
@@ -113,3 +113,49 @@ def test_journal_reloads_external_subscription_records(tmp_path):
     assert [row["id"] for row in journal.records()] == ["AI-SUB-1"]
     assert journal.status()["enabled"] is True
     assert journal.status()["mode"] == "subscription"
+
+
+def test_snapshot_waits_for_market_breadth_before_eligibility(monkeypatch, tmp_path):
+    class Market:
+        def __init__(self):
+            self.ready = False
+            self.blocking_calls = 0
+
+        def payload(self, blocking=False):
+            if blocking:
+                self.blocking_calls += 1
+                self.ready = True
+            return {"marketBreadth": {"complete": self.ready, "stale": False},
+                    "sectorBreadth": {"complete": self.ready, "stale": False}}
+
+    class Connection:
+        def close(self):
+            pass
+
+    class Paper:
+        def _connect(self):
+            return Connection()
+
+        def _reconcile(self, conn, now):
+            pass
+
+        def _candidate_codes(self, conn, context):
+            return []
+
+    class Service:
+        def __init__(self):
+            self.market = Market()
+            self.paper = Paper()
+
+        def payload(self):
+            return {"snapshot": {"phase": "盘中"}, **self.market.payload()}
+
+        def _paper_quotes(self, codes):
+            return {}
+
+    service = Service()
+    monkeypatch.setattr("dashboard.subscription_bridge.DashboardService", lambda: service)
+    result = create_snapshot(tmp_path / "snapshot.json", clock=lambda: NOW)
+    assert service.market.blocking_calls == 1
+    assert result["eligible"] is False
+    assert result["reason"].startswith("候选代码为空")

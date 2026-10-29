@@ -65,6 +65,7 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now) -> dict:
     os.environ["DASHBOARD_DECISION_SOURCE"] = "subscription"
     now = clock()
     service = DashboardService()
+    service.market.payload(blocking=True)
     context = service.payload()
     market = context.get("marketBreadth", {})
     sectors = context.get("sectorBreadth", {})
