@@ -81,3 +81,7 @@ fill_id,account,code,sell_date,sell_price,after_high,day_close,next_date,next_hi
 168,rebound_shadow,002748,2026-10-29,10.75,11.05,10.64,,,
 174,rebound_main,000753,2026-10-29,4.59,4.65,4.54,,,
 176,regime_main,000753,2026-10-29,4.59,4.65,4.54,,,
+178,board_main,600118,2026-10-30,58.18,58.18,,,,
+179,board_shadow,600118,2026-10-30,58.18,58.18,,,,
+180,rebound_shadow,603058,2026-10-30,7.32,7.32,,,,
+181,lowbuy_main,002315,2026-10-30,27.15,27.15,,,,
