@@ -7,10 +7,11 @@ import subprocess
 from datetime import date
 from pathlib import Path
 
+from research import strategy_lifecycle
 
-PROJECT_ROOT = Path(
-    r"C:\Users\Think\Documents\kimi\tasks\2026-10-26\20-47-12-0ee8631d\jev-quant"
-)
+
+# 原来写死成 Kimi 临时工作目录；跟着本文件所在的仓库走（2026-11-01 迁到正式目录时改）
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(ctx):
@@ -42,6 +43,25 @@ def run(ctx):
     test = summary["results"]["test"]["model"]
     quality = summary["quality"]["test"]
     data_as_of = summary["data"]["price_end"]
+
+    # 训练产物生成后立刻过验收门：普通不达标只是研究结论，不是训练失败。
+    registry = root / "research" / "artifacts" / "strategy-lifecycle"
+    release = strategy_lifecycle.evaluate(output_dir, registry)
+    accepted = release.get("accepted") is True
+    lifecycle = {
+        "evaluated": True,
+        "accepted": accepted,
+        "candidateId": release.get("candidate_id"),
+        "releaseScope": release.get("releaseScope"),
+        "liveTrading": release.get("liveTrading"),
+        "reasons": list(release.get("reasons") or []),
+        "registryPath": str(registry),
+    }
+    snapshot = strategy_lifecycle.status(registry)
+    champion = snapshot.get("champion") if isinstance(snapshot, dict) else None
+    # 回测合格只代表等待模拟验证，不能把 paper_candidate 误报成 champion。
+    paper_champion_id = champion.get("candidate_id") if isinstance(champion, dict) else None
+
     return {
         "artifact": {
             "status": process_result["status"],
@@ -59,7 +79,9 @@ def run(ctx):
             "testDailyMeanTStat": test["daily_mean_t_stat"],
             "deploymentEligible": summary["deployment_eligible"],
             "tradingConnected": False,
-        }
+        },
+        "lifecycle": lifecycle,
+        "paperChampionId": paper_champion_id,
     }
 
 

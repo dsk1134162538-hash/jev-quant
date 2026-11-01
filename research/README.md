@@ -40,6 +40,16 @@
 
 每日自动重训入口为 `research/train_kline_automation.py`，调用项目 `.venv` 刷新真实数据并输出研究状态。它只执行研究代码，不导入实时盯盘、账户或交易模块；输入数据未变化时返回 `unchanged`。
 
+## 策略闭环：数据 → 训练 → 回测 → 模拟验证 → 发布 → 复盘
+
+1. **数据／训练**：`research.kline_model --refresh` 刷新真实行情并生成模型、预测和逐日收益；`research.train_kline_automation` 在训练后自动进入回测验收。
+2. **回测**：`research.strategy_lifecycle evaluate --candidate research/artifacts/kline-model` 重新读取并哈希四项必需产物。固定门槛为测试样本至少 200、交易至少 30、Spearman IC 与 IR 均大于 0、最大回撤不低于 −25%，并要求 `deployment_eligible=true`、输入哈希和测试日期有效。合格只登记 `paper_candidate.json`，不是 champion。
+3. **模拟验证**：`research.candidate_paper_bridge` 校验产物哈希后，按当日 `entry_date`、测试集、`selected=true` 和验证集分数门槛选股；`dashboard/subscription_bridge.py` 只把当前持仓与模型候选交给既有隔离模拟流程，DeepSeek 的判断仍受模拟风控约束。产物被篡改、候选为空或无登记候选时均不放行。
+4. **发布**：每轮候选模拟完成后自动 `record` 并 `review`。也可使用 `python -m research.paper_validation record --candidate-id <ID> --run <JSON>` 和 `review --candidate-id <ID>`。只有至少 20 个不同模拟交易日、60 轮 completed、10 笔成交，且无错误、无对账失败、总收益大于 0、最大回撤不低于 −10%，才写入 paper-only `champion.json`。
+5. **复盘**：后续每轮都会重算全部候选模拟记录；不再达标时撤销同一候选的 champion，其他候选的 champion 不受影响。`python -m research.strategy_lifecycle status` 查看真实候选、champion 和最新复盘。
+
+闭环全部限定 `paper_only`、`liveTrading=false`，不会连接或启用实盘。当前真实 K 线模型未通过回测门：测试 IC 为 −0.0063、最大回撤为 −25.83%，因此没有 paper candidate，也没有 champion；临时目录中的闭环测试不代表真实策略已合格。
+
 ## 五日横截面相对强弱模型
 
 `cross_sectional_model.py` 使用同一组 41 个量价特征，但训练目标改为：T 日收盘生成信号，T+1 开盘至 T+6 开盘的五日收益先相对沪深 300 去市场 beta，再按同一信号日股票池转换成横截面排名。默认使用 504 个信号日训练、126 日验证、126 日样本外测试、126 日步长；训练／验证／测试之间保留 6 日隔离，并按实际退出日再次 purge。LightGBM 只用验证集 early stopping，不根据测试折调参。

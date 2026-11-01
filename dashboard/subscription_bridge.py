@@ -20,6 +20,8 @@ from dashboard.server import DashboardService
 from jevq.config import AI_ACCOUNT, AI_TOTAL_BUDGET
 from jevq.models import Quote
 from jevq.notify import notifier_from_env
+from research.candidate_paper_bridge import DEFAULT_REGISTRY, load_candidate_selection
+from research.paper_validation import record_run, review as review_paper_run
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "dashboard" / "runtime"
@@ -32,10 +34,9 @@ PAPER_PATH = RUNTIME / "ai_paper.sqlite"
 class SubscriptionJudge:
     """把一次订阅任务的结构化答案适配到现有两阶段判断协议。"""
 
-    model_name = "kimi-work-subscription"
-
-    def __init__(self, answers: dict):
+    def __init__(self, answers: dict, model_name: str = "kimi-work-subscription"):
         self.answers = answers
+        self.model_name = model_name
 
     def ask(self, state: dict, questions: dict, timeout=None, deadline=None) -> dict:
         del state, timeout, deadline
@@ -60,10 +61,12 @@ def _load_quote(value: dict) -> Quote:
     return Quote(**{**value, "ts": datetime.fromisoformat(value["ts"])})
 
 
-def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now) -> dict:
+def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
+                    registry: Path = DEFAULT_REGISTRY) -> dict:
     """抓取一次真实只读行情和模拟账户，供订阅任务语义判断。"""
     os.environ["DASHBOARD_DECISION_SOURCE"] = "subscription"
     now = clock()
+    selection = load_candidate_selection(now.date(), registry)
     service = DashboardService()
     service.market.payload(blocking=True)
     context = service.payload()
@@ -79,7 +82,13 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now) -> dict:
     conn = paper._connect()
     try:
         paper._reconcile(conn, now)
-        codes = paper._candidate_codes(conn, context)
+        if selection is None:
+            codes = paper._candidate_codes(conn, context)
+        else:
+            # 训练候选在场时股票池只由模拟持仓 + 当日候选组成；
+            # 传空行业/观察的 context 复用同一查询，取到的就是持仓。
+            held = paper._candidate_codes(conn, {"sectorBreadth": {}, "observations": []})
+            codes = list(dict.fromkeys([*held, *selection["codes"]]))
     finally:
         conn.close()
     quotes = service._paper_quotes(codes)
@@ -92,6 +101,15 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now) -> dict:
     finally:
         conn.close()
     snapshot_id = now.isoformat(timespec="seconds")
+    constraints = {"account": AI_ACCOUNT, "liveTrading": False, "initialCapital": AI_TOTAL_BUDGET,
+                   "maxPositions": 1, "maxDailyBuys": 2, "minConfidence": 0.65,
+                   "tPlusOne": True, "lot": 100}
+    if selection is not None:
+        constraints["candidateId"] = selection["candidateId"]
+        constraints["candidateSelection"] = {
+            "candidateId": selection["candidateId"], "codes": list(selection["codes"]),
+            "entryDate": selection["entryDate"], "scoreCutoff": selection["scoreCutoff"],
+            "artifactSha256": selection["artifactSha256"]}
     value = {
         "snapshotId": snapshot_id,
         "createdAt": snapshot_id,
@@ -101,13 +119,14 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now) -> dict:
         "portfolioContext": {
             "snapshot": context.get("snapshot"), "marketBreadth": market, "sectorBreadth": sectors,
             "account": account, "quotes": paper._quote_payload(quotes),
-            "constraints": {"account": AI_ACCOUNT, "liveTrading": False, "initialCapital": AI_TOTAL_BUDGET,
-                            "maxPositions": 1, "maxDailyBuys": 2, "minConfidence": 0.65,
-                            "tPlusOne": True, "lot": 100},
+            "constraints": constraints,
         },
     }
     _atomic_json(output, value)
-    return {"eligible": True, "snapshotId": snapshot_id, "codes": codes, "snapshotPath": str(output)}
+    result = {"eligible": True, "snapshotId": snapshot_id, "codes": codes, "snapshotPath": str(output)}
+    if selection is not None:
+        result["candidateId"] = selection["candidateId"]
+    return result
 
 
 def notify_result(notifier, record: dict, latest: dict, reconciled: bool) -> None:
@@ -140,7 +159,9 @@ def notify_result(notifier, record: dict, latest: dict, reconciled: bool) -> Non
 
 def submit_answers(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANSWERS_PATH,
                    decisions_path: Path = DECISIONS_PATH, paper_path: Path = PAPER_PATH,
-                   clock=datetime.now, notifier=None) -> dict:
+                   clock=datetime.now, notifier=None,
+                   model_name: str = "kimi-work-subscription",
+                   registry: Path = DEFAULT_REGISTRY) -> dict:
     """校验订阅答案后复用本地账本；任何异常都不会生成真实委托。"""
     notifier = notifier or notifier_from_env(max_per_day=150)
     now = clock()
@@ -156,7 +177,7 @@ def submit_answers(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANS
     quotes = {code: _load_quote(value) for code, value in snapshot["quotes"].items()}
     if not all(_quote_valid(quote, now) for quote in quotes.values()):
         raise ValueError("快照内候选行情已过期，拒绝处理模拟策略")
-    judge = SubscriptionJudge(answers)
+    judge = SubscriptionJudge(answers, model_name=model_name)
     paper = AdaptivePaperEngine(paper_path, judge=judge,
                                 quote_provider=lambda codes: {code: quotes[code] for code in codes}, clock=lambda: now)
     journal = DecisionJournal(decisions_path, judge=judge, clock=lambda: now,
@@ -175,10 +196,28 @@ def submit_answers(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANS
         notify_result(notifier, record, latest, paper_status["reconciled"])
     except Exception as exc:
         notification_error = str(exc)
-    return {"ok": True, "decisionId": record["id"], "strategyId": latest["id"],
-            "execution": latest["execution"], "reconciled": paper_status["reconciled"],
-            "liveTrading": False, "model": record["model"],
-            "notificationEnabled": notifier.enabled, "notificationError": notification_error}
+    result = {"ok": True, "decisionId": record["id"], "strategyId": latest["id"],
+              "execution": latest["execution"], "reconciled": paper_status["reconciled"],
+              "liveTrading": False, "model": record["model"],
+              "notificationEnabled": notifier.enabled, "notificationError": notification_error}
+    constraints = snapshot.get("portfolioContext", {}).get("constraints", {})
+    candidate_id = constraints.get("candidateId") if isinstance(constraints, dict) else None
+    if candidate_id:
+        run = {"ts": now.isoformat(), "status": "completed",
+               "reconciled": paper_status["reconciled"], "liveTrading": False,
+               "equity": paper_status["account"]["total"], "execution": latest["execution"]}
+        record_run(candidate_id, run, registry)
+        review = review_paper_run(candidate_id, registry)
+        result["candidateId"] = candidate_id
+        result["paperReview"] = {
+            "qualified": review.get("qualified"),
+            "championAction": review.get("championAction"),
+            "runCount": review.get("runCount"), "completedRuns": review.get("completedRuns"),
+            "distinctDays": review.get("distinctDays"), "fills": review.get("fills"),
+            "totalReturn": review.get("totalReturn"), "maxDrawdown": review.get("maxDrawdown"),
+            "reasons": review.get("reasons"), "reviewPath": review.get("review_path"),
+        }
+    return result
 
 
 def main() -> None:
