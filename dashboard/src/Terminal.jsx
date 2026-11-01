@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowRightLeft, Bot, Cable, CircleDot, Gauge, Radio } from 'lucide-react'
+import { ArrowRightLeft, Bot, Cable, ChevronDown, CircleDot, Radio } from 'lucide-react'
 
 const SIDE = { buy: '买', sell: '卖' }
 
@@ -212,8 +212,128 @@ function Status({ data, error, at }) {
           </li>
         ))}
       </ul>
-      {ai?.decision && (
-        <p className="t-ai"><Gauge size={14} aria-hidden="true" /><span>{ai.decision.time}</span><b>{ai.decision.action || ai.decision.title}</b></p>
+    </section>
+  )
+}
+
+const SECTIONS = [
+  ['market', '大盘'], ['sectors', '板块'], ['picks', '标的'], ['forecast', '预测'], ['review', '复盘'],
+]
+const ACTION_TONE = { 模拟买入: 'up', 模拟卖出: 'down', 观察: 'flat' }
+
+function nextRun(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const slots = [[9, 35], [13, 5]]
+  for (let i = 0; i < 8; i += 1) {
+    const day = new Date(d.getFullYear(), d.getMonth(), d.getDate() + i)
+    if (day.getDay() === 0 || day.getDay() === 6) continue
+    for (const [h, m] of slots) {
+      const t = new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, m)
+      if (t > d) {
+        const label = i === 0 ? '今天' : i === 1 ? '明天' : `${t.getMonth() + 1}-${t.getDate()}`
+        return `${label} ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+      }
+    }
+  }
+  return ''
+}
+
+function Thought({ t }) {
+  return (
+    <div className="t-thought">
+      {SECTIONS.map(([key, label]) => (t.analysis?.[key] ? (
+        <div className="t-sec" key={key}>
+          <h3>{label}</h3>
+          <p>{t.analysis[key]}</p>
+        </div>
+      ) : null))}
+    </div>
+  )
+}
+
+function AiMain({ ai, now }) {
+  const thoughts = ai?.thoughts || []
+  const latest = thoughts[0]
+  const [open, setOpen] = useState(null)
+  const loop = ai?.loop
+  return (
+    <section className="t-panel t-ai-main">
+      <header>
+        <h2>DeepSeek 盘中判断</h2>
+        {latest && <span className="t-dim mono">{latest.time} · 置信 {latest.confidence == null ? '—' : Math.round(latest.confidence * 100)}%</span>}
+      </header>
+      {!latest ? (
+        <div className="t-ai-empty">
+          <b>还没有判断</b>
+          <span>只在北京盘中每 5 分钟判断一次{now ? ` · 下一次 ${nextRun(now)}` : ''}{loop?.error ? ` · 上次出错：${loop.error}` : ''}</span>
+        </div>
+      ) : (
+        <>
+          <div className="t-verdict">
+            <b className={latest.regime === '进攻观察' ? 'up' : latest.regime === '防守观察' ? 'down' : 'flat'}>{latest.regime}</b>
+            <span>{latest.action}</span>
+          </div>
+          <Thought t={latest} />
+        </>
+      )}
+      {thoughts.length > 1 && (
+        <div className="t-history">
+          <h3>之前的判断</h3>
+          <ol>
+            {thoughts.slice(1).map((t) => (
+              <li key={t.id}>
+                <button onClick={() => setOpen(open === t.id ? null : t.id)} aria-expanded={open === t.id}>
+                  <span className="mono t-time">{t.time}</span>
+                  <b>{t.regime}</b>
+                  <span className="t-dim t-why">{t.analysis?.market}</span>
+                  <ChevronDown size={14} className={open === t.id ? 'rot' : ''} aria-hidden="true" />
+                </button>
+                {open === t.id && <Thought t={t} />}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function AiSide({ ai }) {
+  const acct = ai?.account
+  const plan = ai?.plan
+  const ret = acct ? (acct.total / 10000 - 1) * 100 : null
+  return (
+    <section className="t-panel t-ai-side">
+      <header><h2>AI 模拟账户</h2><span className="t-dim">1 万本金 · 不下真单</span></header>
+      <div className="t-acct-big">
+        <b className="mono">{acct ? num(acct.total, 0) : '—'}</b>
+        <span className={`mono ${tone(ret)}`}>{pct(ret)}</span>
+      </div>
+      {acct?.positionDetails?.length ? (
+        <ul className="t-ai-pos">
+          {acct.positionDetails.map((p) => {
+            const r = p.buyPrice ? (p.price / p.buyPrice - 1) * 100 : null
+            return (
+              <li key={p.code}><b>{p.code}</b><span className="mono">{p.shares} 股</span><span className="mono">{num(p.price)}</span>
+                <span className={`mono ${tone(r)}`}>{pct(r)}</span></li>
+            )
+          })}
+        </ul>
+      ) : <p className="t-empty">空仓</p>}
+      {plan && (
+        <div className="t-plan">
+          <h3>这一轮的操作 <span className="t-dim mono">{(plan.ts || '').slice(11, 16)} · {plan.posture} · 仓位上限 {Math.round((plan.positionPct || 0) * 100)}%</span></h3>
+          <ol>
+            {plan.orders.map((o) => (
+              <li key={o.code}>
+                <span className={`t-side ${ACTION_TONE[o.action] || 'flat'}`}>{o.action}</span>
+                <b>{o.name}</b>
+                <span className="t-dim t-why">{o.reason || '—'}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
       )}
     </section>
   )
@@ -236,14 +356,21 @@ export default function Terminal({ onDetail }) {
       <Breadth market={data?.market} />
       <main className="t-grid">
         <div className="t-left">
-          <Accounts accounts={data?.accounts || []} curves={data?.curves || {}} showShadow={showShadow} />
-          <button className="t-toggle" onClick={() => setShowShadow((v) => !v)}>{showShadow ? '收起影子账户' : '显示影子账户'}</button>
+          <AiMain ai={data?.ai} now={data?.now} />
         </div>
         <div className="t-right">
+          <AiSide ai={data?.ai} />
           <Status data={data} error={error} at={at} />
-          <Fills fills={data?.fills || []} />
         </div>
       </main>
+      <details className="t-legacy">
+        <summary><ChevronDown size={14} aria-hidden="true" />老规则账户（扫首板 / 超跌 / 低吸 / 情绪轮动，只作对照）</summary>
+        <div className="t-legacy-body">
+          <Accounts accounts={data?.accounts || []} curves={data?.curves || {}} showShadow={showShadow} />
+          <button className="t-toggle" onClick={() => setShowShadow((v) => !v)}>{showShadow ? '收起影子账户' : '显示影子账户'}</button>
+          <Fills fills={data?.fills || []} />
+        </div>
+      </details>
     </div>
   )
 }

@@ -56,3 +56,34 @@ def test_bridge_modules_have_no_broker_or_live_switch():
         text = (pathlib.Path(__file__).resolve().parents[1] / name).read_text(encoding="utf-8")
         for bad in ("GatewayBroker", "make_broker", "set_mode", "live_intents", "/orders", "XIADAN"):
             assert bad not in text, (name, bad)
+
+
+def test_analysis_text_question_is_in_schema_validated_and_kept_verbatim():
+    """dj 2026-11-01：面板要看 DeepSeek 自己写的分析，原话保存，不拼模板。"""
+    from dashboard.decision_journal import ANALYSIS_FIELDS, build_questions
+    from dashboard.kimi_judge import _convert_answer
+    q = build_questions(analysis=True)["analysis"]
+    schema = wb.answer_schema({"snapshotId": "s", "questions": {"analysis": q}})
+    assert set(schema["properties"]["analysis"]["required"]) == set(ANALYSIS_FIELDS)
+    raw = {k: f"{k} 的原话" for k in ANALYSIS_FIELDS}
+    assert _convert_answer(q, raw) == {"type": "text", "text": raw}
+    with pytest.raises(ValueError):
+        _convert_answer(q, {**raw, "review": "  "})
+    assert "analysis" not in build_questions()                          # 不要的地方不问，Kimi 老路径不受影响
+
+
+def test_record_keeps_analysis_and_previous_judgment_feeds_review(tmp_path):
+    from datetime import datetime
+    from dashboard.decision_journal import ANALYSIS_FIELDS, make_record
+    from dashboard.subscription_bridge import _previous_judgment
+    ctx = {"marketBreadth": {"up": 1, "down": 2, "upRatio": 33, "total": 3, "universe": 3, "limitUp": 0, "limitDown": 0},
+           "sectorBreadth": {"up": 1, "down": 1, "leaders": []}}
+    text = {k: f"{k}…" for k in ANALYSIS_FIELDS}
+    answers = {"regime": {"choice": "防守观察", "confidence": 0.7}, "action": {"choice": "空仓等待", "confidence": 0.8},
+               "analysis": {"type": "text", "text": text}}
+    rec = make_record(answers, ctx, datetime(2026, 11, 2, 9, 40))
+    assert rec["analysis"] == text
+    path = tmp_path / "d.jsonl"
+    assert _previous_judgment(path) is None
+    path.write_text(json.dumps(rec, ensure_ascii=False) + "\n", encoding="utf-8")
+    assert _previous_judgment(path)["analysis"]["forecast"] == "forecast…"

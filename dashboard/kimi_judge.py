@@ -64,6 +64,10 @@ def _question_text(name: str, question: dict) -> str:
                 f"  每个代码的动作只能是：{actions}。模拟卖出只针对当前持仓，模拟买入只针对非持仓。\n"
                 f"  输出 \"{name}\": {{\"posture\": \"姿态\", \"positionPct\": 数值, "
                 f"\"orders\": {{\"代码\": {{\"action\": \"动作\", \"confidence\": 0到1, \"reason\": \"简短证据\"}}}}}}")
+    if question["type"] == "text":
+        fields = "\n".join(f"  - {key}：{value}" for key, value in question["criteria"].items())
+        keys = ", ".join(f'"{key}": "文字"' for key in question["criteria"])
+        return f"- {name}：{question['instructions']}\n{fields}\n  输出 \"{name}\": {{{keys}}}"
     options = "；".join(f"{key}（{value}）" for key, value in question["criteria"].items())
     return (f"- {name}：{question['instructions']}\n  只能选一项：{options}\n"
             f"  输出 \"{name}\": {{\"choice\": \"选项名\", \"confidence\": 0到1}}")
@@ -118,6 +122,14 @@ def _convert_answer(question: dict, raw) -> dict:
         raise ValueError("单题回答不是对象")
     if question["type"] == "portfolio":
         return _convert_portfolio(question["criteria"], raw)
+    if question["type"] == "text":
+        text = {}
+        for key in question["criteria"]:
+            value = raw.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"分析缺少 {key}")
+            text[key] = value.strip()[:600]
+        return {"type": "text", "text": text}
     if question["type"] == "score":
         levels = list(question["criteria"])
         if not levels or set(raw) - set(levels):

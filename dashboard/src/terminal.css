@@ -211,3 +211,58 @@ tr.is-live { background: linear-gradient(90deg, rgba(231, 176, 74, 0.07), transp
 @media (max-width: 640px) {
   .term .t-accounts td { padding: 0; }
 }
+
+/* DeepSeek 自己写的分析：页面主体，原样展示 */
+.t-ai-main > header { padding: 12px 16px; }
+.t-verdict { display: flex; align-items: baseline; gap: 14px; padding: 16px 16px 6px; }
+.t-verdict b { font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
+.t-verdict span { font-size: 15px; color: var(--t-text); }
+.t-thought { display: grid; gap: 2px; padding: 4px 16px 14px; }
+.t-sec { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 14px; padding: 10px 0; border-top: 1px solid var(--t-line-soft); }
+.t-sec:first-child { border-top: 0; }
+.term .t-sec h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--t-accent); padding-top: 1px; }
+.term .t-sec p { margin: 0; font-size: 14px; line-height: 1.75; color: var(--t-text); max-width: 72ch; white-space: pre-wrap; }
+.t-ai-empty { display: grid; gap: 6px; padding: 28px 16px; }
+.t-ai-empty b { font-size: 18px; color: #fff; }
+.t-ai-empty span { color: var(--t-muted); }
+.t-history { border-top: 1px solid var(--t-line); }
+.term .t-history h3 { margin: 0; padding: 10px 16px 4px; font-size: 12px; font-weight: 500; color: var(--t-faint); }
+.t-history ol { list-style: none; margin: 0; padding: 0 0 6px; }
+.term .t-history li > button {
+  display: grid; grid-template-columns: 44px 70px minmax(0, 1fr) 16px; gap: 10px; align-items: center;
+  width: 100%; padding: 7px 16px; background: none; border: 0; text-align: left; color: var(--t-text); cursor: pointer;
+}
+.term .t-history li > button:hover { background: #141a22; }
+.t-history .rot { transform: rotate(180deg); }
+.t-history svg { color: var(--t-faint); transition: transform .2s ease-out; }
+.t-history .t-thought { background: #0e1218; border-top: 1px solid var(--t-line-soft); border-bottom: 1px solid var(--t-line-soft); }
+
+.t-acct-big { display: flex; align-items: baseline; gap: 12px; padding: 12px 14px 6px; }
+.t-acct-big b { font-size: 26px; font-weight: 700; color: #fff; }
+.t-ai-pos { list-style: none; margin: 0; padding: 4px 14px 10px; }
+.t-ai-pos li { display: grid; grid-template-columns: 1fr auto auto auto; gap: 10px; padding: 4px 0; }
+.t-ai-pos b { color: #fff; }
+.t-plan { border-top: 1px solid var(--t-line-soft); }
+.term .t-plan h3 { margin: 0; padding: 10px 14px 4px; font-size: 12px; font-weight: 600; color: var(--t-muted); }
+.t-plan ol { list-style: none; margin: 0; padding: 0 0 8px; max-height: 40vh; overflow: auto; }
+.t-plan li { display: grid; grid-template-columns: 64px minmax(0, auto) minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 6px 14px; }
+.t-plan li b { color: #fff; white-space: nowrap; }
+.t-plan .t-why { grid-column: auto; }
+
+/* 老规则：折叠在最下面 */
+.t-legacy { margin-top: var(--gap); }
+.t-legacy > summary {
+  display: flex; align-items: center; gap: 8px; list-style: none; cursor: pointer;
+  padding: 10px 2px; color: var(--t-faint); font-size: 12px;
+}
+.t-legacy > summary::-webkit-details-marker { display: none; }
+.t-legacy > summary svg { transition: transform .2s ease-out; }
+.t-legacy[open] > summary svg { transform: rotate(180deg); }
+.t-legacy > summary:hover { color: var(--t-muted); }
+.t-legacy-body { display: grid; gap: var(--gap); }
+@media (max-width: 640px) {
+  .t-sec { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .term .t-history li > button { grid-template-columns: 44px 64px minmax(0, 1fr) 16px; padding: 7px 12px; }
+}
+
+.term .t-history .t-why { grid-column: auto; font-size: 13px; }

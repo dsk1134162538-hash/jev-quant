@@ -61,6 +61,27 @@ def _load_quote(value: dict) -> Quote:
     return Quote(**{**value, "ts": datetime.fromisoformat(value["ts"])})
 
 
+def _previous_judgment(path: Path = None) -> dict | None:
+    """上一次 DeepSeek 自己写的分析（给它做复盘用）；读不到就是首次。"""
+    path = Path(path or DECISIONS_PATH)
+    if not path.exists():
+        return None
+    last = None
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    row = json.loads(line)
+                    if row.get("analysis"):
+                        last = row
+    except (OSError, ValueError):
+        return None
+    if last is None:
+        return None
+    return {"time": last.get("ts"), "regime": last.get("regime"), "action": last.get("action"),
+            "analysis": last["analysis"]}
+
+
 def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
                     registry: Path = DEFAULT_REGISTRY) -> dict:
     """抓取一次真实只读行情和模拟账户，供订阅任务语义判断。"""
@@ -115,11 +136,12 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
         "createdAt": snapshot_id,
         "context": context,
         "quotes": {code: _json_quote(quote) for code, quote in quotes.items()},
-        "questions": {**build_questions(), **build_portfolio_questions(quotes)},
+        "questions": {**build_questions(analysis=True), **build_portfolio_questions(quotes)},
         "portfolioContext": {
             "snapshot": context.get("snapshot"), "marketBreadth": market, "sectorBreadth": sectors,
             "account": account, "quotes": paper._quote_payload(quotes),
             "constraints": constraints,
+            "previous": _previous_judgment(),
         },
     }
     _atomic_json(output, value)
@@ -181,7 +203,7 @@ def submit_answers(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANS
     paper = AdaptivePaperEngine(paper_path, judge=judge,
                                 quote_provider=lambda codes: {code: quotes[code] for code in codes}, clock=lambda: now)
     journal = DecisionJournal(decisions_path, judge=judge, clock=lambda: now,
-                              on_record=paper.process_record)
+                              on_record=paper.process_record, analysis="analysis" in snapshot.get("questions", {}))
     journal.update_now(snapshot["context"])
     status = journal.status()
     if status["error"]:

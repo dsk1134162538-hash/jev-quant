@@ -46,6 +46,12 @@ def answer_schema(snapshot: dict) -> dict:
                                for level in criteria},
                 "required": list(criteria), "additionalProperties": False,
             }
+        elif question["type"] == "text":
+            properties[name] = {
+                "type": "object",
+                "properties": {key: {"type": "string", "minLength": 1, "maxLength": 600} for key in question["criteria"]},
+                "required": list(question["criteria"]), "additionalProperties": False,
+            }
         elif question["type"] == "portfolio":
             criteria = question["criteria"]
             order = {

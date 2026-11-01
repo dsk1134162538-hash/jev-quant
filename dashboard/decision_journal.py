@@ -14,8 +14,21 @@ ACTIONS = {"空仓等待": "不生成候选或交易指令", "仅观察候选": 
            "允许模拟小仓评估": "仅允许另行做 dryrun 风险评估，本服务仍不下单"}
 
 
-def build_questions() -> dict:
-    return {
+# DeepSeek 自己写的分析（dj 2026-11-01：要看 AI 的实时思考，不要模板话）；面板原样展示，不改写
+ANALYSIS_FIELDS = {
+    "market": "大盘判断：你现在怎么看大盘（结合指数、涨跌家数、涨跌停、成交额），为什么",
+    "sectors": "板块看法：哪些板块有资金和消息在推、哪些在退潮要回避，为什么",
+    "picks": "标的：候选里你最关注哪几只（写代码和名字），理由；没有就说为什么都不碰",
+    "forecast": "后续预测：接下来到收盘、以及明天，你预计会怎么走；写清楚什么情况说明你判断错了",
+    "review": "复盘：对照上一次判断（输入里的 previous），哪里说对了、哪里错了、这次怎么修正；没有上一次就写「首次判断」",
+}
+ANALYSIS_MAX = 400
+
+
+def build_questions(analysis: bool = False) -> dict:
+    extra = {"analysis": {"type": "text", "instructions": "用你自己的话写这五段分析，每段不超过 400 字，只依据输入里的数据。",
+                          "criteria": ANALYSIS_FIELDS}} if analysis else {}
+    return {**extra,
         "regime": {"type": "choice", "instructions": "只根据当前全市场宽度、指数和行业广度，选择当前研究状态；不要使用旧策略规则。",
                    "criteria": REGIMES},
         "action": {"type": "choice", "instructions": "选择研究动作。这不是交易指令，不得假设可以自动买卖。",
@@ -31,6 +44,7 @@ def make_record(answers: dict, context: dict, now: datetime, model: str = "unkno
     market = context["marketBreadth"]
     sectors = context["sectorBreadth"]
     leaders = "、".join(f"{row['name']} {row['change']:+.2f}%" for row in sectors["leaders"][:3])
+    analysis = (answers.get("analysis") or {}).get("text") if isinstance(answers.get("analysis"), dict) else None
     confidence = [answers[key].get("confidence") for key in ("regime", "action")]
     confidence = [float(value) for value in confidence if value is not None]
     return {
@@ -44,14 +58,15 @@ def make_record(answers: dict, context: dict, now: datetime, model: str = "unkno
         "stock": f"AI 研究动作：{action}。{ACTIONS[action]}；未生成 quote.json，未调用 buy 或 sell。",
         "trigger": "仅在新鲜全市场与行业数据完整时进行下一次判断；历史记录不被覆盖。",
         "invalidation": "行情过期、覆盖不足、行业数据失效或证据冲突时，本判断立即失效。",
-        "evidence": context, "answers": answers, "persisted": True,
+        "evidence": context, "answers": answers, "persisted": True, "analysis": analysis,
     }
 
 
 class DecisionJournal:
     def __init__(self, path: Path, judge=None, interval_seconds: float = 300, clock=datetime.now, on_record=None,
-                 event_cooldown_seconds: float = 60, external: bool = False):
+                 event_cooldown_seconds: float = 60, external: bool = False, analysis: bool = False):
         self.path = Path(path)
+        self.analysis = analysis
         self.judge = judge
         self.external = external
         self.interval_seconds = interval_seconds
@@ -150,7 +165,7 @@ class DecisionJournal:
         try:
             if self.judge is None:
                 raise RuntimeError("未配置 Kimi 判断器")
-            answers = self.judge.ask(context, build_questions())
+            answers = self.judge.ask(context, build_questions(self.analysis))
             model = getattr(self.judge, "model_name", "unknown")
             record = make_record(answers, context, self.clock(), model=model)
             line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"

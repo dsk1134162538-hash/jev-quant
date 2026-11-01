@@ -143,7 +143,8 @@ class TerminalData:
         except (OSError, ValueError):
             return None
 
-    def payload(self, quotes: dict, market_breadth: dict, paper_account: dict | None, decisions: list) -> dict:
+    def payload(self, quotes: dict, market_breadth: dict, paper_account: dict | None, decisions: list,
+                paper_status: dict | None = None) -> dict:
         now = datetime.now()
         today = now.date()
         out: dict = {"now": now.isoformat(timespec="seconds"), "accounts": [], "fills": [], "curves": {},
@@ -198,17 +199,6 @@ class TerminalData:
                     "live": acct == config.LIVE_ACCOUNT, "equity": round(equity, 2), "cash": round(cash_row[0], 2),
                     "today": round((equity / prev[0] - 1) * 100, 2) if prev and prev[0] else None,
                     "total": round((equity / config.INITIAL_CASH - 1) * 100, 2), "positions": positions})
-            if paper_account:
-                total = paper_account.get("total") or config.AI_TOTAL_BUDGET
-                out["accounts"].append({
-                    "id": config.AI_ACCOUNT, "name": "AI 模拟（DeepSeek）", "main": True, "live": False,
-                    "equity": round(total, 2), "cash": round(paper_account.get("cash") or 0, 2), "today": None,
-                    "total": round((total / config.AI_TOTAL_BUDGET - 1) * 100, 2),
-                    "positions": [{"code": r.get("code"), "name": r.get("name") or r.get("code"),
-                                   "shares": r.get("shares"), "price": r.get("price"), "pct": None,
-                                   "pnl": round((r["price"] / r["buyPrice"] - 1) * 100, 2)
-                                   if r.get("price") and r.get("buyPrice") else None, "live": True}
-                                  for r in paper_account.get("positionDetails") or []]})
             for f in conn.execute("SELECT account, code, side, price, shares, ts, reason FROM fills "
                                   "WHERE substr(ts, 1, 10) = ? AND account IN ({}) ORDER BY ts DESC LIMIT 40".format(
                                       ",".join("?" * len(ACCOUNTS))), (today.isoformat(), *ACCOUNTS)):
@@ -227,9 +217,18 @@ class TerminalData:
                            "positions": [r[0] for r in conn.execute("SELECT code FROM live_positions")]}
         finally:
             conn.close()
-        ai = self._ai_last()
-        latest = decisions[0] if decisions else None
-        out["ai"] = {"loop": ai, "decision": None if latest is None else {
-            "time": latest.get("time"), "title": latest.get("title"), "action": latest.get("action"),
-            "regime": latest.get("regime"), "model": latest.get("model")}}
+        # DeepSeek 自己写的分析，原样给页面（不拼模板）；没有分析的旧记录不展示
+        thoughts = [{"id": r.get("id"), "ts": r.get("ts"), "time": r.get("time"), "regime": r.get("regime"),
+                     "action": r.get("action"), "confidence": r.get("confidence"), "model": r.get("model"),
+                     "analysis": r["analysis"]} for r in decisions if r.get("analysis")][:20]
+        strategy = (paper_status or {}).get("latestStrategy") or None
+        portfolio = (strategy or {}).get("portfolio") or {}
+        out["ai"] = {"loop": self._ai_last(), "thoughts": thoughts,
+                     "plan": None if not strategy else {
+                         "ts": strategy.get("ts"), "posture": portfolio.get("posture"),
+                         "positionPct": portfolio.get("positionPct"),
+                         "orders": [{"code": c, "name": getattr(quotes.get(c), "name", None) or c, **o}
+                                    for c, o in (portfolio.get("orders") or {}).items()],
+                         "execution": strategy.get("execution")},
+                     "account": paper_account}
         return out

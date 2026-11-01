@@ -103,9 +103,9 @@ class DashboardService:
     def terminal_payload(self) -> dict:
         """行情终端页：秒级行情 + jevq.sqlite 各账户 + 实盘/网关状态（只读）。"""
         self._refresh_quotes()
-        paper = self.paper.status()["account"] if self.paper is not None else None
-        return self.terminal.payload(self._quotes, self.market.payload().get("marketBreadth", {}), paper,
-                                     self.journal.records())
+        status = self.paper.status() if self.paper is not None else None
+        return self.terminal.payload(self._quotes, self.market.payload().get("marketBreadth", {}),
+                                     status["account"] if status else None, self.journal.records(), status)
 
     @staticmethod
     def _default_decision_judge():
