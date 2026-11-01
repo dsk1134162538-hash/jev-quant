@@ -215,6 +215,9 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             log(f"股票池准备失败：{e!r}")
             universe, ret5 = {}, {}
             sell_only = True
+    if not config.LEGACY_BUY_ENABLED and not sell_only:     # dj 2026-11-01：老规则关了，改用 DeepSeek 模拟
+        sell_only = True
+        log("老规则已关闭（LEGACY_BUY_ENABLED=False）：扫首板/超跌/低吸/情绪轮动只卖不买，行情和统计照常记录")
     if sell_only and not late:
         log("只卖模式：今日不开新仓")
     state["names"] = dict(universe)
@@ -243,7 +246,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             concept_map = {}
         if not concept_map:
             _warn(state, log, notifier, "题材数据缺失，扫首板今日只卖不买")
-        board_enabled = bool(concept_map) and bool(ret5)   # 扫首板排名要用 ret5，覆盖率不够也只卖不买
+        board_enabled = bool(concept_map) and bool(ret5) and not sell_only   # 扫首板排名要用 ret5，覆盖率不够也只卖不买
         if config.HOLDERS_REFRESH_ENABLED:           # 股东户数（超跌、低吸主账户过滤用），7 天一刷，失败用旧的
             try:
                 if holders.needs_refresh(conn, today):

@@ -29,3 +29,10 @@ def test_force_beijing_is_idempotent_in_this_process():
     tz.force_beijing()
     bj = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
     assert abs((datetime.now() - bj).total_seconds()) < 5
+
+
+def test_legacy_rules_are_off_by_default_in_config():
+    import importlib
+    import jevq.config as cfg
+    src = open(cfg.__file__, encoding="utf-8").read()
+    assert "LEGACY_BUY_ENABLED = False" in src                       # dj 2026-11-01 关掉老规则

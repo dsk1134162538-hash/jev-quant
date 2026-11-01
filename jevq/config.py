@@ -304,6 +304,8 @@ VIBE_OUT_DIR = "data/vibe"        # data/ 不进 git：复盘、文章、实盘�
 VIBE_START_TIMEOUT = 60           # 秒：临时起 Vibe API 等它就绪的上限
 
 # 实盘跟单（docs/specs/2026-09-29-live-trading-design.md）
+# dj 2026-11-01：老规则（扫首板/超跌/低吸/情绪轮动/自定义）关掉，只卖掉现有持仓，不再开新仓；改由 DeepSeek 模拟验证
+LEGACY_BUY_ENABLED = False
 LIVE_ACCOUNT = "regime_main"     # 2026-10-09 起实盘跟情绪轮动（原来跟 rebound_main）
 AI_ACCOUNT = "ai_experiment"     # 独立 AI 模拟账户；当前只允许桥接到 dryrun，不改变旧实盘跟单来源
 AI_TOTAL_BUDGET = 10000.0        # AI 实验本金硬上限，不用旧 LIVE_BUDGET 的全部可用资金口径
