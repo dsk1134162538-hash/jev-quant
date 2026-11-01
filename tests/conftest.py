@@ -43,3 +43,4 @@ def _no_extra_market_data(monkeypatch):
     monkeypatch.setattr("jevq.config.PREMARKET_CHECK_ENABLED", False)
     monkeypatch.setattr("jevq.config.LEGACY_BUY_ENABLED", True)       # 老规则的测试照旧按会买来测     # 盘前自检要联网、问 Claude
     monkeypatch.setattr("jevq.config.REBOUND_SECTOR_VETO", False)
+    monkeypatch.setattr("jevq.config.AI_BOARD_ENABLED", False)        # AI 打首板在 test_ai_board 里单独测

@@ -32,6 +32,7 @@ from jevq.ledger import Ledger
 from jevq.live import store as live_store
 from jevq.notify import Notifier, notifier_from_env
 from jevq.report import write_report
+from jevq.rules import ai_board
 from jevq.rules.board import in_scan_window
 from jevq.runlock import hold_run_lock
 from jevq.strategies.board import BoardStrategy
@@ -215,6 +216,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             log(f"股票池准备失败：{e!r}")
             universe, ret5 = {}, {}
             sell_only = True
+    data_sell_only = sell_only      # 数据/环境原因的只卖；AI 打首板只看这个，不受老规则开关影响
     if not config.LEGACY_BUY_ENABLED and not sell_only:     # dj 2026-11-01：老规则关了，改用 DeepSeek 模拟
         sell_only = True
         log("老规则已关闭（LEGACY_BUY_ENABLED=False）：扫首板/超跌/低吸/情绪轮动只卖不买，行情和统计照常记录")
@@ -246,7 +248,9 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
             concept_map = {}
         if not concept_map:
             _warn(state, log, notifier, "题材数据缺失，扫首板今日只卖不买")
-        board_enabled = bool(concept_map) and bool(ret5) and not sell_only   # 扫首板排名要用 ret5，覆盖率不够也只卖不买
+        # 扫首板排名要用 ret5，覆盖率不够也只卖不买；老规则关了但 AI 打首板开着，观察池照样维护
+        board_enabled = bool(concept_map) and bool(ret5) and not data_sell_only \
+            and (not sell_only or config.AI_BOARD_ENABLED)
         if config.HOLDERS_REFRESH_ENABLED:           # 股东户数（超跌、低吸主账户过滤用），7 天一刷，失败用旧的
             try:
                 if holders.needs_refresh(conn, today):
@@ -356,7 +360,10 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                               concept_map, prev_prev_closes, prev_day, enabled=board_enabled,
                               recent_limit_ups=recent_limit_ups,
                               sectors_provider=lambda: _sectors_of(engine),
-                              fetch_day_minutes=tencent.fetch_day_minutes)
+                              fetch_day_minutes=tencent.fetch_day_minutes,
+                              legacy_buy=not sell_only,
+                              ai_accounts=config.STRATEGIES["aiboard"]["accounts"] if config.AI_BOARD_ENABLED else None,
+                              ai_gate=_ai_gate, ai_budget_pct=config.AI_BOARD_FIRST_PCT)
         # 「隔夜超期」只管 runner 错过了上一交易日的情况：昨天跑过，说明持仓昨天已经按规则处理过
         # （封死涨停隔夜的票就是规则允许留下的），今天照常按同一套规则判断，不在开盘一刀切卖掉。
         try:
@@ -1004,6 +1011,15 @@ def _log_fills(fills, log: Callable[[str], None], fmt: str = "%H:%M") -> None:
     for f in fills:
         log(f"{f.ts.strftime(fmt)} {f.account} {'买' if f.side == 'buy' else '卖'} {f.code} "
             f"{f.price} x{f.shares} {f.reason}")
+
+
+def _ai_gate(code: str, t: datetime) -> tuple[bool, str]:
+    """AI 打首板闸门：读面板那边 DeepSeek 循环写的最近一次判断。读不到 = 关闸（空仓避险）。"""
+    try:
+        return ai_board.gate(ai_board.last_judgment(Path(config.AI_DECISIONS_PATH)), code, t,
+                             ai_board.last_orders(Path(config.AI_ANSWERS_PATH), t))
+    except Exception as e:
+        return False, f"读 DeepSeek 判断出错：{e!r}"[:80]
 
 
 def _board_watch_state(board: BoardStrategy, names: dict) -> list[dict]:

@@ -207,6 +207,9 @@ STRATEGIES = {
     "lowbuy": {"name": "低吸", "accounts": ("lowbuy_main", "lowbuy_shadow")},
     # 情绪轮动（用户 2026-10-09）：按大盘情绪跟上面三个策略主账户的成交，实盘跟它；只有一个账户
     "regime": {"name": "情绪轮动", "accounts": ("regime_main",)},
+    # AI 打首板（dj 2026-11-01）：老扫首板的选股和 3 秒扫板 + DeepSeek 开闸（市场不好就空仓）+ 单票不亏损卖出。
+    # 新账户，实盘不跟（regime.SOURCE_OF 里没有它）
+    "aiboard": {"name": "AI打首板", "accounts": ("aiboard_main", "aiboard_shadow")},
 }
 ACCOUNTS = tuple(a for s in STRATEGIES.values() for a in s["accounts"])
 ACCOUNT_NAMES = {
@@ -215,7 +218,14 @@ ACCOUNT_NAMES = {
     "rebound_main": "超跌·主(Jev)", "rebound_shadow": "超跌·影子",
     "lowbuy_main": "低吸·主(Jev)", "lowbuy_shadow": "低吸·影子",
     "regime_main": "情绪轮动(实盘跟)",
+    "aiboard_main": "AI打首板·主(DeepSeek)", "aiboard_shadow": "AI打首板·影子",
 }
+AI_BOARD_ENABLED = True
+AI_BOARD_FIRST_PCT = 0.5        # 首次建仓只用一半，另一半留给回本（做T/低吸补仓）
+AI_BOARD_GATE_MAX_AGE = 900     # 秒：DeepSeek 最近一次判断超过这么久就当没有，闸门关（空仓避险）
+AI_BOARD_GATE_ACTION = "允许模拟小仓评估"   # DeepSeek 给出这个动作才开闸
+AI_DECISIONS_PATH = "dashboard/runtime/ai_decisions.jsonl"
+AI_ANSWERS_PATH = "dashboard/runtime/subscription_answers.json"
 ACCOUNT_STRATEGY = {a: sid for sid, s in STRATEGIES.items() for a in s["accounts"]}
 
 

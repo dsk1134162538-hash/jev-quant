@@ -4,8 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 from dataclasses import asdict
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from dashboard.adaptive_paper import (
@@ -17,6 +18,7 @@ from dashboard.adaptive_paper import (
 from dashboard.decision_journal import DecisionJournal, build_questions
 from dashboard.kimi_judge import _convert_answer
 from dashboard.server import DashboardService
+from jevq import config as jevq_config
 from jevq.config import AI_ACCOUNT, AI_TOTAL_BUDGET
 from jevq.models import Quote
 from jevq.notify import notifier_from_env
@@ -82,6 +84,37 @@ def _previous_judgment(path: Path = None) -> dict | None:
             "analysis": last["analysis"]}
 
 
+def _board_context(db_path, day) -> dict:
+    """后台扫首板今天的观察池 + AI 打首板主账户（持仓、成本、回本价），给 DeepSeek 表态用。读不到就是空。"""
+    out = {"watch": [], "account": None}
+    if not db_path or not Path(db_path).exists():
+        return out
+    from jevq.data import candidates
+    from jevq.models import Position
+    from jevq.rules.ai_board import breakeven_price
+    try:
+        conn = sqlite3.connect(f"{Path(db_path).as_uri()}?mode=ro", uri=True, timeout=2)
+        try:
+            snap = candidates.latest(conn)
+            if snap.get("date") == day.isoformat():
+                out["watch"] = [{k: w.get(k) for k in ("code", "name", "concept", "heat", "pct", "verdict", "why")}
+                                for w in snap["board"] if len(str(w.get("code", ""))) == 6]
+            account = jevq_config.STRATEGIES["aiboard"]["accounts"][0]
+            cash = conn.execute("SELECT amount FROM cash WHERE account=?", (account,)).fetchone()
+            positions = []
+            for code, shares, cost, buy_price, buy_date in conn.execute(
+                    "SELECT code, shares, cost, buy_price, buy_date FROM positions WHERE account=?", (account,)):
+                pos = Position(account, code, shares, cost, buy_price, date.fromisoformat(buy_date))
+                positions.append({"code": code, "shares": shares, "cost": round(cost, 2), "buyPrice": buy_price,
+                                  "buyDate": buy_date, "breakeven": breakeven_price(pos)})
+            out["account"] = {"cash": None if cash is None else round(cash[0], 2), "positions": positions}
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return out
+    return out
+
+
 def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
                     registry: Path = DEFAULT_REGISTRY) -> dict:
     """抓取一次真实只读行情和模拟账户，供订阅任务语义判断。"""
@@ -112,7 +145,14 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
             codes = list(dict.fromkeys([*held, *selection["codes"]]))
     finally:
         conn.close()
+    board = _board_context(getattr(service, "db_path", None), now.date())
+    codes = list(dict.fromkeys([*codes, *(w["code"] for w in board["watch"])]))
     quotes = service._paper_quotes(codes)
+    # 首板候选取不到行情就不给 DeepSeek 看，不让一只票拖垮整轮
+    dropped = {w["code"] for w in board["watch"]} - {c for c in codes if _quote_valid(quotes.get(c), now)}
+    codes = [c for c in codes if c not in dropped]
+    quotes = {c: q for c, q in quotes.items() if c in codes}
+    board["watch"] = [w for w in board["watch"] if w["code"] not in dropped]
     if not codes or set(quotes) != set(codes) or not all(_quote_valid(quotes.get(code), now) for code in codes):
         return {"eligible": False, "reason": "候选代码为空或行情缺失、过期、价格无效"}
 
@@ -124,7 +164,11 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
     snapshot_id = now.isoformat(timespec="seconds")
     constraints = {"account": AI_ACCOUNT, "liveTrading": False, "initialCapital": AI_TOTAL_BUDGET,
                    "maxPositions": 1, "maxDailyBuys": 2, "minConfidence": 0.65,
-                   "tPlusOne": True, "lot": 100}
+                   "tPlusOne": True, "lot": 100,
+                   "boardExecutor": {"account": "aiboard_main", "capital": jevq_config.INITIAL_CASH,
+                                     "firstBuyPct": jevq_config.AI_BOARD_FIRST_PCT, "maxPositions": 1,
+                                     "scanWindow": "09:30-10:30 涨到 9% 且没摸过涨停时扫板",
+                                     "noLossSell": True}}
     if selection is not None:
         constraints["candidateId"] = selection["candidateId"]
         constraints["candidateSelection"] = {
@@ -142,6 +186,7 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
             "account": account, "quotes": paper._quote_payload(quotes),
             "constraints": constraints,
             "previous": _previous_judgment(),
+            "boardWatch": board["watch"], "boardAccount": board["account"],
         },
     }
     _atomic_json(output, value)

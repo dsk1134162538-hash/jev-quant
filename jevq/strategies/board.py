@@ -5,11 +5,13 @@ from time import monotonic
 from jevq.models import Fill, Quote
 from jevq.rules.board import (EXIT_PCT, SCAN_WINDOWS, VOLUME_MIN, WATCH_MAX, Candidate, in_scan_window,
                               same_time_ratio, scan_trigger, sentiment_gate, watch_candidates)
+from jevq.rules.ai_board import decide_noloss_sell
 from jevq.rules.board_sell import decide_board_sell
 
 SEALED_SKIP = "快照已封死，视为排队未买到"
 SHRINK_SKIP = "缩量板不扫"
 GATE_PREFIX = "情绪闸门（只记录不拦截）："
+AI_GATE_SKIP = "AI 闸门关"
 
 
 class BoardStrategy:
@@ -22,7 +24,9 @@ class BoardStrategy:
                  prev_prev_closes: dict[str, float | None], prev_day: date,
                  accounts: tuple[str, str] = ("board_main", "board_shadow"),
                  windows: list = SCAN_WINDOWS, enabled: bool = True,
-                 recent_limit_ups: set[str] = frozenset(), sectors_provider=None, fetch_day_minutes=None):
+                 recent_limit_ups: set[str] = frozenset(), sectors_provider=None, fetch_day_minutes=None,
+                 legacy_buy: bool = True, ai_accounts: tuple[str, str] | None = None, ai_gate=None,
+                 ai_budget_pct: float = 1.0):
         self.conn, self.ledger = conn, ledger
         self.notice_judge, self.news_judge = notice_judge, news_judge
         self.fetch_quotes = fetch_quotes
@@ -45,6 +49,11 @@ class BoardStrategy:
         # 持有期内（次日）要发财报 / 大额解禁的不买（用户 2026-10-19），jevq.data.events.EventFilter；None = 不看。
         # 影子账户不看判断结果，照旧扫
         self.event_filter = None
+        # AI 打首板（dj 2026-11-01）：同一个观察池和扫板买点，另开一对账户。主账户要过 Jev 公告/新闻 + DeepSeek 闸门
+        # （ai_gate(code, now) -> (开不开, 说明)），影子只看扫板；两个都按单票不亏损卖。legacy_buy=False 时老账户只卖不买
+        self.legacy_buy, self.ai_accounts, self.ai_gate = legacy_buy, ai_accounts, ai_gate
+        self.ai_budget_pct = ai_budget_pct
+        self.gate_logged: set[str] = set()
 
     def has_watch(self) -> bool:
         return bool(self.watch)
@@ -131,7 +140,8 @@ class BoardStrategy:
                 tag = f"扫板{q.pct}%" + (f"｜量{ratio:g}倍" if ratio is not None else "")
 
                 try:
-                    if entry and entry[0] == "pass" and triggered and self.ledger.free_slots(main) > 0 \
+                    if self.legacy_buy and entry and entry[0] == "pass" and triggered \
+                            and self.ledger.free_slots(main) > 0 \
                             and not self.ledger.holds(main, code):
                         if f := self.ledger.buy(main, q, now, tag):
                             fills.append(f)
@@ -146,12 +156,15 @@ class BoardStrategy:
                     print(f"[board] {now:%H:%M} 主账户扫板买入 {code} 出错: {e!r}")
 
                 try:
-                    if triggered and self.ledger.free_slots(shadow) > 0 and not self.ledger.holds(shadow, code):
+                    if self.legacy_buy and triggered and self.ledger.free_slots(shadow) > 0 \
+                            and not self.ledger.holds(shadow, code):
                         if f := self.ledger.buy(shadow, q, now, f"影子｜{tag}"):
                             fills.append(f)
                 except Exception as e:
                     self.conn.rollback()
                     print(f"[board] {now:%H:%M} 影子账户扫板买入 {code} 出错: {e!r}")
+
+                fills += self._ai_buys(code, q, now, entry, triggered, tag)
 
                 if sealed and q.ts.date() >= now.date():
                     self._note_sealed(code, q, now, entry)
@@ -160,15 +173,50 @@ class BoardStrategy:
                 print(f"[board] {now:%H:%M} 快扫 {code} 出错: {e!r}")
         return fills
 
+    def _buyer_has_slot(self) -> bool:
+        mains = ([self.accounts[0]] if self.legacy_buy else []) + ([self.ai_accounts[0]] if self.ai_accounts else [])
+        return any(self.ledger.free_slots(a) > 0 for a in mains)
+
+    def _ai_buys(self, code: str, q: Quote, now: datetime, entry, triggered: bool, tag: str) -> list[Fill]:
+        if not self.ai_accounts or not triggered:
+            return []
+        fills = []
+        main, shadow = self.ai_accounts
+        try:
+            if entry and entry[0] == "pass" and self.ledger.free_slots(main) > 0 and not self.ledger.holds(main, code):
+                ok, why = self.ai_gate(code, now) if self.ai_gate else (False, "没有接 DeepSeek 闸门")
+                if not ok:
+                    if code not in self.gate_logged:
+                        self.gate_logged.add(code)
+                        self._log(now, code, "skip", f"{AI_GATE_SKIP}：{why}", entry[2])
+                elif f := self.ledger.buy(main, q, now, f"AI｜{tag}｜{why}"[:120],
+                                          budget=self.ledger.cash(main) * self.ai_budget_pct):
+                    fills.append(f)
+                    self._log(now, code, "pass", f"AI 打首板买入 {q.pct}%：{why}", entry[2])
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[board] {now:%H:%M} AI 主账户扫板买入 {code} 出错: {e!r}")
+        try:
+            if self.ledger.free_slots(shadow) > 0 and not self.ledger.holds(shadow, code):
+                if f := self.ledger.buy(shadow, q, now, f"AI影子｜{tag}",
+                                        budget=self.ledger.cash(shadow) * self.ai_budget_pct):
+                    fills.append(f)
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[board] {now:%H:%M} AI 影子账户扫板买入 {code} 出错: {e!r}")
+        return fills
+
     def _sells(self, quotes: dict[str, Quote], now: datetime) -> list[Fill]:
         fills = []
-        for account in self.accounts:
+        ai = tuple(self.ai_accounts or ())
+        for account in (*self.accounts, *ai):
             for pos in self.ledger.positions(account):
                 try:
                     q = quotes.get(pos.code)
                     if q is None or q.ts.date() < now.date():
                         continue
-                    d = decide_board_sell(pos, q, now, self.stale_before)
+                    d = decide_noloss_sell(pos, q, now, self.prev_day) if account in ai \
+                        else decide_board_sell(pos, q, now, self.stale_before)
                     if d.sell and (f := self.ledger.sell(account, pos, q, now, d.reason)):
                         fills.append(f)
                 except Exception as e:
@@ -195,7 +243,7 @@ class BoardStrategy:
                 self._prefetch_curve(cand.code)
         # 未判断过的观察池票：扫板窗口内、主账户有空位才补判断（无论是新进的、之前满仓时跳过的，
         # 还是窗口外进池的）。窗口外买不了，问 Jev 只是白花调用；进窗口的第一分钟会补上。
-        if in_scan_window(now.time(), self.windows) and self.ledger.free_slots(self.accounts[0]) > 0:
+        if in_scan_window(now.time(), self.windows) and self._buyer_has_slot():
             for code, cand in list(self.watch.items()):
                 if code in self.verdicts:
                     continue

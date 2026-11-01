@@ -161,3 +161,13 @@ def test_relative_database_path_can_be_read_after_working_directory_changes(tmp_
     monkeypatch.chdir(tmp_path)
     paper = AdaptivePaperEngine("relative/paper.sqlite", judge=Judge())
     assert paper.status()["reconciled"] is True
+
+
+def test_board_executor_on_means_ai_experiment_never_buys(tmp_path, monkeypatch):
+    """dj 2026-11-01：AI 只做打首板，开新仓在 aiboard 账户；这里 DeepSeek 的「模拟买入」只算表态。"""
+    monkeypatch.setattr("jevq.config.AI_BOARD_ENABLED", True)
+    paper = engine(tmp_path)
+    paper.process_record(record(), context())
+    status = paper.status()
+    assert status["account"]["positions"] == 0 and status["account"]["fillsToday"] == 0
+    assert any("AI 打首板执行器" in s for s in status["latestStrategy"]["execution"]["skipped"])

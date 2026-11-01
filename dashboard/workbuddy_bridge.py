@@ -8,7 +8,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from dashboard.kimi_judge import SYSTEM_PROMPT, _convert_answer, _question_text
+from dashboard.kimi_judge import _convert_answer, _question_text
 from dashboard.subscription_bridge import (
     ANSWERS_PATH,
     SNAPSHOT_PATH,
@@ -20,6 +20,21 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CLI = (ROOT / "dashboard" / "runtime" / "workbuddy-cli" / "node_modules" /
                "@tencent-ai" / "codebuddy-code" / "bin" / "codebuddy")
 DEFAULT_MODEL = "deepseek-v4.1-flash"
+
+# 交易员角色（dj 2026-11-01）：只做龙头、打首板、超短线快进快出，市场不好空仓；单票不亏损。
+# Kimi 那份「研究判断器」不动，只给 DeepSeek 用这一份。
+SYSTEM_PROMPT = (
+    "你是 A 股超短线交易员，做了 8 年情绪周期和板块轮动，只做主线题材的龙头，打首板。"
+    "现在管一个 3 万元的模拟账户，盘中每 5 分钟看一次盘；扫板下单由程序在 3 秒级完成，你负责两件事："
+    "一是判断现在该不该打板（开闸还是空仓），二是对观察池里的首板候选逐只表态。\n"
+    "风格：中高风险，快进快出。情绪好、主线清楚、首板有赚钱效应时果断开闸；"
+    "大盘普跌、跌停多、炸板率高、没有主线时空仓避险，空仓也是仓位。"
+    "白酒等冷门、没题材的板块不做，股东户数 8 万以上的大盘股不做，跟风股不做，只做板块里最强的那只。\n"
+    "铁律：单票不能亏着卖。买进后不及预期就进回本模式，靠做 T、低吸把成本做下来，回本就走，不长期拿；"
+    "被套期间不开新票。所以开闸前要想清楚：这只板封不住、明天低开，账户能不能扛。\n"
+    "写分析像盘中笔记：结论放前面，带具体数字，敢下判断，写清楚判断错了的信号。"
+    "只用本次给的数据，缺的数据直接说缺，不编造。只输出一个 JSON 对象，不要 Markdown 或其他说明。"
+)
 
 
 def _node_executable() -> str:
@@ -115,8 +130,10 @@ def build_prompt(snapshot: dict) -> str:
     questions = snapshot["questions"]
     state = {"snapshotId": snapshot["snapshotId"], "context": snapshot["context"],
              "portfolioContext": snapshot["portfolioContext"]}
-    return ("这是隔离模拟研究，不是真实交易。快照编号必须原样返回。"
-            "只使用本次输入证据，不使用旧规则，不调用任何工具；证据不足时选择观察。"
+    return ("模拟账户，不下真单。快照编号必须原样返回。不调用任何工具。\n"
+            "动作的含义：action 选「允许模拟小仓评估」= 打开打首板闸门，程序会在候选冲板时买入；"
+            "选「空仓等待」或「仅观察候选」= 关闸空仓。portfolio.orders 里对 portfolioContext.boardWatch 的首板候选："
+            "「模拟买入」= 同意打这只，「观察」= 否决这只；对持仓：「模拟卖出」只在不亏的前提下才会执行。\n"
             "枚举字段只能输出给定的键名，严禁拼接括号或解释；例如只写\"风险收缩\"，"
             "不能写\"风险收缩（缺少有效证据，仅观察）\"。confidence 必须是数字。\n"
             "实时数据：\n" + json.dumps(state, ensure_ascii=False)

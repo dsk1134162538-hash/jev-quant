@@ -21,7 +21,7 @@ def test_report(tmp_path):
     assert "600002" in text and "新增减持" in text
     assert "外围：中性" in text and "情绪：偏弱" in text
     # 四个账户（扫首板 board_main/board_shadow + 超跌反弹 rebound_main/rebound_shadow）各写一行净值记录
-    assert conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0] == 7
+    assert conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0] == 9
     assert "### 扫首板" in text and "### 超跌反弹" in text
 
 
@@ -72,7 +72,7 @@ def test_report_includes_active_custom_strategy_account_and_name(tmp_path):
     assert "### 尾盘弱转强" in text
     assert "尾盘弱转强·主(Jev)" in text and "尾盘弱转强·影子" in text
     # 内置两个策略 + 新增的自定义策略各两个账户 = 6 条净值记录
-    assert conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0] == 9
+    assert conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0] == 11
 
 
 def test_report_after_lowbuy_retired_keeps_history_names_only(tmp_path):
@@ -90,7 +90,8 @@ def test_report_after_lowbuy_retired_keeps_history_names_only(tmp_path):
     text = write_report(conn, ledger, date(2026, 9, 23), {}, "中性", "正常", tmp_path).read_text(encoding="utf-8")
     assert "### 低吸" in text and "### 扫首板" in text and "### 超跌反弹" in text and "### 情绪轮动" in text
     assert {a for (a,) in conn.execute("SELECT account FROM equity")} == {
-        "board_main", "board_shadow", "rebound_main", "rebound_shadow", "lowbuy_main", "lowbuy_shadow", "regime_main"}
+        "board_main", "board_shadow", "rebound_main", "rebound_shadow", "lowbuy_main", "lowbuy_shadow", "regime_main",
+        "aiboard_main", "aiboard_shadow"}
     assert "| 2026-09-22 | 低吸·主(已下线) | 600009 |" in text
 
 

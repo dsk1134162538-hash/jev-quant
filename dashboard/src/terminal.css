@@ -266,3 +266,7 @@ tr.is-live { background: linear-gradient(90deg, rgba(231, 176, 74, 0.07), transp
 }
 
 .term .t-history .t-why { grid-column: auto; font-size: 13px; }
+
+/* AI 打首板右栏 */
+.term .t-shadow-line, .term .t-gate { margin: 6px 0 0; font-size: 12px; line-height: 1.5; }
+.term .t-ai-pos li .t-dim { margin-left: auto; }

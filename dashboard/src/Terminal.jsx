@@ -300,30 +300,63 @@ function AiMain({ ai, now }) {
 }
 
 function AiSide({ ai }) {
-  const acct = ai?.account
+  const board = ai?.board
+  const [main, shadow] = board?.accounts || []
   const plan = ai?.plan
-  const ret = acct ? (acct.total / 10000 - 1) * 100 : null
   return (
     <section className="t-panel t-ai-side">
-      <header><h2>AI 模拟账户</h2><span className="t-dim">1 万本金 · 不下真单</span></header>
+      <header><h2>AI 打首板</h2><span className="t-dim">3 万本金 · 首仓一半 · 不亏不卖 · 不下真单</span></header>
       <div className="t-acct-big">
-        <b className="mono">{acct ? num(acct.total, 0) : '—'}</b>
-        <span className={`mono ${tone(ret)}`}>{pct(ret)}</span>
+        <b className="mono">{main ? num(main.equity, 0) : '—'}</b>
+        <span className={`mono ${tone(main?.total)}`}>{pct(main?.total)}</span>
+        {main?.today != null && <span className={`mono t-dim ${tone(main.today)}`}>今日 {pct(main.today)}</span>}
       </div>
-      {acct?.positionDetails?.length ? (
+      {main?.positions?.length ? (
         <ul className="t-ai-pos">
-          {acct.positionDetails.map((p) => {
-            const r = p.buyPrice ? (p.price / p.buyPrice - 1) * 100 : null
-            return (
-              <li key={p.code}><b>{p.code}</b><span className="mono">{p.shares} 股</span><span className="mono">{num(p.price)}</span>
-                <span className={`mono ${tone(r)}`}>{pct(r)}</span></li>
-            )
-          })}
+          {main.positions.map((p) => (
+            <li key={p.code}><b>{p.name}</b><span className="mono">{p.shares} 股</span><span className="mono">{num(p.price)}</span>
+              <span className={`mono ${tone(p.pnl)}`}>{pct(p.pnl)}</span>
+              {p.breakeven != null && <span className="t-dim mono">回本 {num(p.breakeven)}</span>}</li>
+          ))}
         </ul>
       ) : <p className="t-empty">空仓</p>}
+      {shadow && (
+        <p className="t-dim t-shadow-line">影子（不看 DeepSeek，只扫板）<span className="mono"> {num(shadow.equity, 0)} </span>
+          <span className={`mono ${tone(shadow.total)}`}>{pct(shadow.total)}</span>
+          {shadow.positions?.length ? ` · 持 ${shadow.positions.map((p) => p.name).join('、')}` : ''}</p>
+      )}
+      {board?.gate && <p className="t-dim t-gate">闸门：{board.gate}</p>}
+      {board?.watch?.length > 0 && (
+        <div className="t-plan">
+          <h3>今日首板观察池</h3>
+          <ol>
+            {board.watch.map((w) => (
+              <li key={w.code}>
+                <span className={`mono ${tone(w.pct)}`}>{pct(w.pct)}</span>
+                <b>{w.name || w.code}</b>
+                <span className="t-dim t-why">{w.concept} · {w.heat} 只强势{w.verdict ? ` · ${w.verdict === 'pass' ? '公告新闻通过' : w.why}` : ''}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      {board?.fills?.length > 0 && (
+        <div className="t-plan">
+          <h3>今日成交</h3>
+          <ol>
+            {board.fills.map((f, i) => (
+              <li key={`${f.t}-${f.code}-${i}`}>
+                <span className={`t-side ${f.side === 'buy' ? 'up' : 'down'}`}>{f.side === 'buy' ? '买' : '卖'}</span>
+                <b>{f.name}</b>
+                <span className="t-dim t-why mono">{f.t} {num(f.price)} × {f.shares} · {f.account.includes('影子') ? '影子' : '主'} · {f.reason}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
       {plan && (
         <div className="t-plan">
-          <h3>这一轮的操作 <span className="t-dim mono">{(plan.ts || '').slice(11, 16)} · {plan.posture} · 仓位上限 {Math.round((plan.positionPct || 0) * 100)}%</span></h3>
+          <h3>DeepSeek 对个股 <span className="t-dim mono">{(plan.ts || '').slice(11, 16)} · {plan.posture} · 仓位上限 {Math.round((plan.positionPct || 0) * 100)}%</span></h3>
           <ol>
             {plan.orders.map((o) => (
               <li key={o.code}>

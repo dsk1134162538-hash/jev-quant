@@ -16,10 +16,14 @@ from pathlib import Path
 import requests
 
 from jevq import config
+from jevq.data import candidates
+from jevq.models import Position
+from jevq.rules.ai_board import breakeven_price
 
 ACCOUNTS = ("regime_main", "rebound_main", "lowbuy_main", "board_main",
             "rebound_shadow", "lowbuy_shadow", "board_shadow")
 MAIN_ACCOUNTS = ACCOUNTS[:4]
+AI_ACCOUNTS = tuple(config.STRATEGIES["aiboard"]["accounts"])   # AI 打首板，单独放在右栏
 INDEX_CODES = {"000001", "399001", "399006"}     # 和个股代码会撞（平安银行 000001），持仓里遇到就不进秒级通道
 GATEWAY_URL = "http://127.0.0.1:5000/health"
 CURVE_DAYS = 30
@@ -53,9 +57,10 @@ class TerminalData:
             try:
                 conn = _ro(self.db_path)
                 try:
-                    marks = ",".join("?" * len(ACCOUNTS))
+                    accts = ACCOUNTS + AI_ACCOUNTS
+                    marks = ",".join("?" * len(accts))
                     codes = [r[0] for r in conn.execute(
-                        f"SELECT DISTINCT code FROM positions WHERE account IN ({marks}) AND shares > 0", ACCOUNTS)]
+                        f"SELECT DISTINCT code FROM positions WHERE account IN ({marks}) AND shares > 0", accts)]
                     codes += [r[0] for r in conn.execute("SELECT code FROM live_positions")]
                 finally:
                     conn.close()
@@ -113,7 +118,7 @@ class TerminalData:
             if r5:
                 out["ret5"] = round(statistics.median(r5.values()), 2)
         curves = {}
-        for acct in ACCOUNTS:
+        for acct in ACCOUNTS + AI_ACCOUNTS:
             rows = conn.execute("SELECT date, value FROM equity WHERE account=? AND date < ? ORDER BY date DESC LIMIT ?",
                                 (acct, key, CURVE_DAYS)).fetchall()
             curves[acct] = [{"d": r[0], "v": round(r[1], 2)} for r in reversed(rows)]
@@ -172,7 +177,8 @@ class TerminalData:
                 "sentiment": (sent or {}).get("label"), "sentimentAt": (sent or {}).get("ts"),
             }
             names = {}
-            for acct in ACCOUNTS:
+            board: dict = {"accounts": [], "fills": [], "watch": [], "gate": None}
+            for acct in ACCOUNTS + AI_ACCOUNTS:
                 cash_row = conn.execute("SELECT amount FROM cash WHERE account=?", (acct,)).fetchone()
                 if cash_row is None:
                     continue
@@ -192,22 +198,27 @@ class TerminalData:
                         "code": p["code"], "name": names[p["code"]], "shares": p["shares"], "price": round(price, 2),
                         "pct": round((q.price / q.pre_close - 1) * 100, 2) if q is not None and q.pre_close else None,
                         "pnl": round((price / p["buy_price"] - 1) * 100, 2) if p["buy_price"] else None,
-                        "buyDate": p["buy_date"], "live": q is not None})
+                        "buyDate": p["buy_date"], "live": q is not None,
+                        "breakeven": breakeven_price(Position(acct, p["code"], p["shares"], p["cost"], p["buy_price"],
+                                                              date.fromisoformat(p["buy_date"])))
+                        if acct in AI_ACCOUNTS and p["shares"] else None})
                 equity = cash_row[0] + mv
-                out["accounts"].append({
+                (board["accounts"] if acct in AI_ACCOUNTS else out["accounts"]).append({
                     "id": acct, "name": config.ACCOUNT_NAMES.get(acct, acct), "main": acct in MAIN_ACCOUNTS,
                     "live": acct == config.LIVE_ACCOUNT, "equity": round(equity, 2), "cash": round(cash_row[0], 2),
                     "today": round((equity / prev[0] - 1) * 100, 2) if prev and prev[0] else None,
                     "total": round((equity / config.INITIAL_CASH - 1) * 100, 2), "positions": positions})
             for f in conn.execute("SELECT account, code, side, price, shares, ts, reason FROM fills "
                                   "WHERE substr(ts, 1, 10) = ? AND account IN ({}) ORDER BY ts DESC LIMIT 40".format(
-                                      ",".join("?" * len(ACCOUNTS))), (today.isoformat(), *ACCOUNTS)):
+                                      ",".join("?" * len(ACCOUNTS + AI_ACCOUNTS))),
+                                  (today.isoformat(), *ACCOUNTS, *AI_ACCOUNTS)):
                 q = quotes.get(f["code"])
-                out["fills"].append({"t": f["ts"][11:16], "account": config.ACCOUNT_NAMES.get(f["account"], f["account"]),
+                (board["fills"] if f["account"] in AI_ACCOUNTS else out["fills"]).append({"t": f["ts"][11:16], "account": config.ACCOUNT_NAMES.get(f["account"], f["account"]),
                                      "code": f["code"], "name": getattr(q, "name", None) or names.get(f["code"], f["code"]),
                                      "side": f["side"], "price": f["price"], "shares": f["shares"],
                                      "reason": (f["reason"] or "").split("｜")[0][:24],
                                      "live": f["account"] == config.LIVE_ACCOUNT})
+            board["watch"], board["gate"] = self._board_watch(conn, today)
             state = dict(conn.execute("SELECT key, value FROM live_state WHERE key IN "
                                       "('mode','paused','pause_reason','heartbeat','last_read_ok')").fetchall())
             hb = state.get("heartbeat")
@@ -230,5 +241,16 @@ class TerminalData:
                          "orders": [{"code": c, "name": getattr(quotes.get(c), "name", None) or c, **o}
                                     for c, o in (portfolio.get("orders") or {}).items()],
                          "execution": strategy.get("execution")},
-                     "account": paper_account}
+                     "account": paper_account, "board": board}
         return out
+
+    @staticmethod
+    def _board_watch(conn: sqlite3.Connection, today: date) -> tuple[list, str | None]:
+        """今天扫首板观察池（后台每分钟写一次）+ 最近一条 AI 闸门没开的原因。"""
+        snap = candidates.latest(conn)
+        watch = snap["board"] if snap.get("date") == today.isoformat() else []
+        row = conn.execute("SELECT ts, detail FROM decisions WHERE strategy='board' AND verdict='skip' "
+                           "AND detail LIKE 'AI 闸门关%' AND substr(ts, 1, 10) = ? ORDER BY id DESC LIMIT 1",
+                           (today.isoformat(),)).fetchone()
+        return ([{k: w.get(k) for k in ("code", "name", "concept", "heat", "pct", "verdict", "why")} for w in watch],
+                f"{row[0][11:16]} {row[1]}" if row else None)

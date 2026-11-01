@@ -9,6 +9,7 @@ from datetime import datetime, time
 from pathlib import Path
 
 from jevq import db
+from jevq import config as jevq_config
 from jevq.config import AI_ACCOUNT, AI_TOTAL_BUDGET
 from jevq.ledger import Ledger, buy_fee, sell_fee
 
@@ -35,8 +36,8 @@ class ReconciliationError(RuntimeError):
 def build_portfolio_questions(quotes: dict) -> dict:
     return {"portfolio": {
         "type": "portfolio",
-        "instructions": ("根据最新市场、行业、指数、候选股和模拟持仓，调整这一版策略。"
-                         "不得使用旧规则；每个模拟动作都必须有当前证据，不确定就选观察。"),
+        "instructions": ("根据最新市场、行业、指数、首板观察池和模拟持仓，给出这一版策略：每只票一个动作，"
+                         "理由带当前数据。首板候选同意打就「模拟买入」，不看好就「观察」。"),
         "criteria": {"posture": POSTURES, "positionPct": [0, 0.1, 0.2],
                      "codes": {code: quote.name for code, quote in quotes.items()},
                      "actions": PORTFOLIO_ACTIONS},
@@ -321,7 +322,10 @@ class AdaptivePaperEngine:
             buys_today = conn.execute(
                 "SELECT COUNT(*) FROM fills WHERE account=? AND side='buy' AND substr(ts,1,10)=?",
                 (AI_ACCOUNT, now.date().isoformat())).fetchone()[0]
-            if record["action"] != "允许模拟小仓评估":
+            if jevq_config.AI_BOARD_ENABLED:
+                # dj 2026-11-01：AI 只做打首板，买点在后台 3 秒扫板（aiboard 账户）；这里的「模拟买入」只当表态
+                skipped.append("买入交给 AI 打首板执行器（aiboard 账户），本账户不开新仓")
+            elif record["action"] != "允许模拟小仓评估":
                 skipped.append("大盘研究动作未允许模拟小仓评估，买入全部 veto")
             elif portfolio["positionPct"] <= 0:
                 skipped.append("策略总仓位上限为 0，买入全部 veto")
