@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -32,6 +33,27 @@ def _node_executable() -> str:
 
 class WorkBuddyError(RuntimeError):
     """WorkBuddy 未返回可验证的模拟策略答案。"""
+
+
+class WorkBuddyRateLimited(WorkBuddyError):
+    """WorkBuddy 额度/频率限制（429）；reset_at 是它说的恢复时间（北京时间，可能为 None）。"""
+
+    def __init__(self, message: str, reset_at=None):
+        super().__init__(message)
+        self.reset_at = reset_at
+
+
+_RESET = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*UTC\+8")
+
+
+def _rate_limit(text: str):
+    """11-01 实测：额度用完时返回码是 0、标准输出为空，提示「429 您的使用量已超出频率限制，将在 … UTC+8 重置」在错误输出里。"""
+    if "429" not in text and "频率限制" not in text and "使用量" not in text:
+        return None
+    m = _RESET.search(text)
+    from datetime import datetime as _dt
+    reset = _dt.strptime(m.group(1), "%Y-%m-%d %H:%M:%S") if m else None
+    return WorkBuddyRateLimited(f"WorkBuddy 额度限流：{text.strip()[:200]}", reset)
 
 
 def answer_schema(snapshot: dict) -> dict:
@@ -135,9 +157,15 @@ def judge_snapshot(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANS
         raise WorkBuddyError(f"WorkBuddy 判断超时（{timeout:g} 秒）") from exc
     except OSError as exc:
         raise WorkBuddyError(f"无法启动 WorkBuddy：{exc}") from exc
+    out_text, err_text = completed.stdout or "", completed.stderr or ""
+    limited = None if out_text.strip().startswith("{") else _rate_limit(out_text + "\n" + err_text)
+    if limited is not None:
+        raise limited
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "未知错误").strip()[-500:]
         raise WorkBuddyError(f"WorkBuddy 执行失败（{completed.returncode}）：{detail}")
+    if not (completed.stdout or "").strip() and (completed.stderr or "").strip():
+        raise WorkBuddyError(f"WorkBuddy 没有输出答案：{completed.stderr.strip()[-300:]}")
     answer = _parse_answer(completed.stdout)
     if answer.get("snapshotId") != snapshot.get("snapshotId"):
         raise WorkBuddyError("WorkBuddy 答案与快照编号不一致")

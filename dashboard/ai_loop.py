@@ -76,6 +76,9 @@ def run_once(cycle=None, clock=datetime.now, log=_log, calls_today: int = 0) -> 
         result = cycle()
     except Exception as e:                                   # noqa: BLE001
         record.update(ok=False, called=False, seconds=round(time.monotonic() - t0, 1), error=f"{type(e).__name__}: {str(e)[:300]}")
+        reset = getattr(e, "reset_at", None)
+        if reset is not None:
+            record["retryAt"] = reset.isoformat(timespec="seconds")
         log(record)
         return record
     if isinstance(result, dict) and result.get("eligible") is False:
@@ -107,6 +110,12 @@ def loop(cycle=None, clock=datetime.now, sleep=time.sleep, log=_log, max_calls: 
         rec = run_once(cycle, clock, log)
         calls += 1 if rec.get("called") else 0
         fails = 0 if rec["ok"] else fails + 1
+        if rec.get("retryAt"):                               # WorkBuddy 额度限流：等到它说的恢复时间，不硬撞
+            wait_until = datetime.fromisoformat(rec["retryAt"])
+            log({"ts": clock().isoformat(timespec="seconds"), "ok": False, "called": False,
+                 "skipped": f"WorkBuddy 额度限流，{wait_until:%H:%M} 恢复"})
+            sleep(max(1.0, min((wait_until - clock()).total_seconds() + 5, 6 * 3600)))
+            continue
         # 下一轮对齐到 5 分钟间隔：从这一轮开始算，不是从结束算
         elapsed = (clock() - now).total_seconds()
         wait = max(1.0, INTERVAL_SECONDS - elapsed)

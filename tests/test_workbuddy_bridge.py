@@ -87,3 +87,12 @@ def test_record_keeps_analysis_and_previous_judgment_feeds_review(tmp_path):
     assert _previous_judgment(path) is None
     path.write_text(json.dumps(rec, ensure_ascii=False) + "\n", encoding="utf-8")
     assert _previous_judgment(path)["analysis"]["forecast"] == "forecast…"
+
+
+def test_rate_limit_message_on_stderr_is_recognised(tmp_path):
+    """11-01 实测：额度用完时返回码 0、stdout 空，429 提示在 stderr。"""
+    def run(cmd, **kw):
+        return SimpleNamespace(returncode=0, stdout="", stderr="429 您的使用量已超出频率限制，将在 2026-11-01 20:27:01 UTC+8 重置")
+    with pytest.raises(wb.WorkBuddyRateLimited) as e:
+        wb.judge_snapshot(_snap(tmp_path), tmp_path / "ans.json", cli_path=tmp_path / "cli", runner=run)
+    assert e.value.reset_at.hour == 20 and e.value.reset_at.minute == 27

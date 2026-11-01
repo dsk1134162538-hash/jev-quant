@@ -82,3 +82,17 @@ def test_module_has_no_broker_or_live_switch():
     text = pathlib.Path(ai_loop.__file__).read_text(encoding="utf-8")
     for bad in ("GatewayBroker", "make_broker", "set_mode", "live_intents", "/orders", "XIADAN"):
         assert bad not in text
+
+
+def test_rate_limit_waits_until_reset_time():
+    from dashboard.workbuddy_bridge import WorkBuddyRateLimited
+    calls = []
+
+    def limited():
+        calls.append(1)
+        if len(calls) == 1:
+            raise WorkBuddyRateLimited("429", datetime(2026, 11, 2, 10, 30))
+        return {"ok": True, "model": "m"}
+    logs = _run_loop(at(2, 9, 35), at(2, 10, 40), limited)
+    called = [l["ts"][11:16] for l in logs if l.get("called")]
+    assert called and called[0] >= "10:30" and any("额度限流" in str(l.get("skipped")) for l in logs)
