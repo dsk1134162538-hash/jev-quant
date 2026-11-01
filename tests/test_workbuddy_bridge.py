@@ -104,3 +104,38 @@ def test_rate_limit_message_on_stderr_is_recognised(tmp_path):
     with pytest.raises(wb.WorkBuddyRateLimited) as e:
         wb.judge_snapshot(_snap(tmp_path), tmp_path / "ans.json", cli_path=tmp_path / "cli", runner=run)
     assert e.value.reset_at.hour == 20 and e.value.reset_at.minute == 27
+
+
+def _limited(cmd, **kw):
+    return SimpleNamespace(returncode=0, stdout="", stderr="429 您的使用量已超出频率限制，将在 2026-11-01 20:27:01 UTC+8 重置")
+
+
+def test_rate_limited_falls_back_to_official_api_with_same_validation(tmp_path, monkeypatch):
+    monkeypatch.setattr(wb, "_api_key", lambda: "sk-test")
+    sent = {}
+
+    def post(url, json=None, headers=None, timeout=None):
+        sent.update(url=url, body=json, auth=headers["Authorization"])
+        return SimpleNamespace(status_code=200, text="",
+                               json=lambda: {"choices": [{"message": {"content": __import__("json").dumps(GOOD)}}]})
+    out = wb.judge_snapshot(_snap(tmp_path), tmp_path / "ans.json", cli_path=tmp_path / "cli", runner=_limited, post=post)
+    assert out["model"] == "deepseek-api:deepseek-flash"
+    assert sent["url"] == wb.OFFICIAL_URL and sent["auth"] == "Bearer sk-test"
+    assert sent["body"]["messages"][0]["content"] == wb.SYSTEM_PROMPT
+
+
+def test_official_api_bad_answer_is_still_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr(wb, "_api_key", lambda: "sk-test")
+    post = lambda *a, **k: SimpleNamespace(status_code=200, text="",
+                                           json=lambda: {"choices": [{"message": {"content": "{\"snapshotId\": \"旧\"}"}}]})
+    with pytest.raises(wb.WorkBuddyError):
+        wb.judge_snapshot(_snap(tmp_path), tmp_path / "ans.json", cli_path=tmp_path / "cli", runner=_limited, post=post)
+    assert not (tmp_path / "ans.json").exists()
+
+
+def test_official_api_failure_keeps_rate_limit_so_loop_waits(tmp_path, monkeypatch):
+    monkeypatch.setattr(wb, "_api_key", lambda: "sk-test")
+    post = lambda *a, **k: SimpleNamespace(status_code=402, text="余额不足", json=lambda: {})
+    with pytest.raises(wb.WorkBuddyRateLimited) as e:
+        wb.judge_snapshot(_snap(tmp_path), tmp_path / "ans.json", cli_path=tmp_path / "cli", runner=_limited, post=post)
+    assert "402" in str(e.value) and e.value.reset_at is not None

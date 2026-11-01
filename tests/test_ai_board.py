@@ -184,3 +184,30 @@ def test_terminal_shows_ai_board_separately_from_legacy(tmp_path):
     main = out["ai"]["board"]["accounts"][0]
     assert main["id"] == "aiboard_main" and main["positions"][0]["breakeven"] > main["positions"][0]["price"] - 1
 
+
+
+def test_memory_today_notes_keep_only_today_with_plan(tmp_path):
+    from dashboard.subscription_bridge import _lessons, _today_notes
+    p = tmp_path / "d.jsonl"
+    rows = [{"ts": "2026-11-02T14:00:00", "time": "14:00", "regime": "防守观察", "action": "空仓等待",
+             "analysis": {"market": "昨天", "plan": "旧计划"}},
+            {"ts": "2026-11-03T09:26:00", "time": "09:26", "regime": "进攻观察", "action": "允许模拟小仓评估",
+             "analysis": {"market": "竞价高开", "plan": "开盘盯 600001 冲板"}}]
+    p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+    notes = _today_notes(DAY.date(), p)
+    assert [n["time"] for n in notes] == ["09:26"] and notes[0]["plan"] == "开盘盯 600001 冲板"
+    lp = tmp_path / "l.json"
+    lp.write_text(json.dumps({"lessons": [{"text": "a"}, {"text": "b", "active": False}]}), encoding="utf-8")
+    assert [x["text"] for x in _lessons(lp)] == ["a"] and _lessons(tmp_path / "none.json") == []
+
+
+def test_board_context_remembers_fills_and_sentiment(tmp_path):
+    from dashboard.subscription_bridge import _board_context
+    path = _db_with_watch(tmp_path)
+    conn = db.connect(str(path))
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES (?, '', 'sentiment', ?, 'market')",
+                 ("2026-11-03T09:40:00", json.dumps({"label": "偏弱", "stats": {"炸板率%": 35.0}}, ensure_ascii=False)))
+    conn.commit()
+    conn.close()
+    ctx = _board_context(path, DAY.date())
+    assert ctx["fills"][0]["side"] == "buy" and ctx["sentiment"]["stats"]["炸板率%"] == 35.0

@@ -26,7 +26,8 @@ LOG_PATH = RUNTIME / "ai_loop.log"
 LOCK_PATH = RUNTIME / "ai_loop.lock"
 
 INTERVAL_SECONDS = 300
-SESSIONS = ((dtime(9, 35), dtime(11, 25)), (dtime(13, 5), dtime(14, 50)))
+# 09:26 竞价一轮（开盘前定开不开闸）；09:31 起每 5 分钟（之前 09:35 起，开盘头几分钟的板打不到）
+SESSIONS = ((dtime(9, 26), dtime(9, 29)), (dtime(9, 31), dtime(11, 25)), (dtime(13, 1), dtime(14, 50)))
 MAX_CALLS_PER_DAY = int(os.environ.get("AI_LOOP_MAX_CALLS", "60"))   # 盘中 4 小时 5 分钟一次是 48 次
 FAIL_BACKOFF_AFTER = 3
 FAIL_BACKOFF_SECONDS = 600

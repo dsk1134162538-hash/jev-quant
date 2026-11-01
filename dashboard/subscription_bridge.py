@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 from dataclasses import asdict
-from datetime import date, datetime
+from datetime import date, datetime, time as dtime
 from pathlib import Path
 
 from dashboard.adaptive_paper import (
@@ -86,7 +86,7 @@ def _previous_judgment(path: Path = None) -> dict | None:
 
 def _board_context(db_path, day) -> dict:
     """后台扫首板今天的观察池 + AI 打首板主账户（持仓、成本、回本价），给 DeepSeek 表态用。读不到就是空。"""
-    out = {"watch": [], "account": None}
+    out = {"watch": [], "account": None, "fills": [], "sentiment": None}
     if not db_path or not Path(db_path).exists():
         return out
     from jevq.data import candidates
@@ -108,11 +108,57 @@ def _board_context(db_path, day) -> dict:
                 positions.append({"code": code, "shares": shares, "cost": round(cost, 2), "buyPrice": buy_price,
                                   "buyDate": buy_date, "breakeven": breakeven_price(pos)})
             out["account"] = {"cash": None if cash is None else round(cash[0], 2), "positions": positions}
+            # 交易记忆：最近 20 笔 AI 打首板成交（主账户），做 T、回本都要看着它
+            out["fills"] = [{"ts": ts[:16], "side": side, "code": code, "price": price, "shares": shares,
+                             "reason": (reason or "")[:60]}
+                            for ts, side, code, price, shares, reason in conn.execute(
+                                "SELECT ts, side, code, price, shares, reason FROM fills WHERE account=? "
+                                "ORDER BY ts DESC LIMIT 20", (account,))]
+            # 情绪统计（后台每隔几分钟记一次：涨停、跌停、炸板率、连板…），取最近一条
+            row = conn.execute("SELECT ts, detail FROM decisions WHERE verdict='sentiment' "
+                               "ORDER BY ts DESC LIMIT 1").fetchone()
+            if row:
+                detail = json.loads(row[1] or "{}")
+                out["sentiment"] = {"ts": row[0][:16], "label": detail.get("label"), "stats": detail.get("stats")}
         finally:
             conn.close()
     except sqlite3.Error:
         return out
     return out
+
+
+LESSONS_PATH = RUNTIME / "ai_lessons.json"
+
+
+def _today_notes(day, path: Path = None, limit: int = 12) -> list[dict]:
+    """当日盘中笔记：今天每一轮 DeepSeek 自己的结论和计划（压缩成一行），让它记得自己前面干了什么。"""
+    path = Path(path or DECISIONS_PATH)
+    if not path.exists():
+        return []
+    notes = []
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not str(row.get("ts", "")).startswith(day.isoformat()):
+                    continue
+                analysis = row.get("analysis") or {}
+                notes.append({"time": row.get("time"), "regime": row.get("regime"), "action": row.get("action"),
+                              "market": (analysis.get("market") or "")[:80], "plan": (analysis.get("plan") or "")[:160]})
+    except (OSError, ValueError):
+        return notes[-limit:]
+    return notes[-limit:]
+
+
+def _lessons(path: Path = None) -> list:
+    """收盘复盘攒下来的经验条（有依据次数和验证结果）；还没有就是空。"""
+    try:
+        data = json.loads(Path(path or LESSONS_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [x for x in (data.get("lessons") or []) if x.get("active", True)][:20]
 
 
 def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
@@ -126,7 +172,10 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
     context = service.payload()
     market = context.get("marketBreadth", {})
     sectors = context.get("sectorBreadth", {})
-    eligible = (context.get("snapshot", {}).get("phase") == "盘中" and
+    # 09:25 集合竞价出结果后到 09:30 开盘前算「竞价」轮（dj 2026-11-01：要分析竞价），让 DeepSeek 开盘前就定开不开闸
+    phase_now = "竞价" if dtime(9, 25) <= now.time() < dtime(9, 30) and now.weekday() < 5 \
+        else context.get("snapshot", {}).get("phase")
+    eligible = (phase_now in ("盘中", "竞价") and
                 all((market.get("complete"), sectors.get("complete"),
                      not market.get("stale"), not sectors.get("stale"))))
     if not eligible:
@@ -187,6 +236,9 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
             "constraints": constraints,
             "previous": _previous_judgment(),
             "boardWatch": board["watch"], "boardAccount": board["account"],
+            "memory": {"todayNotes": _today_notes(now.date()), "recentFills": board["fills"],
+                       "sentiment": board["sentiment"], "lessons": _lessons()},
+            "auction": phase_now == "竞价",
         },
     }
     _atomic_json(output, value)

@@ -217,7 +217,7 @@ function Status({ data, error, at }) {
 }
 
 const SECTIONS = [
-  ['market', '大盘'], ['sectors', '板块'], ['picks', '标的'], ['forecast', '预测'], ['review', '复盘'],
+  ['market', '大盘'], ['sectors', '板块'], ['picks', '标的'], ['forecast', '预测'], ['review', '复盘'], ['plan', '计划'],
 ]
 const ACTION_TONE = { 模拟买入: 'up', 模拟卖出: 'down', 观察: 'flat' }
 

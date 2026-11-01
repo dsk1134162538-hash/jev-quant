@@ -20,18 +20,20 @@ ANALYSIS_FIELDS = {
     "sectors": "板块看法：哪些板块有资金和消息在推、哪些在退潮要回避，为什么",
     "picks": "标的：候选里你最关注哪几只（写代码和名字），理由；没有就说为什么都不碰",
     "forecast": "后续预测：接下来到收盘、以及明天，你预计会怎么走；写清楚什么情况说明你判断错了",
-    "review": "复盘：对照上一次判断（输入里的 previous），哪里说对了、哪里错了、这次怎么修正；没有上一次就写「首次判断」",
+    "review": "复盘：对照今天前面几轮（portfolioContext.memory.todayNotes）和上一次判断（previous），哪里说对了、哪里错了、这次怎么修正；没有就写「首次判断」",
+    # 记忆（dj 2026-11-01：没有记忆做 T 会乱做）：每轮写下一步计划，下一轮先核对计划兑现没有
+    "plan": "下一步计划：接下来几轮你要盯什么、到什么价位/条件做什么（开闸、否决哪只、持仓怎么处理）；先核对上一轮计划兑现没有",
 }
 ANALYSIS_MAX = 400
 
 
 def build_questions(analysis: bool = False) -> dict:
-    extra = {"analysis": {"type": "text", "instructions": "用你自己的话写这五段分析，每段不超过 400 字，只依据输入里的数据。",
+    extra = {"analysis": {"type": "text", "instructions": "用你自己的话写这六段分析，每段不超过 400 字，只依据输入里的数据。",
                           "criteria": ANALYSIS_FIELDS}} if analysis else {}
     return {**extra,
-        "regime": {"type": "choice", "instructions": "只根据当前全市场宽度、指数和行业广度，选择当前研究状态；不要使用旧策略规则。",
+        "regime": {"type": "choice", "instructions": "根据全市场宽度、涨跌停和炸板、指数、行业广度，判断现在的情绪状态。",
                    "criteria": REGIMES},
-        "action": {"type": "choice", "instructions": "选择研究动作。这不是交易指令，不得假设可以自动买卖。",
+        "action": {"type": "choice", "instructions": "「允许模拟小仓评估」= 打首板开闸（模拟账户，程序扫板）；「空仓等待」「仅观察候选」= 关闸空仓。",
                    "criteria": ACTIONS},
     }
 

@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CLI = (ROOT / "dashboard" / "runtime" / "workbuddy-cli" / "node_modules" /
                "@tencent-ai" / "codebuddy-code" / "bin" / "codebuddy")
 DEFAULT_MODEL = "deepseek-v4.1-flash"
+OFFICIAL_URL = "https://api.deepseek.com/chat/completions"
+OFFICIAL_MODEL = "deepseek-flash"      # 官方 /models 11-01 实测：DeepSeek-V4.1-Flash
 
 # 交易员角色（dj 2026-11-01）：只做龙头、打首板、超短线快进快出，市场不好空仓；单票不亏损。
 # Kimi 那份「研究判断器」不动，只给 DeepSeek 用这一份。
@@ -134,6 +136,10 @@ def build_prompt(snapshot: dict) -> str:
             "动作的含义：action 选「允许模拟小仓评估」= 打开打首板闸门，程序会在候选冲板时买入；"
             "选「空仓等待」或「仅观察候选」= 关闸空仓。portfolio.orders 里对 portfolioContext.boardWatch 的首板候选："
             "「模拟买入」= 同意打这只，「观察」= 否决这只；对持仓：「模拟卖出」只在不亏的前提下才会执行。\n"
+            "portfolioContext.memory 是你的记忆：todayNotes 是你今天前面每一轮的结论和计划，recentFills 是最近成交，"
+            "sentiment 是涨跌停、炸板率、连板统计，lessons 是之前复盘攒下的经验（带验证次数）。先看记忆再判断，不要前后打架。\n"
+            "portfolioContext.auction 为 true 时是 09:25 集合竞价刚结束、还没开盘：行情里的价格是竞价价，"
+            "openPct 是竞价高开低开幅度、volume 是竞价量；这一轮决定开盘就开闸还是空仓。\n"
             "枚举字段只能输出给定的键名，严禁拼接括号或解释；例如只写\"风险收缩\"，"
             "不能写\"风险收缩（缺少有效证据，仅观察）\"。confidence 必须是数字。\n"
             "实时数据：\n" + json.dumps(state, ensure_ascii=False)
@@ -162,11 +168,20 @@ def _parse_answer(stdout: str) -> dict:
     return value
 
 
-def judge_snapshot(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANSWERS_PATH,
-                   cli_path: Path | None = None, model: str = DEFAULT_MODEL,
-                   timeout: float = 90, runner=subprocess.run) -> dict:
-    """调用一次 WorkBuddy 并严格验证答案；此函数实际执行时会消耗其订阅积分。"""
-    snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
+def _api_key() -> str:
+    """DeepSeek 官方 key：先看进程环境变量；进程是在 dj 设 key 之前起的就去读注册表里的用户环境变量。不打印。"""
+    key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if key or os.name != "nt":
+        return key
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as reg:
+            return str(winreg.QueryValueEx(reg, "DEEPSEEK_API_KEY")[0] or "")
+    except OSError:
+        return ""
+
+
+def _ask_workbuddy(snapshot: dict, cli_path, model: str, timeout: float, runner) -> str:
     cli = Path(cli_path or os.environ.get("WORKBUDDY_CLI", DEFAULT_CLI))
     command = [
         _node_executable(), str(cli), "--print", "--model", model,
@@ -189,9 +204,51 @@ def judge_snapshot(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANS
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "未知错误").strip()[-500:]
         raise WorkBuddyError(f"WorkBuddy 执行失败（{completed.returncode}）：{detail}")
-    if not (completed.stdout or "").strip() and (completed.stderr or "").strip():
-        raise WorkBuddyError(f"WorkBuddy 没有输出答案：{completed.stderr.strip()[-300:]}")
-    answer = _parse_answer(completed.stdout)
+    if not out_text.strip() and err_text.strip():
+        raise WorkBuddyError(f"WorkBuddy 没有输出答案：{err_text.strip()[-300:]}")
+    return out_text
+
+
+def _ask_official(snapshot: dict, key: str, timeout: float, post=None) -> str:
+    """WorkBuddy 限流时的兜底（dj 2026-11-01）：DeepSeek 官方 API，同一个模型、同一套提示词。
+    官方接口不认 JSON Schema，只能要求 JSON 对象，所以把 schema 附在提示词里，回来照样严格校验。"""
+    import requests
+    session = requests.Session()
+    session.trust_env = False                      # 不走系统代理（pushplus 10-30 栽过 ProxyError）
+    post = post or session.post
+    schema = json.dumps(answer_schema(snapshot), ensure_ascii=False, separators=(",", ":"))
+    body = {"model": OFFICIAL_MODEL, "temperature": 0.3, "response_format": {"type": "json_object"},
+            "messages": [{"role": "system", "content": SYSTEM_PROMPT},
+                         {"role": "user", "content": build_prompt(snapshot) + "\n输出必须符合这个 JSON Schema：" + schema}]}
+    try:
+        r = post(OFFICIAL_URL, json=body, timeout=timeout,
+                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    except requests.RequestException as exc:
+        raise WorkBuddyError(f"DeepSeek 官方 API 请求失败：{type(exc).__name__}") from exc
+    if r.status_code != 200:
+        raise WorkBuddyError(f"DeepSeek 官方 API 返回 {r.status_code}：{r.text[:200]}")
+    try:
+        return r.json()["choices"][0]["message"]["content"] or ""
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise WorkBuddyError("DeepSeek 官方 API 返回格式不对") from exc
+
+
+def judge_snapshot(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANSWERS_PATH,
+                   cli_path: Path | None = None, model: str = DEFAULT_MODEL,
+                   timeout: float = 90, runner=subprocess.run, post=None) -> dict:
+    """调用一次 WorkBuddy 并严格验证答案；WorkBuddy 限流且配了 DEEPSEEK_API_KEY 时改走官方 API（会花钱）。"""
+    snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
+    try:
+        text, label = _ask_workbuddy(snapshot, cli_path, model, timeout, runner), f"workbuddy:{model}"
+    except WorkBuddyRateLimited as limited:
+        key = _api_key()
+        if not key:
+            raise
+        try:
+            text, label = _ask_official(snapshot, key, timeout, post), f"deepseek-api:{OFFICIAL_MODEL}"
+        except WorkBuddyError as exc:
+            raise WorkBuddyRateLimited(f"{limited}；官方 API 兜底也失败：{exc}", limited.reset_at) from exc
+    answer = _parse_answer(text)
     if answer.get("snapshotId") != snapshot.get("snapshotId"):
         raise WorkBuddyError("WorkBuddy 答案与快照编号不一致")
     questions = snapshot["questions"]
@@ -207,7 +264,7 @@ def judge_snapshot(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANS
     temporary = answers_path.with_suffix(answers_path.suffix + ".tmp")
     temporary.write_text(json.dumps(answer, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temporary, answers_path)
-    return {"ok": True, "snapshotId": snapshot["snapshotId"], "model": f"workbuddy:{model}",
+    return {"ok": True, "snapshotId": snapshot["snapshotId"], "model": label,
             "answersPath": str(answers_path)}
 
 

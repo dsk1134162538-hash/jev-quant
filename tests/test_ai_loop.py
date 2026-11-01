@@ -8,14 +8,16 @@ def at(d, h, m, s=0):
     return datetime(2026, 11, d, h, m, s)
 
 
-def test_sessions_are_beijing_morning_and_afternoon_on_weekdays():
-    assert ai_loop.in_session(at(2, 9, 35)) and ai_loop.in_session(at(2, 11, 24))
+def test_sessions_are_auction_morning_and_afternoon_on_weekdays():
+    assert ai_loop.in_session(at(2, 9, 26)) and not ai_loop.in_session(at(2, 9, 30))   # 09:26 竞价一轮，09:30 不跑
+    assert ai_loop.in_session(at(2, 9, 31)) and ai_loop.in_session(at(2, 11, 24))
     assert not ai_loop.in_session(at(2, 11, 25)) and not ai_loop.in_session(at(2, 12, 0))
-    assert ai_loop.in_session(at(2, 13, 5)) and not ai_loop.in_session(at(2, 14, 50))
+    assert ai_loop.in_session(at(2, 13, 1)) and not ai_loop.in_session(at(2, 14, 50))
     assert not ai_loop.in_session(at(1, 10, 0))                       # 周日
-    assert ai_loop.next_session_start(at(1, 10, 0)) == at(2, 9, 35)   # 周日 → 周一开盘
-    assert ai_loop.next_session_start(at(2, 12, 0)) == at(2, 13, 5)
-    assert ai_loop.next_session_start(at(6, 15, 0)) == at(9, 9, 35)   # 周五收盘后 → 下周一
+    assert ai_loop.next_session_start(at(1, 10, 0)) == at(2, 9, 26)   # 周日 → 周一竞价
+    assert ai_loop.next_session_start(at(2, 9, 27)) == at(2, 9, 31)
+    assert ai_loop.next_session_start(at(2, 12, 0)) == at(2, 13, 1)
+    assert ai_loop.next_session_start(at(6, 15, 0)) == at(9, 9, 26)   # 周五收盘后 → 下周一
 
 
 def test_run_once_logs_skip_without_counting_a_model_call():
@@ -56,9 +58,9 @@ def _run_loop(start, until, cycle, **kw):
 
 def test_loop_runs_every_five_minutes_inside_the_session_only():
     calls = []
-    logs = _run_loop(at(2, 9, 30), at(2, 10, 0), lambda: calls.append(1) or {"ok": True, "model": "m"})
-    assert len(calls) == 5                                            # 窗口 09:35 才开始；09:35、40、45、50、55，10:00 是结束时刻
-    assert [l["ts"][11:16] for l in logs if l.get("called")] == ["09:35", "09:40", "09:45", "09:50", "09:55"]
+    logs = _run_loop(at(2, 9, 20), at(2, 10, 0), lambda: calls.append(1) or {"ok": True, "model": "m"})
+    # 09:26 竞价一轮；开盘后 09:31 起每 5 分钟，10:00 是结束时刻
+    assert [l["ts"][11:16] for l in logs if l.get("called")] == ["09:26", "09:31", "09:36", "09:41", "09:46", "09:51", "09:56"]
 
 
 def test_loop_stops_calling_at_daily_cap_and_backs_off_after_failures():

@@ -44,3 +44,4 @@ def _no_extra_market_data(monkeypatch):
     monkeypatch.setattr("jevq.config.LEGACY_BUY_ENABLED", True)       # 老规则的测试照旧按会买来测     # 盘前自检要联网、问 Claude
     monkeypatch.setattr("jevq.config.REBOUND_SECTOR_VETO", False)
     monkeypatch.setattr("jevq.config.AI_BOARD_ENABLED", False)        # AI 打首板在 test_ai_board 里单独测
+    monkeypatch.setattr("dashboard.workbuddy_bridge._api_key", lambda: "")   # 本机有真 key，测试绝不能花钱调官方 API
