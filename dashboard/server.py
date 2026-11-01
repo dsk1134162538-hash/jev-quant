@@ -23,6 +23,7 @@ from dashboard.adaptive_paper import AdaptivePaperEngine
 from dashboard.decision_journal import DecisionJournal
 from dashboard.kimi_judge import KimiJudge
 from dashboard.market_snapshot import MarketSnapshotService
+from dashboard.terminal import TerminalData
 from jevq.data.tencent import parse_quotes
 from research.kronos_status import kronos_status
 from research.status import cross_sectional_status
@@ -97,6 +98,14 @@ class DashboardService:
         self._background_last_run = None
         self._background_last_success = None
         self._background_error = ""
+        self.terminal = TerminalData(self.db_path, ROOT / "dashboard" / "runtime")
+
+    def terminal_payload(self) -> dict:
+        """行情终端页：秒级行情 + jevq.sqlite 各账户 + 实盘/网关状态（只读）。"""
+        self._refresh_quotes()
+        paper = self.paper.status()["account"] if self.paper is not None else None
+        return self.terminal.payload(self._quotes, self.market.payload().get("marketBreadth", {}), paper,
+                                     self.journal.records())
 
     @staticmethod
     def _default_decision_judge():
@@ -174,6 +183,9 @@ class DashboardService:
         if self.paper is not None:
             for row in self.paper.status()["account"]["positionDetails"]:
                 symbols.append(self._symbol(row["code"]))
+        terminal = getattr(self, "terminal", None)
+        if terminal is not None:                 # 各策略账户、实盘的持仓也进秒级通道（行情终端页按它估值）
+            symbols += [self._symbol(code) for code in terminal.held_codes()]
         return list(dict.fromkeys(symbols))
 
     def _paper_quotes(self, codes: list[str]) -> dict:
@@ -370,6 +382,12 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/api/dashboard":
             try:
                 self._json(200, self.service.payload())
+            except Exception as exc:
+                self._json(503, {"ok": False, "error": str(exc)})
+            return
+        if self.path == "/api/terminal":
+            try:
+                self._json(200, self.service.terminal_payload())
             except Exception as exc:
                 self._json(503, {"ok": False, "error": str(exc)})
             return
