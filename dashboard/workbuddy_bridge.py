@@ -128,10 +128,18 @@ def build_prompt(snapshot: dict) -> str:
 def _parse_answer(stdout: str) -> dict:
     if not stdout or not stdout.strip():
         raise WorkBuddyError("WorkBuddy 返回了空内容")
+    text = stdout.strip()
     try:
-        value = json.loads(stdout.strip())
+        value = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise WorkBuddyError("WorkBuddy 的回答不是纯 JSON") from exc
+        # 11-01 预检：同一份快照偶尔在 JSON 前后夹带说明文字，取最外层的大括号再试一次
+        start, end = text.find("{"), text.rfind("}")
+        try:
+            value = json.loads(text[start:end + 1]) if 0 <= start < end else None
+        except json.JSONDecodeError:
+            value = None
+        if value is None:
+            raise WorkBuddyError("WorkBuddy 的回答不是纯 JSON") from exc
     if not isinstance(value, dict):
         raise WorkBuddyError("WorkBuddy 的回答顶层不是对象")
     return value

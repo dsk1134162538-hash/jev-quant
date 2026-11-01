@@ -49,6 +49,14 @@ def test_bad_answers_are_rejected_and_nothing_is_written(tmp_path, stdout, code)
     assert not (tmp_path / "ans.json").exists()
 
 
+def test_answer_wrapped_in_prose_is_still_accepted(tmp_path):
+    """11-01 预检：DeepSeek 偶尔在 JSON 前后带一句话，之前整轮作废。"""
+    stdout = "以下是判断：\n```json\n" + json.dumps(GOOD, ensure_ascii=False) + "\n```"
+    out = wb.judge_snapshot(_snap(tmp_path), tmp_path / "ans.json", cli_path=tmp_path / "cli",
+                            runner=_runner(stdout))
+    assert out["ok"] and json.loads((tmp_path / "ans.json").read_text(encoding="utf-8")) == GOOD
+
+
 def test_bridge_modules_have_no_broker_or_live_switch():
     import pathlib
     for name in ("dashboard/workbuddy_bridge.py", "research/candidate_paper_bridge.py",
