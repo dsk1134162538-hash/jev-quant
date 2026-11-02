@@ -162,7 +162,36 @@ def p5488(o, c, h, l, v) -> dict[str, np.ndarray]:
     return {"P5488·龙回头": sig, "P5488·情绪高潮(收>5日线)": hot, "P5488·情绪冰点(收<=5日线)": sig & ~hot}
 
 
-INDICATORS = (youzi, leiting, p5463, p5488)
+def sniper(o, c, h, l, v) -> dict[str, np.ndarray]:
+    """无敌狙击枪（P6079）：下跌震荡后转涨 + 均线 + MACD 拐头 + 放量。"""
+    c1, c2 = REF(c, 1), REF(c, 2)
+    pull = (c <= c1) & (c >= c2)          # 小幅回调，介于昨收与前日收盘之间
+    bounce = (c >= c1) & (c <= c2)        # 小幅反弹
+    sq1 = (c > c1) & (c > c2)
+    sqd = (c < c1) & (c < c2)
+    # 下跌后的震荡链：SQD → 反弹 → 回调 → 反弹 …（SQE..SQ18 共 13 节）
+    down_any = sqd.copy()
+    prev = sqd
+    for k in range(13):
+        cur = np.zeros(len(c), bool)
+        cur[1:] = prev[:-1]
+        cur &= bounce if k % 2 == 0 else pull
+        down_any |= cur
+        prev = cur
+    sq19 = np.zeros(len(c), bool)
+    sq19[1:] = down_any[:-1]
+    sq19 &= sq1
+    diff = EMA(c, 9) - EMA(c, 26)
+    macd_l = 2 * (diff - EMA(diff, 12))
+    zc = (macd_l > REF(macd_l, 1)) & (REF(macd_l, 1) > 0) & (REF(macd_l, 2) > REF(macd_l, 1))
+    dif_s = EMA(c, 12) - EMA(c, 26)
+    macd_s = 2 * (dif_s - EMA(dif_s, 9))
+    mid = (MA(c, 20) + MA(c, 60)) / 2
+    xg = sq19 & (c > EMA(c, 7)) & (macd_s > 0) & (c > mid * 1.1) & zc & (v / REF(v, 1) > 1.9) & (c > c1)
+    return {"无敌狙击枪": xg, "狙击枪·形态SQ19": sq19}
+
+
+INDICATORS = (youzi, leiting, p5463, p5488, sniper)
 
 
 def exits(rows, i) -> dict:
