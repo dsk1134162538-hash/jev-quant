@@ -176,3 +176,22 @@ def test_portfolio_output_template_asks_for_sector_and_next():
 def test_liquor_sector_is_open_for_first_board():
     # dj 2026-11-02：打首板了，酿酒板块放开
     assert "白酒等冷门" not in wb.SYSTEM_PROMPT and "酿酒" in wb.SYSTEM_PROMPT
+
+
+def test_run_cycle_starts_shadows_and_records_main_judgment(tmp_path, monkeypatch):
+    from dashboard import ai_score
+    snap = {"snapshotId": "2026-11-03T09:40:00", "questions": {}}
+    (tmp_path / "s.json").write_text(json.dumps(snap), encoding="utf-8")
+    (tmp_path / "a.json").write_text(json.dumps({"snapshotId": snap["snapshotId"],
+                                                 "action": {"choice": "空仓等待"}}, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(wb, "create_snapshot", lambda: {"eligible": True, "snapshotPath": str(tmp_path / "s.json")})
+    monkeypatch.setattr(wb, "judge_snapshot", lambda **kw: {"model": "deepseek-api:deepseek-flash",
+                                                             "answersPath": str(tmp_path / "a.json")})
+    monkeypatch.setattr(wb, "submit_answers", lambda model_name: {"ok": True, "decisionId": "D1"})
+    started = []
+    monkeypatch.setattr(ai_score, "start_shadows", lambda s, gate: started.append(s["snapshotId"]) or ["x"])
+    rows = []
+    monkeypatch.setattr(ai_score, "append_judgment", rows.append)
+    out = wb.run_cycle(model="deepseek-v4.1-flash")
+    assert out["shadows"] == ["x"] and started == [snap["snapshotId"]]
+    assert rows[0]["model"] == "deepseek-v4.1-flash" and rows[0]["role"] == "main" and rows[0]["gateOpen"] is False

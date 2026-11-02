@@ -26,15 +26,46 @@ LOG_PATH = RUNTIME / "ai_loop.log"
 LOCK_PATH = RUNTIME / "ai_loop.lock"
 
 INTERVAL_SECONDS = 300
+FAST_INTERVAL_SECONDS = 120          # 扫板窗口（到 10:30）每 2 分钟一轮（dj 2026-11-02：WorkBuddy 额度用不完）
+FAST_UNTIL = dtime(10, 30)
+DAILY_JOB_AFTER = dtime(15, 35)      # 收盘后记分、赛马排行、复盘写经验条
+DAILY_STATE = RUNTIME / "ai_daily_job.json"
 # 09:26 竞价一轮（开盘前定开不开闸）；09:31 起每 5 分钟（之前 09:35 起，开盘头几分钟的板打不到）
 SESSIONS = ((dtime(9, 26), dtime(9, 29)), (dtime(9, 31), dtime(11, 25)), (dtime(13, 1), dtime(14, 50)))
-MAX_CALLS_PER_DAY = int(os.environ.get("AI_LOOP_MAX_CALLS", "60"))   # 盘中 4 小时 5 分钟一次是 48 次
+MAX_CALLS_PER_DAY = int(os.environ.get("AI_LOOP_MAX_CALLS", "150"))  # 2 分钟一轮的扫板窗口约 32 次 + 5 分钟一轮约 40 次
 FAIL_BACKOFF_AFTER = 3
 FAIL_BACKOFF_SECONDS = 600
 
 
 def in_session(now: datetime) -> bool:
     return now.weekday() < 5 and any(a <= now.time() < b for a, b in SESSIONS)
+
+
+def interval_for(now: datetime) -> int:
+    return FAST_INTERVAL_SECONDS if now.time() < FAST_UNTIL else INTERVAL_SECONDS
+
+
+def daily_job_due(now: datetime, state: Path = DAILY_STATE) -> bool:
+    if now.weekday() >= 5 or now.time() < DAILY_JOB_AFTER:
+        return False
+    try:
+        return json.loads(state.read_text(encoding="utf-8")).get("date") != now.date().isoformat()
+    except (OSError, ValueError):
+        return True
+
+
+def run_daily_job(now: datetime, job, state: Path = DAILY_STATE) -> dict:
+    """收盘后一次：任何异常只记日志，不让循环挂掉；跑过就记日期，当天不重跑。"""
+    record = {"ts": now.isoformat(timespec="seconds"), "dailyJob": True}
+    try:
+        result = job()
+        record.update(ok=True, newDays=result.get("newDays"), lessons=result.get("lessons"),
+                      lessonError=result.get("lessonError"))
+    except Exception as e:                                   # noqa: BLE001
+        record.update(ok=False, error=f"{type(e).__name__}: {str(e)[:300]}")
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"date": now.date().isoformat(), **record}, ensure_ascii=False), encoding="utf-8")
+    return record
 
 
 def next_session_start(now: datetime) -> datetime:
@@ -104,13 +135,17 @@ def run_once(cycle=None, clock=datetime.now, log=_log, calls_today: int = 0) -> 
 
 
 def loop(cycle=None, clock=datetime.now, sleep=time.sleep, log=_log, max_calls: int = MAX_CALLS_PER_DAY,
-         stop=lambda: False) -> None:
+         stop=lambda: False, daily=None) -> None:
+    """daily：收盘后任务（main 里传真的 ai_score.daily_job；测试不传就不跑）。"""
     calls, fails, today = 0, 0, None
     while not stop():
         now = clock()
         if today != now.date():
             today, calls, fails = now.date(), 0, 0
         if not in_session(now):
+            if daily is not None and daily_job_due(now):
+                log(run_daily_job(now, daily))
+                continue
             wait = (next_session_start(now) - now).total_seconds()
             sleep(max(1.0, min(wait, 600.0)))
             continue
@@ -129,7 +164,7 @@ def loop(cycle=None, clock=datetime.now, sleep=time.sleep, log=_log, max_calls: 
             continue
         # 下一轮对齐到 5 分钟间隔：从这一轮开始算，不是从结束算
         elapsed = (clock() - now).total_seconds()
-        wait = max(1.0, INTERVAL_SECONDS - elapsed)
+        wait = max(1.0, interval_for(now) - elapsed)
         if fails >= FAIL_BACKOFF_AFTER:
             wait += FAIL_BACKOFF_SECONDS
             log({"ts": clock().isoformat(timespec="seconds"), "ok": False, "called": False,
@@ -148,7 +183,9 @@ def main(argv=None) -> int:
                 rec = run_once()
                 print(json.dumps(rec, ensure_ascii=False))
                 return 0 if rec["ok"] else 1
-            loop()
+            from dashboard.ai_score import daily_job
+            from jevq.notify import notifier_from_env
+            loop(daily=lambda: daily_job(notifier=notifier_from_env()))
     except RuntimeError as e:                                # 锁被占用
         print(str(e), file=sys.stderr)
         return 2

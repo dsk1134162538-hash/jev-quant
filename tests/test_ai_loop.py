@@ -59,8 +59,9 @@ def _run_loop(start, until, cycle, **kw):
 def test_loop_runs_every_five_minutes_inside_the_session_only():
     calls = []
     logs = _run_loop(at(2, 9, 20), at(2, 10, 0), lambda: calls.append(1) or {"ok": True, "model": "m"})
-    # 09:26 竞价一轮；开盘后 09:31 起每 5 分钟，10:00 是结束时刻
-    assert [l["ts"][11:16] for l in logs if l.get("called")] == ["09:26", "09:31", "09:36", "09:41", "09:46", "09:51", "09:56"]
+    # 09:26 竞价窗口；开盘后 09:31 起，扫板窗口（到 10:30）每 2 分钟一轮，10:00 是结束时刻
+    expected = ["09:26", "09:28"] + [f"09:{m:02d}" for m in range(31, 60, 2)]
+    assert [l["ts"][11:16] for l in logs if l.get("called")] == expected
 
 
 def test_loop_stops_calling_at_daily_cap_and_backs_off_after_failures():
@@ -76,7 +77,7 @@ def test_loop_stops_calling_at_daily_cap_and_backs_off_after_failures():
         raise RuntimeError("x")
     logs = _run_loop(at(3, 9, 35), at(3, 10, 30), boom)
     assert any("连续失败" in str(l.get("skipped")) for l in logs)
-    assert sum(1 for l in logs if l.get("error")) <= 5               # 退避后不会每 5 分钟继续硬撞
+    assert sum(1 for l in logs if l.get("error")) <= 8               # 退避后不会每 2 分钟继续硬撞（不退避是 28 次）
 
 
 def test_module_has_no_broker_or_live_switch():
@@ -117,3 +118,28 @@ def test_ensure_stdio_keeps_a_real_console(monkeypatch, tmp_path):
     ai_loop._ensure_stdio(tmp_path)
     assert ai_loop.sys.stdout is out
     assert not (tmp_path / "ai_loop.out").exists()
+
+
+def test_scan_window_runs_every_two_minutes_then_five():
+    assert ai_loop.interval_for(datetime(2026, 11, 3, 9, 40)) == 120
+    assert ai_loop.interval_for(datetime(2026, 11, 3, 10, 30)) == 300
+    assert ai_loop.interval_for(datetime(2026, 11, 3, 13, 5)) == 300
+
+
+def test_daily_job_runs_once_after_close_on_weekdays(tmp_path):
+    state = tmp_path / "daily.json"
+    assert not ai_loop.daily_job_due(datetime(2026, 11, 3, 15, 0), state)
+    assert not ai_loop.daily_job_due(datetime(2026, 11, 8, 16, 0), state)          # 周日
+    now = datetime(2026, 11, 3, 15, 40)
+    assert ai_loop.daily_job_due(now, state)
+    rec = ai_loop.run_daily_job(now, lambda: {"newDays": ["2026-11-02"], "lessons": 5}, state)
+    assert rec["ok"] and rec["lessons"] == 5
+    assert not ai_loop.daily_job_due(datetime(2026, 11, 3, 18, 0), state)
+    assert ai_loop.daily_job_due(datetime(2026, 11, 4, 15, 40), state)
+
+
+def test_daily_job_failure_is_logged_not_raised(tmp_path):
+    def boom():
+        raise RuntimeError("x")
+    rec = ai_loop.run_daily_job(datetime(2026, 11, 3, 15, 40), boom, tmp_path / "d.json")
+    assert rec["ok"] is False and "RuntimeError" in rec["error"]

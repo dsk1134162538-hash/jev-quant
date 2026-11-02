@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from dashboard.kimi_judge import _convert_answer, _question_text
@@ -280,8 +281,19 @@ def run_cycle(cli_path: Path | None = None, model: str = DEFAULT_MODEL,
     snapshot = create_snapshot()
     if not snapshot.get("eligible"):
         return snapshot
+    from dashboard import ai_score
+    from jevq import config as jevq_config
+    snap = json.loads(Path(snapshot["snapshotPath"]).read_text(encoding="utf-8"))
+    # 赛马（dj 2026-11-02）：陪跑模型同一份快照后台各答一次，只记分不碰账户，和主模型同时跑不拖慢主流程
+    shadows = ai_score.start_shadows(snap, jevq_config.AI_BOARD_GATE_ACTION)
+    t0 = time.monotonic()
     judged = judge_snapshot(cli_path=cli_path, model=model, timeout=timeout, runner=runner)
-    return submit_answers(model_name=judged["model"])
+    answer = json.loads(Path(judged["answersPath"]).read_text(encoding="utf-8"))
+    # 官方 API 兜底是同一个模型，记在同一条赛道
+    ai_score.append_judgment(ai_score.judgment_row(snap, answer, model, "main", time.monotonic() - t0,
+                                                   jevq_config.AI_BOARD_GATE_ACTION))
+    result = submit_answers(model_name=judged["model"])
+    return {**result, "shadows": shadows}
 
 
 def main() -> None:
