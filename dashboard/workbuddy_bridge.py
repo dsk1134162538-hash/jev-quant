@@ -138,6 +138,8 @@ def build_prompt(snapshot: dict) -> str:
             "动作的含义：action 选「允许模拟小仓评估」= 打开打首板闸门，程序会在候选冲板时买入；"
             "选「空仓等待」或「仅观察候选」= 关闸空仓。portfolio.orders 里对 portfolioContext.boardWatch 的首板候选："
             "「模拟买入」= 同意打这只，「观察」= 否决这只；对持仓：「模拟卖出」只在不亏的前提下才会执行。\n"
+            "只做沪深主板（60、00 开头）：创业板（30）、科创板（68）、北交所的票买不了，"
+            "行业龙头里出现它们只当板块强弱的参考，不要当候选、不要写进计划。\n"
             "portfolioContext.memory 是你的记忆：todayNotes 是你今天前面每一轮的结论和计划，recentFills 是最近成交，"
             "sentiment 是涨跌停、炸板率、连板统计，lessons 是之前复盘攒下的经验（带验证次数）。先看记忆再判断，不要前后打架。\n"
             "portfolioContext.auction 为 true 时是 09:25 集合竞价刚结束、还没开盘：行情里的价格是竞价价，"

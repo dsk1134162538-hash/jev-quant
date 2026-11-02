@@ -84,6 +84,14 @@ def _previous_judgment(path: Path = None) -> dict | None:
             "analysis": last["analysis"]}
 
 
+MAIN_BOARD = ("60", "00")        # 同 jevq.data.akdata.MAIN_BOARD；那边要 import pandas/akshare，这里不引
+
+
+def _main_board_only(codes) -> list[str]:
+    """dj 2026-11-02：只看沪深主板（60/00 开头），创业板、科创板、北交所买不了，不给 DeepSeek 当候选。"""
+    return [c for c in codes if str(c).startswith(MAIN_BOARD)]
+
+
 def _board_context(db_path, day) -> dict:
     """后台扫首板今天的观察池 + AI 打首板主账户（持仓、成本、回本价），给 DeepSeek 表态用。读不到就是空。"""
     out = {"watch": [], "account": None, "fills": [], "sentiment": None}
@@ -195,7 +203,7 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
     finally:
         conn.close()
     board = _board_context(getattr(service, "db_path", None), now.date())
-    codes = list(dict.fromkeys([*codes, *(w["code"] for w in board["watch"])]))
+    codes = _main_board_only(dict.fromkeys([*codes, *(w["code"] for w in board["watch"])]))
     quotes = service._paper_quotes(codes)
     # 首板候选取不到行情就不给 DeepSeek 看，不让一只票拖垮整轮
     dropped = {w["code"] for w in board["watch"]} - {c for c in codes if _quote_valid(quotes.get(c), now)}

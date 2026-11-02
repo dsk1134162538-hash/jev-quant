@@ -189,3 +189,10 @@ def test_portfolio_answer_keeps_sector_and_next_step():
     out = _convert_portfolio(criteria, {"posture": "防守", "positionPct": 0, "orders": {
         "002292": {"action": "观察", "confidence": 0.7, "reason": "封板", "sector": "传媒娱乐", "next": "竞价再看"}}})
     assert out["orders"]["002292"]["sector"] == "传媒娱乐" and out["orders"]["002292"]["next"] == "竞价再看"
+
+
+def test_only_shanghai_shenzhen_main_board_codes_reach_deepseek():
+    # dj 2026-11-02：只看沪深主板，创业板/科创板/北交所买不了
+    from dashboard.subscription_bridge import _main_board_only
+    assert _main_board_only(["600779", "300085", "688981", "002292", "000559", "301234", "920001", "830799", "603081"]) \
+        == ["600779", "002292", "000559", "603081"]
