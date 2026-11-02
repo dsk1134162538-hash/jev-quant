@@ -108,6 +108,40 @@ def _industries(db_path, codes) -> dict[str, str]:
         return {}
 
 
+def _stock_extras(db_path, quotes: dict, day) -> dict[str, dict]:
+    """打板要看的个股数据（dj 2026-11-02 优化第 2 步）：封单（买一挂单 × 价，只在涨停价上算）、封单占成交、
+    流通市值、5/20 日位置（到昨天收盘）、股东户数。读不到的字段就是 None。"""
+    out = {}
+    for code, q in quotes.items():
+        sealed = bool(q.limit_up) and q.price >= q.limit_up and bool(getattr(q, "bid_vols", ()))
+        seal = round(q.bid_vols[0] * 100 * q.price / 1e8, 2) if sealed else None
+        out[code] = {"sealAmount亿": seal,
+                     "sealRatio": round(seal * 1e8 / q.amount, 2) if seal and q.amount else None,
+                     "floatMcap亿": round(q.float_mcap, 1) if getattr(q, "float_mcap", 0) else None,
+                     "pos5%": None, "pos20%": None, "holders万": None}
+    if not db_path or not Path(db_path).exists() or not quotes:
+        return out
+    try:
+        conn = sqlite3.connect(f"{Path(db_path).as_uri()}?mode=ro", uri=True, timeout=2)
+        try:
+            for code in quotes:
+                closes = [r[0] for r in conn.execute(
+                    "SELECT close FROM closes WHERE code=? AND date<? ORDER BY date DESC LIMIT 21",
+                    (code, day.isoformat()))]
+                if len(closes) >= 6 and closes[5] > 0:
+                    out[code]["pos5%"] = round((closes[0] / closes[5] - 1) * 100, 1)
+                if len(closes) >= 21 and closes[20] > 0:
+                    out[code]["pos20%"] = round((closes[0] / closes[20] - 1) * 100, 1)
+                row = conn.execute("SELECT holders FROM holders WHERE code=?", (code,)).fetchone()
+                if row and row[0]:
+                    out[code]["holders万"] = round(row[0] / 1e4, 1)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        pass
+    return out
+
+
 def _board_context(db_path, day) -> dict:
     """后台扫首板今天的观察池 + AI 打首板主账户（持仓、成本、回本价），给 DeepSeek 表态用。读不到就是空。"""
     out = {"watch": [], "account": None, "fills": [], "sentiment": None}
@@ -236,6 +270,7 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
         conn.close()
     snapshot_id = now.isoformat(timespec="seconds")
     industries = _industries(getattr(service, "db_path", None), codes)
+    extras = _stock_extras(getattr(service, "db_path", None), quotes, now.date())
     constraints = {"account": AI_ACCOUNT, "liveTrading": False, "initialCapital": AI_TOTAL_BUDGET,
                    "maxPositions": 1, "maxDailyBuys": 2, "minConfidence": 0.65,
                    "tPlusOne": True, "lot": 100,
@@ -258,7 +293,8 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
         "portfolioContext": {
             "snapshot": context.get("snapshot"), "marketBreadth": market, "sectorBreadth": sectors,
             "account": account,
-            "quotes": {code: {**q, "industry": industries.get(code)} for code, q in paper._quote_payload(quotes).items()},
+            "quotes": {code: {**q, "industry": industries.get(code), **extras.get(code, {})}
+                       for code, q in paper._quote_payload(quotes).items()},
             "constraints": constraints,
             "previous": _previous_judgment(),
             "boardWatch": board["watch"], "boardAccount": board["account"],

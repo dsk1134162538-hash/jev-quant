@@ -220,3 +220,24 @@ def test_quote_industries_come_from_jevq_database(tmp_path):
     conn.close()
     assert _industries(db, ["603081", "600001"]) == {"603081": "传媒娱乐"}
     assert _industries(tmp_path / "missing.sqlite", ["603081"]) == {}
+
+
+def test_stock_extras_add_seal_position_cap_and_holders(tmp_path):
+    from datetime import date as _date
+    from dashboard.subscription_bridge import _stock_extras
+    db = tmp_path / "jevq.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE closes (date TEXT, code TEXT, close REAL, volume REAL, pre_close REAL)")
+    conn.execute("CREATE TABLE holders (code TEXT, holders INT, as_of TEXT, updated TEXT)")
+    for i in range(25):
+        conn.execute("INSERT INTO closes VALUES (?, '600001', ?, 0, 0)", (f"2026-10-{i + 1:02d}", 10.0 + i * 0.1))
+    conn.execute("INSERT INTO closes VALUES ('2026-11-03', '600001', 99, 0, 0)")          # 今天的不算
+    conn.execute("INSERT INTO holders VALUES ('600001', 35000, '', '')")
+    conn.commit()
+    conn.close()
+    q = Quote(code="600001", name="甲", price=11.0, pre_close=10.0, open=10.2, high=11.0, low=10.1, volume=1,
+              amount=2e8, limit_up=11.0, limit_down=9.0, ts=NOW, float_mcap=55.5, bid_vols=(20000, 1, 1, 1, 1))
+    out = _stock_extras(db, {"600001": q}, _date(2026, 11, 3))["600001"]
+    assert out["sealAmount亿"] == 0.22 and out["sealRatio"] == 0.11
+    assert out["floatMcap亿"] == 55.5 and out["holders万"] == 3.5
+    assert out["pos5%"] == round((12.4 / 11.9 - 1) * 100, 1) and out["pos20%"] == round((12.4 / 10.4 - 1) * 100, 1)
