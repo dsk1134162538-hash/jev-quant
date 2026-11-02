@@ -37,7 +37,9 @@ def build_portfolio_questions(quotes: dict) -> dict:
     return {"portfolio": {
         "type": "portfolio",
         "instructions": ("根据最新市场、行业、指数、首板观察池和模拟持仓，给出这一版策略：每只票一个动作，"
-                         "理由带当前数据。首板候选同意打就「模拟买入」，不看好就「观察」。"),
+                         "理由带当前数据。首板候选同意打就「模拟买入」，不看好就「观察」。"
+                         "sector 写这只票所属板块或题材（如「传媒娱乐」）；next 写后续怎么操作和触发条件："
+                         "出现什么价格、量能、竞价、板块或情绪信号时做什么（打板、低吸、卖出、回本走），什么情况彻底放弃。"),
         "criteria": {"posture": POSTURES, "positionPct": [0, 0.1, 0.2],
                      "codes": {code: quote.name for code, quote in quotes.items()},
                      "actions": PORTFOLIO_ACTIONS},

@@ -99,8 +99,10 @@ def answer_schema(snapshot: dict) -> dict:
                     "action": {"enum": list(criteria["actions"])},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                     "reason": {"type": "string", "maxLength": 200},
+                    "sector": {"type": "string", "maxLength": 30},
+                    "next": {"type": "string", "maxLength": 200},
                 },
-                "required": ["action", "confidence", "reason"], "additionalProperties": False,
+                "required": ["action", "confidence", "reason", "sector", "next"], "additionalProperties": False,
             }
             properties[name] = {
                 "type": "object",

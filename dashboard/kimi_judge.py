@@ -113,6 +113,11 @@ def _convert_portfolio(criteria: dict, raw: dict) -> dict:
         if order["action"] != "观察" and not reason.strip():
             raise ValueError(f"{code} 的模拟动作缺少证据")
         converted[code] = {"action": order["action"], "confidence": confidence, "reason": reason.strip()}
+        # 板块和「后续怎么做、触发条件」只进推送和面板，不参与执行；老答案没有也照收
+        for key, limit in (("sector", 30), ("next", 200)):
+            value = order.get(key)
+            if isinstance(value, str) and value.strip():
+                converted[code][key] = value.strip()[:limit]
     return {"type": "portfolio", "posture": posture, "positionPct": position_pct,
             "orders": converted, "confidence": min(order["confidence"] for order in converted.values())}
 

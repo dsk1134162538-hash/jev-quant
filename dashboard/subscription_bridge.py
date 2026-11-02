@@ -248,25 +248,57 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
     return result
 
 
-def notify_result(notifier, record: dict, latest: dict, reconciled: bool) -> None:
-    """分析每轮一条、成交每笔一条；推送失败不影响已经完成的模拟账本。"""
+def _order_block(code: str, order: dict, quote) -> str:
+    name = getattr(quote, "name", "") or ""
+    head = f"▶ {code} {name}".rstrip()
+    if order.get("sector"):
+        head += f"（{order['sector']}）"
+    if quote is not None and getattr(quote, "pre_close", 0):
+        head += f" {quote.price:.2f} {quote.pct:+.2f}%"
+        if quote.limit_up and quote.price >= quote.limit_up:
+            head += " 涨停"
+    head += f"｜{order['action']} {order.get('confidence', 0):.0%}"
+    lines = [head, f"  理由：{order.get('reason') or '仅观察'}"]
+    if order.get("next"):
+        lines.append(f"  后续：{order['next']}")
+    return "\n".join(lines)
+
+
+def notify_result(notifier, record: dict, latest: dict, reconciled: bool, quotes: dict | None = None) -> None:
+    """分析每轮一条、成交每笔一条；推送失败不影响已经完成的模拟账本。
+    dj 2026-11-02：推送要写细——股票名、板块、每只票后续怎么做和触发条件、现在什么行情、什么情况做什么。"""
+    quotes = quotes or {}
     portfolio = latest["portfolio"]
     execution = latest["execution"]
     orders = portfolio["orders"]
-    order_lines = [f"{code}｜{order['action']}｜{order['reason'] or '仅观察'}"
-                   for code, order in orders.items()]
     skipped = execution.get("skipped", [])
-    analysis = "\n".join([
-        f"时间：{record['ts']}",
-        f"状态：{record['regime']} · {record['action']}",
-        record["market"], record["sector"],
-        f"组合：{portfolio['posture']}，仓位上限 {portfolio['positionPct']:.0%}",
-        "候选判断：\n" + "\n".join(order_lines),
-        "风控／跳过：" + ("；".join(skipped) if skipped else "无"),
-        f"模拟成交：{len(execution.get('fills', []))} 笔；对账：{'一致' if reconciled else '异常'}",
+    text = record.get("analysis") or {}
+    gate_open = record["action"] == jevq_config.AI_BOARD_GATE_ACTION
+    gate = ("闸门开：09:30-10:30 观察池里 DeepSeek 表态「模拟买入」的票涨到 9% 且没摸过涨停时扫板，首仓一半"
+            if gate_open else
+            "闸门关：今天不打板；09:30-10:30 扫板窗口里只有 DeepSeek 改判「允许模拟小仓评估」并对个股表态「模拟买入」才会买")
+    sections = [
+        f"{record['ts'][11:16]}｜{record['regime']} · {record['action']}｜置信 {record.get('confidence', 0):.0%}",
+        "【动作】" + gate,
+        "【大盘】" + (text.get("market") or record["market"]),
+        "【板块】" + (text.get("sectors") or record["sector"]),
+        f"【个股】组合{portfolio['posture']}，仓位上限 {portfolio['positionPct']:.0%}\n"
+        + "\n".join(_order_block(code, order, quotes.get(code)) for code, order in orders.items()),
+    ]
+    if text.get("picks"):
+        sections.append("【选股思路】" + text["picks"])
+    if text.get("forecast"):
+        sections.append("【预判】" + text["forecast"])
+    if text.get("plan"):
+        sections.append("【计划·触发条件】" + text["plan"])
+    if text.get("review"):
+        sections.append("【复盘上一轮】" + text["review"])
+    sections += [
+        "【执行】" + ("；".join(skipped) if skipped else "无跳过")
+        + f"｜模拟成交 {len(execution.get('fills', []))} 笔｜对账{'一致' if reconciled else '异常'}",
         "仅为隔离模拟，不是真实委托。",
-    ])
-    notifier.send(f"📊 模拟分析｜{record['regime']}", analysis)
+    ]
+    notifier.send(f"📊 {record['regime']}｜{record['action']}", "\n\n".join(sections))
     for fill in execution.get("fills", []):
         side = "买入" if fill["side"] == "buy" else "卖出"
         reason = orders.get(fill["code"], {}).get("reason", "")
@@ -312,7 +344,7 @@ def submit_answers(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANS
         raise RuntimeError(status["listenerError"] or (latest or {}).get("error") or "模拟策略未完成")
     notification_error = ""
     try:
-        notify_result(notifier, record, latest, paper_status["reconciled"])
+        notify_result(notifier, record, latest, paper_status["reconciled"], quotes=quotes)
     except Exception as exc:
         notification_error = str(exc)
     result = {"ok": True, "decisionId": record["id"], "strategyId": latest["id"],

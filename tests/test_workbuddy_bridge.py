@@ -139,3 +139,12 @@ def test_official_api_failure_keeps_rate_limit_so_loop_waits(tmp_path, monkeypat
     with pytest.raises(wb.WorkBuddyRateLimited) as e:
         wb.judge_snapshot(_snap(tmp_path), tmp_path / "ans.json", cli_path=tmp_path / "cli", runner=_limited, post=post)
     assert "402" in str(e.value) and e.value.reset_at is not None
+
+
+def test_portfolio_schema_requires_sector_and_next_step():
+    from dashboard.adaptive_paper import build_portfolio_questions
+    from dashboard.workbuddy_bridge import answer_schema
+    q = type("Q", (), {"name": "奥飞娱乐"})()
+    schema = answer_schema({"snapshotId": "s", "questions": build_portfolio_questions({"002292": q})})
+    order = schema["properties"]["portfolio"]["properties"]["orders"]["properties"]["002292"]
+    assert {"sector", "next"} <= set(order["required"])

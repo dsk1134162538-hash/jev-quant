@@ -75,7 +75,7 @@ def test_subscription_answers_reuse_local_paper_without_api(tmp_path):
     assert len(result["execution"]["fills"]) == 1
     assert notifier.flushed is True and result["notificationEnabled"] is True
     assert len(notifier.messages) == 2
-    assert "模拟分析" in notifier.messages[0][0] and "订阅集成测试" in notifier.messages[0][1]
+    assert "📊" in notifier.messages[0][0] and "订阅集成测试" in notifier.messages[0][1]
     assert "模拟买入" in notifier.messages[1][0] and "200 股 @9.00" in notifier.messages[1][1]
     conn = sqlite3.connect(tmp_path / "paper.sqlite")
     assert conn.execute("SELECT COUNT(*) FROM fills WHERE account=?", (AI_ACCOUNT,)).fetchone()[0] == 1
@@ -159,3 +159,33 @@ def test_snapshot_waits_for_market_breadth_before_eligibility(monkeypatch, tmp_p
     assert service.market.blocking_calls == 1
     assert result["eligible"] is False
     assert result["reason"].startswith("候选代码为空")
+
+
+def test_analysis_push_is_detailed_with_names_sectors_and_next_steps():
+    from dashboard.subscription_bridge import notify_result
+    record = {"id": "AI-1", "ts": "2026-11-02T10:58:38", "regime": "修复观察", "action": "空仓等待",
+              "confidence": 0.58, "market": "全市场上涨 2879 家", "sector": "行业上涨 36 个",
+              "analysis": {"market": "修复延续、没有主线", "sectors": "传媒娱乐有量", "picks": "一只都不碰",
+                           "forecast": "涨停 50-65 震荡", "review": "上一轮方向对", "plan": "盯涨停 70 家"}}
+    latest = {"portfolio": {"posture": "防守", "positionPct": 0,
+                            "orders": {"002292": {"action": "观察", "confidence": 0.72, "reason": "已封板",
+                                                  "sector": "传媒娱乐", "next": "明天竞价高开 3% 以内且放量再评估"}}},
+              "execution": {"fills": [], "skipped": []}}
+    quotes = {"002292": Quote(code="002292", name="奥飞娱乐", price=8.71, pre_close=7.92, open=7.95,
+                              high=8.71, low=7.9, volume=1, amount=6.59e8, limit_up=8.71, limit_down=7.13, ts=NOW)}
+    notifier = FakeNotifier()
+    notify_result(notifier, record, latest, True, quotes=quotes)
+    title, body = notifier.messages[0]
+    assert "空仓等待" in title
+    for text in ("奥飞娱乐", "传媒娱乐", "8.71", "+9.97%", "已封板", "明天竞价高开 3% 以内且放量再评估",
+                 "修复延续、没有主线", "传媒娱乐有量", "涨停 50-65 震荡", "盯涨停 70 家", "上一轮方向对",
+                 "闸门关", "09:30-10:30"):
+        assert text in body, text
+
+
+def test_portfolio_answer_keeps_sector_and_next_step():
+    from dashboard.kimi_judge import _convert_portfolio
+    criteria = {"posture": ["防守"], "positionPct": [0], "codes": {"002292": "奥飞娱乐"}, "actions": ["观察"]}
+    out = _convert_portfolio(criteria, {"posture": "防守", "positionPct": 0, "orders": {
+        "002292": {"action": "观察", "confidence": 0.7, "reason": "封板", "sector": "传媒娱乐", "next": "竞价再看"}}})
+    assert out["orders"]["002292"]["sector"] == "传媒娱乐" and out["orders"]["002292"]["next"] == "竞价再看"
