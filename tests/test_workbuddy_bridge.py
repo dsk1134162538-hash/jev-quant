@@ -163,3 +163,11 @@ def test_long_prompt_goes_through_stdin_not_the_command_line(tmp_path):
     wb.judge_snapshot(p, tmp_path / "ans.json", cli_path=tmp_path / "cli", runner=run)
     assert "很长的记忆" in seen["input"]
     assert sum(len(x) for x in seen["cmd"]) < 30000
+
+
+def test_portfolio_output_template_asks_for_sector_and_next():
+    from dashboard.adaptive_paper import build_portfolio_questions
+    from dashboard.kimi_judge import _question_text
+    q = type("Q", (), {"name": "奥飞娱乐"})()
+    text = _question_text("portfolio", build_portfolio_questions({"002292": q})["portfolio"])
+    assert '"sector"' in text and '"next"' in text

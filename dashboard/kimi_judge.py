@@ -63,7 +63,8 @@ def _question_text(name: str, question: dict) -> str:
                 f"  必须逐一评价这些代码，不能增加或遗漏：{codes}\n"
                 f"  每个代码的动作只能是：{actions}。模拟卖出只针对当前持仓，模拟买入只针对非持仓。\n"
                 f"  输出 \"{name}\": {{\"posture\": \"姿态\", \"positionPct\": 数值, "
-                f"\"orders\": {{\"代码\": {{\"action\": \"动作\", \"confidence\": 0到1, \"reason\": \"简短证据\"}}}}}}")
+                f"\"orders\": {{\"代码\": {{\"action\": \"动作\", \"confidence\": 0到1, \"reason\": \"简短证据\", "
+                f"\"sector\": \"所属板块\", \"next\": \"后续操作和触发条件\"}}}}}}")
     if question["type"] == "text":
         fields = "\n".join(f"  - {key}：{value}" for key, value in question["criteria"].items())
         keys = ", ".join(f'"{key}": "文字"' for key in question["criteria"])
