@@ -133,7 +133,36 @@ def p5463(o, c, h, l, v) -> dict[str, np.ndarray]:
             "P5463·关注第4次(SIGN2)": sign1 & (COUNT(sign1, 60) == 4)}
 
 
-INDICATORS = (youzi, leiting, p5463)
+def BARSLAST(x):
+    out = np.full(len(x), np.nan)
+    last = None
+    for i, v in enumerate(x):
+        if v:
+            last = i
+        if last is not None:
+            out[i] = i - last
+    return out
+
+
+def p5488(o, c, h, l, v) -> dict[str, np.ndarray]:
+    """2026 精品龙回头（P5488 副图，主板 10%）。"""
+    pre = REF(c, 1)
+    zt = (c >= np.round(pre * 1.1 + 1e-9, 2)) & (c >= o)
+    brk = BARSLAST(zt)
+    n = len(c)
+    start_open = np.array([o[i - int(brk[i])] if not np.isnan(brk[i]) else np.nan for i in range(n)])
+    xrzl = REF((o > c).astype(float), 2).astype(bool) & (REF(o, 2) > REF(c, 3)) & (REF(o / c, 2) < 1.05)
+    wash = REF((o > c).astype(float), 1).astype(bool)
+    gap = h / pre >= 1.005
+    shrink = v < REF(v, 1)
+    below8 = REF(c, 1) < MA(c, 8)
+    floor = REF(np.minimum(o, c), 1) >= REF(start_open, 1) * 1.02
+    sig = (brk >= 2) & (brk <= 10) & xrzl & wash & gap & shrink & below8 & floor
+    hot = sig & (c > MA(c, 5))
+    return {"P5488·龙回头": sig, "P5488·情绪高潮(收>5日线)": hot, "P5488·情绪冰点(收<=5日线)": sig & ~hot}
+
+
+INDICATORS = (youzi, leiting, p5463, p5488)
 
 
 def exits(rows, i) -> dict:
@@ -145,6 +174,7 @@ def exits(rows, i) -> dict:
         target = c * (1 + t / 100)
         px = max(nx[1], target) if nx[3] >= target else nx[2]       # 高开过目标按开盘价卖
         out[f"冲高{t}%走"] = (px / c - 1) * 100 - FEE
+    out["作者口径·次日最高"] = (nx[3] / c - 1) * 100
     if i + 3 < len(rows):
         out["持3天收盘"] = (rows[i + 3][2] / c - 1) * 100 - FEE
     return out
@@ -172,7 +202,7 @@ def summary(trades: list[dict], split: str) -> dict:
         if not rs:
             return None
         out = {"n": len(rs), "天数": len({r["day"] for r in rs})}
-        for k in ("次日开盘", "次日收盘", "冲高2%走", "冲高3%走", "持3天收盘"):
+        for k in ("作者口径·次日最高", "次日开盘", "次日收盘", "冲高2%走", "冲高3%走", "持3天收盘"):
             vals = [r[k] for r in rs if k in r]
             if vals:
                 out[k] = f"{mean(vals):+.2f}% 胜{sum(x > 0 for x in vals) / len(vals):.0%}"
