@@ -95,3 +95,37 @@ def gate(record: dict | None, code: str, now: datetime, orders: dict | None = No
     if order and order.get("action") != "模拟买入":
         return False, f"DeepSeek 对这只给了「{order.get('action')}」：{(order.get('reason') or '')[:40]}"
     return True, f"DeepSeek {record['ts'][11:16]} 开闸：{record.get('regime')}"
+
+
+# ---- dj 2026-11-02：闸门改规则、次日开盘就卖（108 天回测：开盘就卖优于任何等反弹/拿到收盘/止损的卖法）----
+
+def rule_gate(stats: dict | None) -> tuple[bool, str]:
+    """上一交易日收盘前最后一次情绪统计：跌停家数 > 涨停家数 且 前日涨停股昨天红盘率 < 40% → 空仓；其余开闸。
+    （历史经验条 3:1 站得住的那条；模型判开闸在验证段没有价值）。没统计不拦。"""
+    if not stats:
+        return True, "没有上一交易日情绪统计，按规则开闸"
+    up, down, red = stats.get("涨停家数"), stats.get("跌停家数"), stats.get("昨日涨停今日红盘率%")
+    if up is None or down is None or red is None:
+        return True, "上一交易日情绪统计缺项，按规则开闸"
+    if down > up and red < 40:
+        return False, f"昨日跌停 {down} > 涨停 {up}，前日涨停股红盘率 {red}% < 40%，空仓"
+    return True, f"规则开闸（昨日涨停 {up}、跌停 {down}、接力红盘率 {red}%）"
+
+
+def gate_v2(stats: dict | None, code: str, now: datetime, orders: dict | None = None) -> tuple[bool, str]:
+    """规则管开不开闸；DeepSeek 只保留对个股的否决（最近一轮明确给了「观察 / 模拟卖出」就不买）。"""
+    ok, why = rule_gate(stats)
+    if not ok:
+        return False, why
+    order = (orders or {}).get(code)
+    if order and order.get("action") != "模拟买入":
+        return False, f"DeepSeek 对这只给了「{order.get('action')}」：{(order.get('reason') or '')[:40]}"
+    return True, why
+
+
+def decide_open_sell(pos: Position, q: Quote, now: datetime) -> SellDecision:
+    """买入次日一开盘就卖，不管高开低开（跌停卖不掉由账本拦下，下一轮再试）。"""
+    if pos.buy_date >= now.date() or now.time() < MARKET_OPEN or q.ts.date() < now.date():
+        return HOLD
+    pct = (q.price / q.pre_close - 1) * 100 if q.pre_close else 0.0
+    return SellDecision(True, f"次日开盘卖（{pct:+.2f}%）")

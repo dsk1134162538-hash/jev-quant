@@ -222,6 +222,11 @@ ACCOUNT_NAMES = {
 }
 AI_BOARD_ENABLED = True
 AI_BOARD_FIRST_PCT = 0.5        # 首次建仓只用一半，另一半留给回本（做T/低吸补仓）
+# dj 2026-11-02：次日开盘就卖（108 天回测：开盘卖优于等反弹/拿到收盘/止损；「不亏不卖」把亏损放大一倍多）。
+# False = 回到单票不亏损卖出（decide_noloss_sell）
+AI_BOARD_SELL_OPEN = True
+# dj 2026-11-02：闸门改规则（ai_board.rule_gate），DeepSeek 只保留对个股的否决
+AI_BOARD_RULE_GATE = True
 AI_BOARD_GATE_MAX_AGE = 900     # 秒：DeepSeek 最近一次判断超过这么久就当没有，闸门关（空仓避险）
 AI_BOARD_GATE_ACTION = "允许模拟小仓评估"   # DeepSeek 给出这个动作才开闸
 AI_DECISIONS_PATH = "dashboard/runtime/ai_decisions.jsonl"

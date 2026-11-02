@@ -179,7 +179,7 @@ def test_analysis_push_is_detailed_with_names_sectors_and_next_steps():
     assert "空仓等待" in title
     for text in ("奥飞娱乐", "传媒娱乐", "8.71", "+9.97%", "已封板", "明天竞价高开 3% 以内且放量再评估",
                  "修复延续、没有主线", "传媒娱乐有量", "涨停 50-65 震荡", "盯涨停 70 家", "上一轮方向对",
-                 "闸门关", "09:30-10:30"):
+                 "闸门由规则定", "次日一开盘就卖", "09:30-10:30"):
         assert text in body, text
 
 

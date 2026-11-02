@@ -26,7 +26,7 @@ DB_PATH = ROOT / "data" / "jevq.sqlite"
 
 # 11-02 实测同一份快照：flash 36s、v4-pro 126s、kimi-k3.1-pro 141s、hy4-preview 215s、glm-5.3 超时
 # dj 2026-11-02：kimi-k3.1-pro 太烧积分、hy4 太慢老超时，陪跑只留 v4-pro，每个模型至少隔 10 分钟才答一次
-SHADOW_MODELS = ("deepseek-v4-pro",)
+SHADOW_MODELS = ()        # dj 2026-11-02 停掉陪跑（赛马结论已有）
 SHADOW_TIMEOUT = 280
 SHADOW_MIN_GAP = 600
 REVIEW_MODEL = "deepseek-v4-pro"

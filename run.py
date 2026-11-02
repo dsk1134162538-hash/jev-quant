@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import statistics
 import sys
@@ -363,7 +364,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                               fetch_day_minutes=tencent.fetch_day_minutes,
                               legacy_buy=not sell_only,
                               ai_accounts=config.STRATEGIES["aiboard"]["accounts"] if config.AI_BOARD_ENABLED else None,
-                              ai_gate=_ai_gate, ai_budget_pct=config.AI_BOARD_FIRST_PCT)
+                              ai_gate=_make_ai_gate(conn, prev_day), ai_budget_pct=config.AI_BOARD_FIRST_PCT)
         # 「隔夜超期」只管 runner 错过了上一交易日的情况：昨天跑过，说明持仓昨天已经按规则处理过
         # （封死涨停隔夜的票就是规则允许留下的），今天照常按同一套规则判断，不在开盘一刀切卖掉。
         try:
@@ -1011,6 +1012,25 @@ def _log_fills(fills, log: Callable[[str], None], fmt: str = "%H:%M") -> None:
     for f in fills:
         log(f"{f.ts.strftime(fmt)} {f.account} {'买' if f.side == 'buy' else '卖'} {f.code} "
             f"{f.price} x{f.shares} {f.reason}")
+
+
+def _make_ai_gate(conn, prev_day: date):
+    """AI 打首板闸门。AI_BOARD_RULE_GATE（dj 2026-11-02）：上一交易日情绪统计按规则开闸，DeepSeek 只否决个股；
+    否则回到老办法（读 DeepSeek 最近一次判断）。上一交易日统计只读一次。"""
+    cache = {}
+
+    def gate(code: str, t: datetime) -> tuple[bool, str]:
+        if not config.AI_BOARD_RULE_GATE:
+            return _ai_gate(code, t)
+        try:
+            if "stats" not in cache:
+                row = conn.execute("SELECT detail FROM decisions WHERE verdict='sentiment' AND substr(ts, 1, 10) = ? "
+                                   "ORDER BY ts DESC, rowid DESC LIMIT 1", (prev_day.isoformat(),)).fetchone()
+                cache["stats"] = json.loads(row[0]).get("stats") if row else None
+            return ai_board.gate_v2(cache["stats"], code, t, ai_board.last_orders(Path(config.AI_ANSWERS_PATH), t))
+        except Exception as e:
+            return False, f"闸门出错：{e!r}"[:80]
+    return gate
 
 
 def _ai_gate(code: str, t: datetime) -> tuple[bool, str]:

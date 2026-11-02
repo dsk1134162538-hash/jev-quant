@@ -99,14 +99,14 @@ def read_runs(path: Path = OUT) -> list[dict]:
     return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
 
 
-def run_variant(data, days, variant, models=MODELS, lessons=None, workers=10, asker=ask, out=OUT) -> None:
+def run_variant(data, days, variant, models=MODELS, lessons=None, workers=10, asker=ask, out=OUT, seed=0) -> None:
     done = {(r["day"], r["model"], r["variant"]) for r in read_runs(out) if r.get("ok")}
     jobs = [(d, m) for d in days for m in models if (d, m, variant) not in done]
     lock = threading.Lock()
 
     def one(job):
         day, model = job
-        view, key = anon(data, day)
+        view, key = anon(data, day, seed)
         t0 = time.monotonic()
         row = {"day": day, "model": model, "variant": variant}
         for _ in range(2):
@@ -216,6 +216,18 @@ def report(data, runs) -> dict:
             for code in v1[m][d]["picks"]:
                 cnt[code] += 1
         return fb.day_result(data["cands"][d], [c for c, n in cnt.items() if n >= 2])
+    flash5 = [by.get((f"v3s{k}", "deepseek-v4.1-flash"), {}) for k in range(5)]
+    f5_days = [d for d in test if all(d in f for f in flash5)]
+    if f5_days:
+        def vote5(d):
+            cnt = defaultdict(int)
+            for f in flash5:
+                for code in f[d]["picks"]:
+                    cnt[code] += 1
+            return fb.day_result(data["cands"][d], [c for c, n in cnt.items() if n >= 3])
+        out["flash×5 投票(>=3)"] = {"test": stats(f5_days, vote5)}
+        out["flash×5 单次平均"] = {"test": {"avgPerTrade%": round(mean(
+            stats(f5_days, lambda d, f=f: f[d]["ret"])["avgPerTrade%"] or 0 for f in flash5), 3)}}
     out["vote(v1,>=2)"] = {seg: stats([d for d in ds if d in vote_days], vote) for seg, ds in (("train", train), ("test", test))}
     return out
 
@@ -234,6 +246,10 @@ def main(argv=None) -> int:
         run_variant(data, data["days"], "v1", models, workers=a.workers)
     if "v2" in variants:
         run_variant(data, test, "v2", models, workers=a.workers)
+    if "flash5" in variants:
+        lessons = json.loads((fb.ART / "train_lessons.json").read_text(encoding="utf-8"))
+        for k in range(5):           # 同一份经验条，候选顺序按不同种子打乱，各答一次
+            run_variant(data, test, f"v3s{k}", ("deepseek-v4.1-flash",), lessons=lessons, workers=a.workers, seed=k + 1)
     if "v3" in variants:
         lessons_path = fb.ART / "train_lessons.json"
         if lessons_path.exists():

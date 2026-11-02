@@ -2,10 +2,11 @@ import json
 from datetime import date, datetime
 from time import monotonic
 
+from jevq import config
 from jevq.models import Fill, Quote
 from jevq.rules.board import (EXIT_PCT, SCAN_WINDOWS, VOLUME_MIN, WATCH_MAX, Candidate, in_scan_window,
                               same_time_ratio, scan_trigger, sentiment_gate, watch_candidates)
-from jevq.rules.ai_board import decide_noloss_sell
+from jevq.rules.ai_board import decide_noloss_sell, decide_open_sell
 from jevq.rules.board_sell import decide_board_sell
 
 SEALED_SKIP = "快照已封死，视为排队未买到"
@@ -215,8 +216,11 @@ class BoardStrategy:
                     q = quotes.get(pos.code)
                     if q is None or q.ts.date() < now.date():
                         continue
-                    d = decide_noloss_sell(pos, q, now, self.prev_day) if account in ai \
-                        else decide_board_sell(pos, q, now, self.stale_before)
+                    if account in ai:       # dj 2026-11-02：AI 打首板改成次日开盘就卖（AI_BOARD_SELL_OPEN）
+                        d = decide_open_sell(pos, q, now) if config.AI_BOARD_SELL_OPEN \
+                            else decide_noloss_sell(pos, q, now, self.prev_day)
+                    else:
+                        d = decide_board_sell(pos, q, now, self.stale_before)
                     if d.sell and (f := self.ledger.sell(account, pos, q, now, d.reason)):
                         fills.append(f)
                 except Exception as e:

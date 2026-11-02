@@ -335,10 +335,9 @@ def notify_result(notifier, record: dict, latest: dict, reconciled: bool, quotes
     orders = portfolio["orders"]
     skipped = execution.get("skipped", [])
     text = record.get("analysis") or {}
-    gate_open = record["action"] == jevq_config.AI_BOARD_GATE_ACTION
-    gate = ("闸门开：09:30-10:30 观察池里 DeepSeek 表态「模拟买入」的票涨到 9% 且没摸过涨停时扫板，首仓一半"
-            if gate_open else
-            "闸门关：今天不打板；09:30-10:30 扫板窗口里只有 DeepSeek 改判「允许模拟小仓评估」并对个股表态「模拟买入」才会买")
+    gate = ("闸门由规则定：上一交易日跌停多于涨停、且前日涨停股红盘率 < 40% 才空仓，其余日子 09:30-10:30 扫板；"
+            "DeepSeek 对个股给「观察」就否决这只。买进后次日一开盘就卖。"
+            f"DeepSeek 本轮看法：{'该打' if record['action'] == jevq_config.AI_BOARD_GATE_ACTION else '不该打'}")
     sections = [
         f"{record['ts'][11:16]}｜{record['regime']} · {record['action']}｜置信 {record.get('confidence', 0):.0%}",
         "【动作】" + gate,

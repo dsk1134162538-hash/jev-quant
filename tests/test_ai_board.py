@@ -140,7 +140,9 @@ def test_legacy_buy_still_works_when_enabled():
     assert {f.account for f in fills} == {"board_main", "board_shadow", *AI}
 
 
-def test_ai_account_loss_held_while_board_main_stops_out():
+def test_ai_account_loss_held_while_board_main_stops_out(monkeypatch):
+    from jevq import config
+    monkeypatch.setattr(config, "AI_BOARD_SELL_OPEN", False)          # 老的「不亏不卖」模式
     strat, conn, ledger = make(lambda code, now: (True, "开闸"))
     y = quote("600001", pct=9.2, pre_close=10.0, ts=at(9, 40, datetime(2026, 11, 2)))
     ledger.buy("board_main", y, at(9, 40, datetime(2026, 11, 2)), "x")
@@ -211,3 +213,60 @@ def test_board_context_remembers_fills_and_sentiment(tmp_path):
     conn.close()
     ctx = _board_context(path, DAY.date())
     assert ctx["fills"][0]["side"] == "buy" and ctx["sentiment"]["stats"]["炸板率%"] == 35.0
+
+
+# ---- dj 2026-11-02：闸门改规则、次日开盘就卖 ----
+
+def test_rule_gate_closes_only_when_limit_downs_outnumber_ups_and_relay_is_weak():
+    weak = {"涨停家数": 30, "跌停家数": 45, "昨日涨停今日红盘率%": 35.0}
+    assert ai_board.rule_gate(weak)[0] is False
+    assert ai_board.rule_gate({**weak, "昨日涨停今日红盘率%": 55.0})[0] is True     # 接力还行
+    assert ai_board.rule_gate({**weak, "跌停家数": 10})[0] is True                  # 涨停多于跌停
+    ok, why = ai_board.rule_gate(None)
+    assert ok is True and "没有" in why                                               # 没统计不拦，照规则其余日子开闸
+
+
+def test_gate_uses_rule_and_deepseek_stock_veto_only():
+    good = {"涨停家数": 60, "跌停家数": 5, "昨日涨停今日红盘率%": 70.0}
+    assert ai_board.gate_v2(good, "600001", at(9, 40), {})[0] is True                # 没有 DeepSeek 判断也开
+    veto = {"600001": {"action": "观察", "reason": "跟风"}}
+    ok, why = ai_board.gate_v2(good, "600001", at(9, 40), veto)
+    assert ok is False and "观察" in why
+    assert ai_board.gate_v2(good, "600002", at(9, 40), veto)[0] is True
+    assert ai_board.gate_v2({"涨停家数": 20, "跌停家数": 40, "昨日涨停今日红盘率%": 30.0}, "600001", at(9, 40), {})[0] is False
+
+
+def test_open_sell_sells_next_day_at_open_whether_up_or_down():
+    pos = position(code="600001", shares=1000, buy_price=10.0, buy_date=PREV)
+    for pct in (-5.0, 0.0, 6.0):
+        d = ai_board.decide_open_sell(pos, quote(pct=pct, ts=at(9, 30)), at(9, 30))
+        assert d.sell and "次日开盘" in d.reason
+    assert not ai_board.decide_open_sell(pos, quote(pct=1.0, ts=at(9, 20)), at(9, 20)).sell     # 还没开盘
+    today = position(code="600001", shares=1000, buy_price=10.0, buy_date=DAY.date())
+    assert not ai_board.decide_open_sell(today, quote(pct=1.0, ts=at(14, 0)), at(14, 0)).sell    # T+1
+
+
+def test_run_gate_reads_previous_day_stats_once_and_applies_rule(monkeypatch):
+    import json as _json
+    import run
+    from jevq import config
+    monkeypatch.setattr(config, "AI_BOARD_RULE_GATE", True)
+    conn = db.connect(":memory:")
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy) VALUES (?, '', 'sentiment', ?, 'x')",
+                 ("2026-11-02T14:58:00", _json.dumps({"stats": {"涨停家数": 20, "跌停家数": 40, "昨日涨停今日红盘率%": 30}})))
+    gate = run._make_ai_gate(conn, PREV)
+    ok, why = gate("600001", at(9, 40))
+    assert ok is False and "空仓" in why
+    conn.execute("DELETE FROM decisions")
+    assert gate("600001", at(9, 41))[0] is False                    # 只读一次，当天不变
+
+
+def test_ai_account_sells_next_open_in_strategy(monkeypatch):
+    from jevq import config
+    monkeypatch.setattr(config, "AI_BOARD_SELL_OPEN", True)
+    q = quote(pct=-3.0, ts=at(9, 31))
+    strat, conn, ledger = make(lambda c, t: (True, "ok"), q=q)
+    conn.execute("INSERT INTO positions VALUES (?, ?, ?, ?, ?, ?)", ("aiboard_main", "600001", 1000, 10005.1, 10.0,
+                                                                     PREV.isoformat()))
+    fills = strat._sells({"600001": q}, at(9, 31))
+    assert len(fills) == 1 and "次日开盘卖" in fills[0].reason
