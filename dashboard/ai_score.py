@@ -25,14 +25,17 @@ LESSONS_PATH = RUNTIME / "ai_lessons.json"
 DB_PATH = ROOT / "data" / "jevq.sqlite"
 
 # 11-02 实测同一份快照：flash 36s、v4-pro 126s、kimi-k3.1-pro 141s、hy4-preview 215s、glm-5.3 超时
-SHADOW_MODELS = ("deepseek-v4-pro", "kimi-k3.1-pro", "hy4-preview")
+# dj 2026-11-02：kimi-k3.1-pro 太烧积分、hy4 太慢老超时，陪跑只留 v4-pro，每个模型至少隔 10 分钟才答一次
+SHADOW_MODELS = ("deepseek-v4-pro",)
 SHADOW_TIMEOUT = 280
+SHADOW_MIN_GAP = 600
 REVIEW_MODEL = "deepseek-v4-pro"
 PREMIUM_OK = 1.0          # 首板次日平均开盘溢价 >= 1% 才算有赚钱效应、该开闸
 SCAN_END = "103000"       # 扫板窗口 09:30-10:30：只看这之前封的首板
 MAX_LESSONS = 20
 
 _running: set[str] = set()
+_last_start: dict[str, float] = {}
 _lock = threading.Lock()
 
 
@@ -102,15 +105,18 @@ def _shadow(snapshot: dict, model: str, gate_action: str, ask, path) -> None:
             _running.discard(model)
 
 
-def start_shadows(snapshot: dict, gate_action: str, models=SHADOW_MODELS, ask=None, path=None) -> list[str]:
-    """后台线程里让陪跑模型各答一次；上一轮还没答完的模型这轮跳过（不叠加）。返回这轮启动了哪些。"""
+def start_shadows(snapshot: dict, gate_action: str, models=SHADOW_MODELS, ask=None, path=None,
+                  min_gap: float = SHADOW_MIN_GAP, clock=time.monotonic) -> list[str]:
+    """后台线程里让陪跑模型各答一次；上一轮还没答完、或离上次开答不到 min_gap 秒的模型这轮跳过。返回这轮启动了哪些。"""
     ask = ask or ask_validated
     started = []
     for model in models:
         with _lock:
-            if model in _running:
+            now = clock()
+            if model in _running or now - _last_start.get(model, -1e18) < min_gap:
                 continue
             _running.add(model)
+            _last_start[model] = now
         threading.Thread(target=_shadow, args=(snapshot, model, gate_action, ask, path),
                          name=f"shadow-{model}", daemon=True).start()
         started.append(model)

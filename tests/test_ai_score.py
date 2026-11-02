@@ -71,8 +71,8 @@ def test_shadows_run_in_background_and_do_not_pile_up(tmp_path):
         if model == "broken":
             raise RuntimeError("bad json")
         return _answer("空仓等待", {})
-    assert ai_score.start_shadows(SNAP, GATE, ("a", "broken"), ask, path) == ["a", "broken"]
-    assert ai_score.start_shadows(SNAP, GATE, ("a", "broken"), ask, path) == []     # 上一轮还没答完
+    assert ai_score.start_shadows(SNAP, GATE, ("a", "broken"), ask, path, min_gap=0) == ["a", "broken"]
+    assert ai_score.start_shadows(SNAP, GATE, ("a", "broken"), ask, path, min_gap=0) == []     # 上一轮还没答完
     release.set()
     for t in [t for t in threading.enumerate() if t.name.startswith("shadow-")]:
         t.join(5)
@@ -111,3 +111,23 @@ def test_daily_job_scores_reviews_once_and_pushes(tmp_path):
     assert "赛马" in pushes[0][0] and "flash" in pushes[0][1]
     again = ai_score.daily_job(notifier=None, **kw)
     assert again["newDays"] == [] and len(prompts) == 1            # 复盘过的日子不重复复盘
+
+
+def test_shadow_runs_at_most_once_per_gap(tmp_path):
+    ai_score._last_start.clear()
+    t = {"now": 1000.0}
+    ask = lambda snapshot, model, timeout: _answer("空仓等待", {})
+    clock = lambda: t["now"]
+    assert ai_score.start_shadows(SNAP, GATE, ("g",), ask, tmp_path / "j.jsonl", min_gap=600, clock=clock) == ["g"]
+    for th in [x for x in threading.enumerate() if x.name == "shadow-g"]:
+        th.join(5)
+    t["now"] += 300
+    assert ai_score.start_shadows(SNAP, GATE, ("g",), ask, tmp_path / "j.jsonl", min_gap=600, clock=clock) == []
+    t["now"] += 301
+    assert ai_score.start_shadows(SNAP, GATE, ("g",), ask, tmp_path / "j.jsonl", min_gap=600, clock=clock) == ["g"]
+    for th in [x for x in threading.enumerate() if x.name == "shadow-g"]:
+        th.join(5)
+
+
+def test_kimi_is_not_a_live_shadow():
+    assert "kimi-k3.1-pro" not in ai_score.SHADOW_MODELS

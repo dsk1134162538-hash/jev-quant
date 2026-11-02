@@ -1,10 +1,10 @@
-"""打首板 AI 对照实验（dj 2026-11-02「都试一下」）：在 first_board_history 的 108 天样本上，按模拟收益比较
+﻿"""打首板 AI 对照实验（dj 2026-11-02「都试一下」）：在 first_board_history 的 108 天样本上，按模拟收益比较
   base   —— 不选：摸 9% 全买
   stat   —— 纯统计打分（训练段分桶均值相加，挑分最高的 3 只，分数不够就空仓）
   v1     —— 模型，中性提示（可空仓，最多点 3 只）
   v2     —— 模型，「闸门默认开」提示（除非明确退潮，必须点 1-3 只）
   v3     —— v1 + 训练段复盘出的经验条（只在验证段跑）
-  vote   —— v1 三个模型里 ≥2 个点名的票
+  vote   —— v1 两个模型都点名的票（kimi 太烧积分后只剩 flash + v4-pro）
 训练段 = 前 72 天，验证段 = 后 36 天；收益口径：摸 9% 买入、次日开盘卖、扣 0.15% 费用、点名票等权、空仓日 0。
 防作弊：日期、代码、名称全抹掉，候选用 S1… 编号。用法：python -m research.first_board_ai [--variants v1,v2,v3]
 """
@@ -25,7 +25,7 @@ from research import first_board_history as fb
 
 OUT = fb.ART / "ai_runs.jsonl"
 REPORT = fb.ART / "report.json"
-MODELS = ("deepseek-v4.1-flash", "kimi-k3.1-pro", "deepseek-v4-pro")
+MODELS = ("deepseek-v4.1-flash", "deepseek-v4-pro")      # kimi-k3.1-pro 太烧积分（dj 2026-11-02），只留跑过的部分做参考
 TRAIN_DAYS = 72
 MAX_CANDS = 80
 FEATURES = ("openGap%", "pos5%", "pos20%", "floatMcap亿", "prevTurnover%", "prevAmount亿", "holders万",
