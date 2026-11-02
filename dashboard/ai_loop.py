@@ -60,7 +60,7 @@ def run_daily_job(now: datetime, job, state: Path = DAILY_STATE) -> dict:
     try:
         result = job()
         record.update(ok=True, newDays=result.get("newDays"), lessons=result.get("lessons"),
-                      lessonError=result.get("lessonError"))
+                      lessonError=result.get("lessonError"), minutes=result.get("minutes"))
     except Exception as e:                                   # noqa: BLE001
         record.update(ok=False, error=f"{type(e).__name__}: {str(e)[:300]}")
     state.parent.mkdir(parents=True, exist_ok=True)
@@ -172,6 +172,19 @@ def loop(cycle=None, clock=datetime.now, sleep=time.sleep, log=_log, max_calls: 
         sleep(wait)
 
 
+def _daily() -> dict:
+    """收盘后：先存当天分时（过几天就拉不到了），再记分、赛马排行、复盘。存档失败不影响记分。"""
+    from dashboard import minute_archive
+    from dashboard.ai_score import daily_job
+    from jevq.notify import notifier_from_env
+    try:
+        archived = minute_archive.archive_today()
+    except Exception as e:                                   # noqa: BLE001
+        archived = {"error": f"{type(e).__name__}: {str(e)[:200]}"}
+    result = daily_job(notifier=notifier_from_env())
+    return {**result, "minutes": archived}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="只跑一轮（不看时间窗口）后退出")
@@ -183,9 +196,7 @@ def main(argv=None) -> int:
                 rec = run_once()
                 print(json.dumps(rec, ensure_ascii=False))
                 return 0 if rec["ok"] else 1
-            from dashboard.ai_score import daily_job
-            from jevq.notify import notifier_from_env
-            loop(daily=lambda: daily_job(notifier=notifier_from_env()))
+            loop(daily=_daily)
     except RuntimeError as e:                                # 锁被占用
         print(str(e), file=sys.stderr)
         return 2
