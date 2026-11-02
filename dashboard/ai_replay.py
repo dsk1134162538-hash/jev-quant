@@ -12,6 +12,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -148,29 +149,53 @@ def run(models=MODELS, days: int = 30, workers: int = 8, db_path: Path = None, o
     finally:
         conn.close()
     cases = [c for c in cases if c["answers"]]
-    jobs = [(c, m) for c in cases for m in models]
+    done = {(r["day"], r["model"]) for r in read_rows(out_path) if r.get("ok")}     # 答过的不重复花额度
+    jobs = [(c, m) for c in cases for m in models if (c["day"], m) not in done]
+
+    write_lock = threading.Lock()
 
     def one(job):
         case, model = job
         t0 = time.monotonic()
         row = {"day": case["day"], "model": model, "premium": case["premium"]}
-        try:
-            answer = asker(case, model)
-            row.update(ok=True, gate=answer["gate"], confidence=answer.get("confidence"),
-                       reason=answer.get("reason"), picks={k: v["action"] for k, v in answer["picks"].items()},
-                       score=score(case, answer))
-        except Exception as exc:                              # noqa: BLE001
-            row.update(ok=False, error=f"{type(exc).__name__}: {str(exc)[:200]}")
+        for attempt in range(2):                              # 偶尔 reason 里夹了引号成不了 JSON，再问一次
+            try:
+                answer = asker(case, model)
+                row.update(ok=True, gate=answer["gate"], confidence=answer.get("confidence"),
+                           reason=answer.get("reason"), picks={k: v["action"] for k, v in answer["picks"].items()},
+                           score=score(case, answer))
+                row.pop("error", None)
+                break
+            except Exception as exc:                          # noqa: BLE001
+                row.update(ok=False, error=f"{type(exc).__name__}: {str(exc)[:200]}")
         row["seconds"] = round(time.monotonic() - t0, 1)
-        with out_path.open("a", encoding="utf-8") as f:
+        with write_lock, out_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
         print(f"{row['day']} {model} {'ok' if row.get('ok') else row.get('error')}", flush=True)
         return row
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with ThreadPoolExecutor(workers) as ex:
-        rows = list(ex.map(one, jobs))
-    return rows, cases
+        list(ex.map(one, jobs))
+    wanted = {c["day"] for c in cases}
+    return [r for r in latest_rows(read_rows(out_path)) if r["day"] in wanted and r["model"] in models], cases
+
+
+def read_rows(path: Path) -> list[dict]:
+    if not Path(path).exists():
+        return []
+    with Path(path).open(encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def latest_rows(rows: list[dict]) -> list[dict]:
+    """同一天同一模型可能答过多次（失败后重跑）：有成功的取最后一次成功，否则取最后一次失败。"""
+    best: dict = {}
+    for r in rows:
+        key = (r["day"], r["model"])
+        if r.get("ok") or not (best.get(key) or {}).get("ok"):
+            best[key] = r
+    return list(best.values())
 
 
 def review(rows: list[dict], cases: list[dict], runner=subprocess.run) -> list[dict]:

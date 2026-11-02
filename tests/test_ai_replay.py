@@ -57,3 +57,19 @@ def test_run_scores_models_and_skips_days_without_answers(tmp_path):
     s = ai_replay.summarize(rows)
     assert s["good"]["days"] == 2 and s["good"]["gateAcc"] == 1.0 and s["good"]["stockAcc"] == 1.0
     assert s["good"]["avgNextOpen%"] == 3.0 and s["bad"]["failed"] == 2
+
+
+def test_failed_answers_are_retried_and_reruns_skip_done_days(tmp_path):
+    calls = []
+
+    def asker(case, model):
+        calls.append((case["day"], model))
+        if len(calls) == 1:
+            raise RuntimeError("不是纯 JSON")
+        return {"gate": "空仓", "confidence": 0.6, "reason": "x",
+                "picks": {k: {"action": "不打", "reason": ""} for k in case["answers"]}}
+    db, out = _db(tmp_path), tmp_path / "r.jsonl"
+    rows, _ = ai_replay.run(("m",), days=5, workers=1, db_path=db, out_path=out, asker=asker)
+    assert len(calls) == 3 and all(r["ok"] for r in rows) and len(rows) == 2
+    rows, _ = ai_replay.run(("m",), days=5, workers=1, db_path=db, out_path=out, asker=asker)
+    assert len(calls) == 3 and len(rows) == 2                 # 第二次全部跳过
