@@ -26,7 +26,9 @@ def lim(p: float) -> float:
 
 def load() -> dict[str, list[tuple]]:
     by = defaultdict(dict)
-    for name in ("kline_2025.sqlite", "kline.sqlite"):
+    for name in ("kline_long.sqlite", "kline_2025.sqlite", "kline.sqlite"):    # kline_long：2019~2024（kline_long.py）
+        if not (ART / name).exists():
+            continue
         conn = sqlite3.connect(ART / name)
         for code, d, o, c, h, lo, v in conn.execute("SELECT code, date, open, close, high, low, volume FROM k"):
             if code.startswith(("60", "00")) and o > 0:
@@ -116,6 +118,21 @@ def report(rows: list[dict], key, title: str, min_n: int = 60) -> list[str]:
             continue
         lines.append(f"{str(k):<22} 训练 {fmt(g['训练'])}")
         lines.append(f"{'':<22} 验证 {fmt(g['验证'])}")
+    return lines
+
+
+def by_year(rows: list[dict], rule) -> list[str]:
+    """一条规则逐年的笔数、平均、中位、胜率（次日收盘卖），看是不是只在某几年赚钱。"""
+    from statistics import median
+    years = defaultdict(list)
+    for x in rows:
+        if rule(x):
+            years[x["date"][:4]].append(x["x_close"])
+    lines = []
+    for y in sorted(years):
+        v = years[y]
+        lines.append(f"{y}  n={len(v):4}  均{mean(v):+6.2f}  中位{median(v):+6.2f}  胜{sum(a > 0 for a in v) / len(v) * 100:3.0f}%  "
+                     f"合计{sum(v):+7.1f}")
     return lines
 
 
