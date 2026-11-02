@@ -135,8 +135,10 @@ def run_once(cycle=None, clock=datetime.now, log=_log, calls_today: int = 0) -> 
 
 
 def loop(cycle=None, clock=datetime.now, sleep=time.sleep, log=_log, max_calls: int = MAX_CALLS_PER_DAY,
-         stop=lambda: False, daily=None) -> None:
-    """daily：收盘后任务（main 里传真的 ai_score.daily_job；测试不传就不跑）。"""
+         stop=lambda: False, daily=None, alert=None) -> None:
+    """daily：收盘后任务（main 里传真的 ai_score.daily_job；测试不传就不跑）。
+    alert(msg)：连续失败到退避线时推一次提醒，当天只推一次（2026-11-02 下午提示词超长全挂，没人知道）。"""
+    alerted = None
     calls, fails, today = 0, 0, None
     while not stop():
         now = clock()
@@ -167,6 +169,13 @@ def loop(cycle=None, clock=datetime.now, sleep=time.sleep, log=_log, max_calls: 
         wait = max(1.0, interval_for(now) - elapsed)
         if fails >= FAIL_BACKOFF_AFTER:
             wait += FAIL_BACKOFF_SECONDS
+            if alert is not None and alerted != today:
+                alerted = today
+                try:
+                    alert(f"AI 盘中复盘连续失败 {fails} 次（{now:%H:%M}），之后每轮多等 {FAIL_BACKOFF_SECONDS // 60} 分钟再试。"
+                          f"最近一次：{str(rec.get('error', ''))[:200]}")
+                except Exception:                            # noqa: BLE001
+                    pass
             log({"ts": clock().isoformat(timespec="seconds"), "ok": False, "called": False,
                  "skipped": f"连续失败 {fails} 次，多等 {FAIL_BACKOFF_SECONDS} 秒"})
         sleep(wait)
@@ -185,6 +194,11 @@ def _daily() -> dict:
     return {**result, "minutes": archived}
 
 
+def _alert(msg: str) -> None:
+    from jevq.notify import notifier_from_env
+    notifier_from_env().send("⚠️ AI 复盘停了", msg)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="只跑一轮（不看时间窗口）后退出")
@@ -196,7 +210,7 @@ def main(argv=None) -> int:
                 rec = run_once()
                 print(json.dumps(rec, ensure_ascii=False))
                 return 0 if rec["ok"] else 1
-            loop(daily=_daily)
+            loop(daily=_daily, alert=_alert)
     except RuntimeError as e:                                # 锁被占用
         print(str(e), file=sys.stderr)
         return 2

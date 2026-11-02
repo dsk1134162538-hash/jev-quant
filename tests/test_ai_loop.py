@@ -80,6 +80,16 @@ def test_loop_stops_calling_at_daily_cap_and_backs_off_after_failures():
     assert sum(1 for l in logs if l.get("error")) <= 8               # 退避后不会每 2 分钟继续硬撞（不退避是 28 次）
 
 
+def test_repeated_failures_alert_once_per_day():
+    # 2026-11-02 13:17 起提示词超长、整个下午失败，没人知道：连续失败到退避线就推一次提醒，当天不重复
+    alerts = []
+
+    def boom():
+        raise RuntimeError("prompt is too long")
+    _run_loop(at(3, 13, 1), at(3, 14, 50), boom, alert=alerts.append)
+    assert len(alerts) == 1 and "连续失败 3 次" in alerts[0] and "prompt is too long" in alerts[0]
+
+
 def test_module_has_no_broker_or_live_switch():
     import pathlib
     text = pathlib.Path(ai_loop.__file__).read_text(encoding="utf-8")

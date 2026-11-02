@@ -33,15 +33,21 @@ def universe(db: Path = JEVQ_DB) -> list[str]:
 
 def archive_day(day: date, codes: list[str], fetch_quotes, fetch_minutes, db: Path = MINUTES_DB,
                 workers: int = 8) -> dict:
-    """当天最高涨幅 ≥ 9% 的票逐只拉分时入库；已经存过的跳过。返回 {"touched": n, "saved": n, "failed": [...]}。"""
-    quotes = fetch_quotes(codes)
-    touched = [q for q in quotes.values()
-               if q.pre_close > 0 and q.ts.date() == day and (q.high / q.pre_close - 1) * 100 >= TOUCH_PCT]
+    """当天最高涨幅 ≥ 9% 的票逐只拉分时入库；前一个存档日摸过 9% 的票今天也存（次日卖法回测要持有那天的分时）。
+    已经存过的跳过。返回 {"touched": n, "followed": n, "saved": n, "failed": [...]}。"""
     db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db)
+    conn = sqlite3.connect(db, timeout=10)
     conn.executescript(SCHEMA)
+    prev = conn.execute("SELECT MAX(date) FROM minute_days WHERE date < ?", (day.isoformat(),)).fetchone()[0]
+    follow = {r[0] for r in conn.execute("SELECT code FROM minute_days WHERE date=? AND high >= pre_close * ?",
+                                         (prev, 1 + TOUCH_PCT / 100 - 1e-9))} if prev else set()
+    quotes = fetch_quotes(sorted(set(codes) | follow))
+    fresh = [q for q in quotes.values() if q.pre_close > 0 and q.ts.date() == day]
+    touched = [q for q in fresh if (q.high / q.pre_close - 1) * 100 >= TOUCH_PCT]
+    touched_codes = {q.code for q in touched}
+    followed = [q for q in fresh if q.code in follow and q.code not in touched_codes]
     done = {r[0] for r in conn.execute("SELECT code FROM minute_days WHERE date=?", (day.isoformat(),))}
-    todo = [q for q in touched if q.code not in done]
+    todo = [q for q in touched + followed if q.code not in done]
 
     def one(q):
         try:
@@ -61,7 +67,7 @@ def archive_day(day: date, codes: list[str], fetch_quotes, fetch_minutes, db: Pa
             saved += 1
     conn.commit()
     conn.close()
-    return {"touched": len(touched), "saved": saved, "failed": failed}
+    return {"touched": len(touched), "followed": len(followed), "saved": saved, "failed": failed}
 
 
 def archive_today(day: date | None = None) -> dict:

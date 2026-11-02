@@ -17,6 +17,7 @@ from jevq.data import (akdata, board_events, candidates, closes, concepts, custo
 from jevq.data.features import history_features
 from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
+from jevq.data.touch_snaps import TouchRecorder
 from jevq.engine import Engine
 from jevq.judge.jev import JevClient
 from jevq.judge.market import MarketJudge
@@ -417,6 +418,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     resynced = False
     last_tick_minute = None
     after_sell = sell_followups.AfterSellTracker()     # 卖飞统计：盘中跟踪每笔卖出之后的最高价
+    touches = TouchRecorder()                          # 全市场主板第一次涨到 9% 的盘口快照（dj 2026-11-02）
     own_intraday = _own_intraday_recorder(conn, key, universe, ret5, log, sell_only or late)
     while now().time() < REPORT_AT:
         t = now()
@@ -436,6 +438,10 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                 after_sell.update(conn, today, _fresh_quotes(engine, t))
             except Exception as e:
                 log(f"卖飞跟踪失败：{e!r}")
+            try:        # 9% 触线快照（买点样本）：只记录，失败不影响交易
+                touches.step(_fresh_quotes(engine, t), t)
+            except Exception as e:
+                log(f"触线快照失败：{e!r}")
             if getattr(engine, "turn_on", False) and getattr(engine, "turn_detail", None):
                 notifier.once("turn", "💡 情绪拐点：开始抄底",
                               f"{engine.turn_detail.get('text', '')}\n{_turn_opinions(engine.turn_detail)}；"
