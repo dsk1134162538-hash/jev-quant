@@ -98,3 +98,22 @@ def test_rate_limit_waits_until_reset_time():
     logs = _run_loop(at(2, 9, 35), at(2, 10, 40), limited)
     called = [l["ts"][11:16] for l in logs if l.get("called")]
     assert called and called[0] >= "10:30" and any("额度限流" in str(l.get("skipped")) for l in logs)
+
+
+def test_pythonw_without_console_gets_stdio_files(monkeypatch, tmp_path):
+    # pythonw 下 sys.stdout/stderr 是 None：tqdm 进度条写不出去，快照第一轮判「行情不完整」、第二轮卡死（2026-11-02 实盘）
+    monkeypatch.setattr(ai_loop.sys, "stdout", None)
+    monkeypatch.setattr(ai_loop.sys, "stderr", None)
+    ai_loop._ensure_stdio(tmp_path)
+    print("hello")
+    ai_loop.sys.stderr.write("oops\n")
+    ai_loop.sys.stdout.flush(); ai_loop.sys.stderr.flush()
+    assert "hello" in (tmp_path / "ai_loop.out").read_text(encoding="utf-8")
+    assert "oops" in (tmp_path / "ai_loop.err").read_text(encoding="utf-8")
+
+
+def test_ensure_stdio_keeps_a_real_console(monkeypatch, tmp_path):
+    out = ai_loop.sys.stdout
+    ai_loop._ensure_stdio(tmp_path)
+    assert ai_loop.sys.stdout is out
+    assert not (tmp_path / "ai_loop.out").exists()

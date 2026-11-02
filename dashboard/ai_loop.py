@@ -64,6 +64,16 @@ def _ensure_node() -> None:
             os.environ["WORKBUDDY_NODE"] = found
 
 
+def _ensure_stdio(folder: Path = RUNTIME) -> None:
+    """pythonw 下 sys.stdout/stderr 是 None：行情抓取里的 tqdm 进度条写不出去，
+    第一轮快照判成「行情不完整」、第二轮直接卡死（2026-11-02 实盘）。没控制台就接到文件上。"""
+    folder.mkdir(parents=True, exist_ok=True)
+    if sys.stdout is None:
+        sys.stdout = open(folder / "ai_loop.out", "a", encoding="utf-8", buffering=1)
+    if sys.stderr is None:
+        sys.stderr = open(folder / "ai_loop.err", "a", encoding="utf-8", buffering=1)
+
+
 def run_once(cycle=None, clock=datetime.now, log=_log, calls_today: int = 0) -> dict:
     """跑一轮并记日志；返回 {"ok": bool, "called": bool（是否真调了模型）, ...}。任何异常都不外抛。"""
     if cycle is None:
@@ -131,6 +141,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="只跑一轮（不看时间窗口）后退出")
     args = parser.parse_args(argv)
+    _ensure_stdio()
     try:
         with hold_run_lock(LOCK_PATH):
             if args.once:
