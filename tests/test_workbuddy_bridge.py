@@ -148,3 +148,18 @@ def test_portfolio_schema_requires_sector_and_next_step():
     schema = answer_schema({"snapshotId": "s", "questions": build_portfolio_questions({"002292": q})})
     order = schema["properties"]["portfolio"]["properties"]["orders"]["properties"]["002292"]
     assert {"sector", "next"} <= set(order["required"])
+
+
+def test_long_prompt_goes_through_stdin_not_the_command_line(tmp_path):
+    # 2026-11-02 11:07：当日记忆越积越长，提示词放命令行超过 Windows 32K 上限（WinError 206），整轮失败
+    seen = {}
+
+    def run(cmd, **kw):
+        seen["cmd"], seen["input"] = cmd, kw.get("input")
+        return SimpleNamespace(returncode=0, stdout=json.dumps(GOOD, ensure_ascii=False), stderr="")
+    big = {**SNAPSHOT, "portfolioContext": {"memory": "很长的记忆" * 20000}}
+    p = tmp_path / "snap.json"
+    p.write_text(json.dumps(big, ensure_ascii=False), encoding="utf-8")
+    wb.judge_snapshot(p, tmp_path / "ans.json", cli_path=tmp_path / "cli", runner=run)
+    assert "很长的记忆" in seen["input"]
+    assert sum(len(x) for x in seen["cmd"]) < 30000

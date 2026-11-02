@@ -190,10 +190,11 @@ def _ask_workbuddy(snapshot: dict, cli_path, model: str, timeout: float, runner)
         "--tools", "", "--max-turns", "1", "--no-session-persistence",
         "--output-format", "text", "--json-schema",
         json.dumps(answer_schema(snapshot), ensure_ascii=False, separators=(",", ":")),
-        "--system-prompt", SYSTEM_PROMPT, build_prompt(snapshot),
+        "--system-prompt", SYSTEM_PROMPT,
     ]
+    # 提示词走 stdin：当日记忆越积越长，放命令行会超过 Windows 32K 上限（2026-11-02 11:07 WinError 206）
     try:
-        completed = runner(command, capture_output=True, text=True, encoding="utf-8",
+        completed = runner(command, input=build_prompt(snapshot), capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
         raise WorkBuddyError(f"WorkBuddy 判断超时（{timeout:g} 秒）") from exc
