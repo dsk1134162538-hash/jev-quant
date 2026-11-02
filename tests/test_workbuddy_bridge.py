@@ -171,3 +171,8 @@ def test_portfolio_output_template_asks_for_sector_and_next():
     q = type("Q", (), {"name": "奥飞娱乐"})()
     text = _question_text("portfolio", build_portfolio_questions({"002292": q})["portfolio"])
     assert '"sector"' in text and '"next"' in text
+
+
+def test_liquor_sector_is_open_for_first_board():
+    # dj 2026-11-02：打首板了，酿酒板块放开
+    assert "白酒等冷门" not in wb.SYSTEM_PROMPT and "酿酒" in wb.SYSTEM_PROMPT
