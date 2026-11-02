@@ -134,7 +134,10 @@ def answer_schema(snapshot: dict) -> dict:
 
 def build_prompt(snapshot: dict) -> str:
     questions = snapshot["questions"]
-    state = {"snapshotId": snapshot["snapshotId"], "context": snapshot["context"],
+    # 面板的完整决策历史、系统状态条目不给模型：决策历史每轮变长，11-02 13:43 起提示词 145 万 tokens 超上限；
+    # 模型要的记忆走 portfolioContext.memory
+    context = {k: v for k, v in snapshot["context"].items() if k not in ("decisions", "decisionStore", "systemItems")}
+    state = {"snapshotId": snapshot["snapshotId"], "context": context,
              "portfolioContext": snapshot["portfolioContext"]}
     return ("模拟账户，不下真单。快照编号必须原样返回。不调用任何工具。\n"
             "动作的含义：action 选「允许模拟小仓评估」= 打开打首板闸门，程序会在候选冲板时买入；"

@@ -195,3 +195,10 @@ def test_run_cycle_starts_shadows_and_records_main_judgment(tmp_path, monkeypatc
     out = wb.run_cycle(model="deepseek-v4.1-flash")
     assert out["shadows"] == ["x"] and started == [snap["snapshotId"]]
     assert rows[0]["model"] == "deepseek-v4.1-flash" and rows[0]["role"] == "main" and rows[0]["gateOpen"] is False
+
+
+def test_prompt_leaves_out_the_dashboard_decision_history():
+    # 2026-11-02 13:43 起：context.decisions（面板的完整决策历史）每轮变长，提示词 145 万 tokens 超上限，下午整轮失败
+    snap = {**SNAPSHOT, "context": {"x": 1, "decisions": ["很长的历史"] * 10000, "systemItems": ["y"] * 1000}}
+    text = wb.build_prompt(snap)
+    assert "很长的历史" not in text and '"x": 1' in text and len(text) < 5000
