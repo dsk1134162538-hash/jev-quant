@@ -196,3 +196,15 @@ def test_only_shanghai_shenzhen_main_board_codes_reach_deepseek():
     from dashboard.subscription_bridge import _main_board_only
     assert _main_board_only(["600779", "300085", "688981", "002292", "000559", "301234", "920001", "830799", "603081"]) \
         == ["600779", "002292", "000559", "603081"]
+
+
+def test_snapshot_codes_drive_the_paper_engine_even_with_chinext_sector_leader(tmp_path):
+    # 2026-11-02 13:01：快照已按主板过滤，模拟账户却又从行业龙头取到 300133，查不到行情 KeyError，整轮失败
+    snapshot, answers = _files(tmp_path)
+    snap = json.loads(snapshot.read_text(encoding="utf-8"))
+    snap["context"]["sectorBreadth"]["leaders"] = [{"leaderCode": "sz300133", "name": "传媒", "change": 3.0},
+                                                   {"leaderCode": "sh600001", "name": "机器人", "change": 2.3}]
+    snapshot.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+    result = submit_answers(snapshot, answers, tmp_path / "decisions.jsonl", tmp_path / "paper.sqlite",
+                            clock=lambda: NOW, notifier=FakeNotifier())
+    assert result["ok"] is True and len(result["execution"]["fills"]) == 1

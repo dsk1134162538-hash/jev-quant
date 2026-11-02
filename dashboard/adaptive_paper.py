@@ -60,8 +60,11 @@ def _quote_valid(quote, now: datetime) -> bool:
 
 
 class AdaptivePaperEngine:
-    def __init__(self, db_path: Path, judge=None, quote_provider=None, clock=datetime.now, external: bool = False):
+    def __init__(self, db_path: Path, judge=None, quote_provider=None, clock=datetime.now, external: bool = False,
+                 candidate_codes=None):
         self.db_path = Path(db_path).resolve()
+        # 订阅/WorkBuddy 路径：候选就是快照里那批（含首板观察池），不再自己从行业龙头重算，免得两边对不上
+        self.fixed_codes = list(candidate_codes) if candidate_codes is not None else None
         self.judge = judge
         self.external = external
         self.quote_provider = quote_provider or (lambda codes: {})
@@ -109,13 +112,14 @@ class AdaptivePaperEngine:
     def _candidate_codes(self, conn, context: dict) -> list[str]:
         codes = [row[0] for row in conn.execute(
             "SELECT code FROM positions WHERE account=? AND shares>0 ORDER BY code", (AI_ACCOUNT,))]
+        # 只看沪深主板（dj 2026-11-02）：创业板/科创板/北交所的龙头买不了，不当候选
         for row in context.get("sectorBreadth", {}).get("leaders", [])[:3]:
             code = _plain_code(row.get("leaderCode", ""))
-            if len(code) == 6 and code not in codes:
+            if len(code) == 6 and code.startswith(("60", "00")) and code not in codes:
                 codes.append(code)
         for row in context.get("observations", []):
             code = _plain_code(row.get("code", ""))
-            if len(code) == 6 and code not in codes:
+            if len(code) == 6 and code.startswith(("60", "00")) and code not in codes:
                 codes.append(code)
         return codes
 
@@ -234,7 +238,7 @@ class AdaptivePaperEngine:
             conn = self._connect()
             try:
                 self._reconcile(conn, now)
-                codes = self._candidate_codes(conn, context)
+                codes = self.fixed_codes if self.fixed_codes is not None else self._candidate_codes(conn, context)
             finally:
                 conn.close()
             if not codes:

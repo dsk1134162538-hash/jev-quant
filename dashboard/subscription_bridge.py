@@ -338,7 +338,8 @@ def submit_answers(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANS
         raise ValueError("快照内候选行情已过期，拒绝处理模拟策略")
     judge = SubscriptionJudge(answers, model_name=model_name)
     paper = AdaptivePaperEngine(paper_path, judge=judge,
-                                quote_provider=lambda codes: {code: quotes[code] for code in codes}, clock=lambda: now)
+                                quote_provider=lambda codes: {code: quotes[code] for code in codes}, clock=lambda: now,
+                                candidate_codes=list(quotes))
     journal = DecisionJournal(decisions_path, judge=judge, clock=lambda: now,
                               on_record=paper.process_record, analysis="analysis" in snapshot.get("questions", {}))
     journal.update_now(snapshot["context"])
