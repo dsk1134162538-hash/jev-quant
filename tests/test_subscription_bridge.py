@@ -208,3 +208,15 @@ def test_snapshot_codes_drive_the_paper_engine_even_with_chinext_sector_leader(t
     result = submit_answers(snapshot, answers, tmp_path / "decisions.jsonl", tmp_path / "paper.sqlite",
                             clock=lambda: NOW, notifier=FakeNotifier())
     assert result["ok"] is True and len(result["execution"]["fills"]) == 1
+
+
+def test_quote_industries_come_from_jevq_database(tmp_path):
+    from dashboard.subscription_bridge import _industries
+    db = tmp_path / "jevq.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE industries (code TEXT, industry TEXT, updated TEXT)")
+    conn.execute("INSERT INTO industries VALUES ('603081', '传媒娱乐', '')")
+    conn.commit()
+    conn.close()
+    assert _industries(db, ["603081", "600001"]) == {"603081": "传媒娱乐"}
+    assert _industries(tmp_path / "missing.sqlite", ["603081"]) == {}

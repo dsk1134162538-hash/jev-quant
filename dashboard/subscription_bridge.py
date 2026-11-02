@@ -92,6 +92,22 @@ def _main_board_only(codes) -> list[str]:
     return [c for c in codes if str(c).startswith(MAIN_BOARD)]
 
 
+def _industries(db_path, codes) -> dict[str, str]:
+    """新浪行业归属（jevq.sqlite.industries），给 DeepSeek 写「所属板块」用；读不到就空。"""
+    if not db_path or not Path(db_path).exists() or not codes:
+        return {}
+    try:
+        conn = sqlite3.connect(f"{Path(db_path).as_uri()}?mode=ro", uri=True, timeout=2)
+        try:
+            marks = ",".join("?" * len(codes))
+            return {c: i for c, i in conn.execute(f"SELECT code, industry FROM industries WHERE code IN ({marks})",
+                                                  list(codes)) if i}
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {}
+
+
 def _board_context(db_path, day) -> dict:
     """后台扫首板今天的观察池 + AI 打首板主账户（持仓、成本、回本价），给 DeepSeek 表态用。读不到就是空。"""
     out = {"watch": [], "account": None, "fills": [], "sentiment": None}
@@ -219,6 +235,7 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
     finally:
         conn.close()
     snapshot_id = now.isoformat(timespec="seconds")
+    industries = _industries(getattr(service, "db_path", None), codes)
     constraints = {"account": AI_ACCOUNT, "liveTrading": False, "initialCapital": AI_TOTAL_BUDGET,
                    "maxPositions": 1, "maxDailyBuys": 2, "minConfidence": 0.65,
                    "tPlusOne": True, "lot": 100,
@@ -240,7 +257,8 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
         "questions": {**build_questions(analysis=True), **build_portfolio_questions(quotes)},
         "portfolioContext": {
             "snapshot": context.get("snapshot"), "marketBreadth": market, "sectorBreadth": sectors,
-            "account": account, "quotes": paper._quote_payload(quotes),
+            "account": account,
+            "quotes": {code: {**q, "industry": industries.get(code)} for code, q in paper._quote_payload(quotes).items()},
             "constraints": constraints,
             "previous": _previous_judgment(),
             "boardWatch": board["watch"], "boardAccount": board["account"],
