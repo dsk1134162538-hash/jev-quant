@@ -90,6 +90,18 @@ def test_buys_at_the_open_price_once_per_day_and_main_skips_jev_rejects():
     assert s.buy_step(quotes, datetime(2026, 11, 3, 9, 31)) == []           # 当天不再买
 
 
+def test_main_retries_next_minute_when_the_jev_budget_ran_out():
+    # 09:30 扫首板先判 Jev，时间预算可能用完；主账户下一分钟（还在 09:33 前）补判，影子不重复买
+    conn = db.connect(":memory:")
+    s, _ = _strategy(conn)
+    quotes = {"600006": _q("600006", 3.0)}
+    first = s.buy_step(quotes, T930, deadline=0.0)
+    assert [f.account for f in first] == [SHADOW]
+    again = s.buy_step(quotes, datetime(2026, 11, 3, 9, 31), deadline=None)
+    assert [(f.account, f.price) for f in again] == [(MAIN, 10.3)]
+    assert s.buy_step(quotes, datetime(2026, 11, 3, 9, 32)) == []
+
+
 def test_no_buys_after_the_opening_minutes_or_on_sell_only_days():
     conn = db.connect(":memory:")
     s, _ = _strategy(conn)
