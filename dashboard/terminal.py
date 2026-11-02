@@ -207,7 +207,7 @@ class TerminalData:
                     "id": acct, "name": config.ACCOUNT_NAMES.get(acct, acct), "main": acct in MAIN_ACCOUNTS,
                     "live": acct == config.LIVE_ACCOUNT, "equity": round(equity, 2), "cash": round(cash_row[0], 2),
                     "today": round((equity / prev[0] - 1) * 100, 2) if prev and prev[0] else None,
-                    "total": round((equity / config.INITIAL_CASH - 1) * 100, 2), "positions": positions})
+                    "total": round((equity / config.ACCOUNT_CAPITAL.get(acct, config.INITIAL_CASH) - 1) * 100, 2), "positions": positions})
             for f in conn.execute("SELECT account, code, side, price, shares, ts, reason FROM fills "
                                   "WHERE substr(ts, 1, 10) = ? AND account IN ({}) ORDER BY ts DESC LIMIT 40".format(
                                       ",".join("?" * len(ACCOUNTS + AI_ACCOUNTS))),

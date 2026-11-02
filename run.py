@@ -18,6 +18,7 @@ from jevq.data.features import history_features
 from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
 from jevq.data.touch_snaps import TouchRecorder
+from jevq.data.flash_archive import FlashArchiver
 from jevq.engine import Engine
 from jevq.judge.jev import JevClient
 from jevq.judge.market import MarketJudge
@@ -41,6 +42,7 @@ from jevq.strategies.board import BoardStrategy
 from jevq.strategies.custom import CustomStrategy
 from jevq.strategies.rebound import ReboundStrategy
 from jevq.strategies.lowbuy import LowbuyStrategy
+from jevq.strategies.relay import RelayStrategy
 from jevq.strategies.regime import RegimeStrategy
 
 SESSIONS = [(time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))]
@@ -404,6 +406,9 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     customs = [] if late else _load_customs(
         conn, ledger, today, universe, ret5, sell_only, notice_judge, news_judge, concept_map,
         lambda: {"sentiment": engine.sentiment_label, "overseas": overseas}, prev_day, log, trade_days=days)
+    relay = _load_relay(conn, ledger, today, universe, notice_judge, news_judge, days, not (late or sell_only), log)
+    if relay is not None:           # 高标竞价接力（dj 2026-11-02）：走自定义策略同一条卖/买通道；晚启动、只卖日照样卖
+        customs = [*customs, ("relay", relay)]
 
     if once:
         t = now()
@@ -419,6 +424,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     last_tick_minute = None
     after_sell = sell_followups.AfterSellTracker()     # 卖飞统计：盘中跟踪每笔卖出之后的最高价
     touches = TouchRecorder()                          # 全市场主板第一次涨到 9% 的盘口快照（dj 2026-11-02）
+    flashes = FlashArchiver()                          # 7x24 快讯存档（dj 2026-11-02）
     own_intraday = _own_intraday_recorder(conn, key, universe, ret5, log, sell_only or late)
     while now().time() < REPORT_AT:
         t = now()
@@ -442,6 +448,10 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                 touches.step(_fresh_quotes(engine, t), t)
             except Exception as e:
                 log(f"触线快照失败：{e!r}")
+            try:        # 7x24 快讯带时间戳存档（以后回测「快讯后几分钟买题材股」）：只记录
+                flashes.step(flash, t)
+            except Exception as e:
+                log(f"快讯存档失败：{e!r}")
             if getattr(engine, "turn_on", False) and getattr(engine, "turn_detail", None):
                 notifier.once("turn", "💡 情绪拐点：开始抄底",
                               f"{engine.turn_detail.get('text', '')}\n{_turn_opinions(engine.turn_detail)}；"
@@ -758,6 +768,22 @@ def _own_intraday_recorder(conn, key: str | None, universe: dict, ret5: dict, lo
                                         lambda c: OwnSectorJudge(JevClient(key, conn=c), strength_jev=_claude_or(
                                             JevClient(key, conn=c), c, config.SECTOR_STRENGTH_BY_CLAUDE)),
                                         universe, ret5, log)
+
+
+def _load_relay(conn, ledger: Ledger, today: date, universe: dict, notice_judge, news_judge, trade_days,
+                can_buy: bool, log: Callable[[str], None]) -> RelayStrategy | None:
+    """高标竞价接力：盘前从 closes 算昨天的连板数。算不出来（库缺数据）就只卖不买；构造失败不影响别的策略。"""
+    try:
+        streaks = closes.limit_streaks(conn, universe, today) if can_buy else {}
+        if can_buy:
+            high = sorted((s, c) for c, s in streaks.items() if s >= config.RELAY_MIN_STREAK)
+            log(f"高标接力：昨日 {config.RELAY_MIN_STREAK} 板以上 {len(high)} 只"
+                + (f"（最高 {high[-1][0]} 板 {high[-1][1]}）" if high else ""))
+        return RelayStrategy(conn, ledger, notice_judge, news_judge, streaks, trade_days=trade_days, can_buy=can_buy)
+    except Exception as e:
+        conn.rollback()
+        log(f"高标接力加载失败：{e!r}")
+        return None
 
 
 def _load_rebound(conn, ledger: Ledger, today: date, universe: dict, ret5: dict, sell_only: bool,

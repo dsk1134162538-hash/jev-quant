@@ -210,6 +210,8 @@ STRATEGIES = {
     # AI 打首板（dj 2026-11-01）：老扫首板的选股和 3 秒扫板 + DeepSeek 开闸（市场不好就空仓）+ 单票不亏损卖出。
     # 新账户，实盘不跟（regime.SOURCE_OF 里没有它）
     "aiboard": {"name": "AI打首板", "accounts": ("aiboard_main", "aiboard_shadow")},
+    # 高标竞价接力（dj 2026-11-02）：昨天 3 板以上、竞价高开 3~6%，开盘价买、下一交易日收盘前卖。实盘不跟
+    "relay": {"name": "高标接力", "accounts": ("relay_main", "relay_shadow")},
 }
 ACCOUNTS = tuple(a for s in STRATEGIES.values() for a in s["accounts"])
 ACCOUNT_NAMES = {
@@ -219,7 +221,21 @@ ACCOUNT_NAMES = {
     "lowbuy_main": "低吸·主(Jev)", "lowbuy_shadow": "低吸·影子",
     "regime_main": "情绪轮动(实盘跟)",
     "aiboard_main": "AI打首板·主(DeepSeek)", "aiboard_shadow": "AI打首板·影子",
+    "relay_main": "高标接力·主(Jev)", "relay_shadow": "高标接力·影子",
 }
+# 高标竞价接力（research/dragon_relay.py：训练 +1.12%/笔 n=268、验证 +1.86%/笔 n=88；单笔最差 −23%）。
+# 持有跨两天，两批仓位会重叠：每笔 1/6 本金、最多 6 只，一天最多买 3 只
+RELAY_MIN_STREAK = 3
+RELAY_GAP_PCT = (3.0, 6.0)        # 竞价开盘涨幅 [3%, 6%)
+RELAY_MAX_PER_DAY = 3
+RELAY_MAX_POSITIONS = 6
+RELAY_CAPITAL = 120_000.0
+RELAY_PER_TRADE = RELAY_CAPITAL / RELAY_MAX_POSITIONS
+RELAY_BUY_UNTIL = (9, 33)          # 开盘后几分钟内还按开盘价算；更晚启动就不买（价格已经不是竞价价）
+RELAY_SELL_AT = (14, 55)
+ACCOUNT_CAPITAL = {"relay_main": RELAY_CAPITAL, "relay_shadow": RELAY_CAPITAL}
+ACCOUNT_MAX_POSITIONS = {"relay_main": RELAY_MAX_POSITIONS, "relay_shadow": RELAY_MAX_POSITIONS}
+STRATEGY_CAPITAL = {"relay": RELAY_CAPITAL}
 AI_BOARD_ENABLED = True
 AI_BOARD_FIRST_PCT = 0.5        # 首次建仓只用一半，另一半留给回本（做T/低吸补仓）
 # dj 2026-11-02：次日开盘就卖（108 天回测：开盘卖优于等反弹/拿到收盘/止损；「不亏不卖」把亏损放大一倍多）。

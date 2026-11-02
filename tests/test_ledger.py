@@ -3,13 +3,13 @@ from datetime import date, datetime
 import pytest
 
 from factories import quote
-from jevq import db
+from jevq import config, db
 from jevq.ledger import Ledger, affordable_shares, buy_fee, sell_fee
 
 T = datetime(2026, 9, 23, 14, 50)
 MAIN, SHADOW = "rebound_main", "rebound_shadow"
 BUILTIN = ("board_main", "board_shadow", "rebound_main", "rebound_shadow", "lowbuy_main", "lowbuy_shadow", "regime_main",
-           "aiboard_main", "aiboard_shadow")
+           "aiboard_main", "aiboard_shadow", "relay_main", "relay_shadow")
 
 
 @pytest.fixture
@@ -111,7 +111,7 @@ def test_ledger_init_false_does_not_create_cash_rows():
 
 def test_new_ledger_seeds_builtin_accounts_only(ledger):
     """低吸下线：不再给 main/shadow 开户。"""
-    assert dict(ledger.conn.execute("SELECT account, amount FROM cash")) == {a: 30000 for a in BUILTIN}
+    assert dict(ledger.conn.execute("SELECT account, amount FROM cash")) == {a: config.ACCOUNT_CAPITAL.get(a, 30000) for a in BUILTIN}
 
 
 def test_ledger_keeps_retired_lowbuy_rows_untouched():
@@ -140,4 +140,4 @@ def test_ensure_account_is_idempotent(ledger):
 def test_ledger_init_only_seeds_builtin_not_custom_accounts():
     conn = db.connect(":memory:")
     Ledger(conn)
-    assert conn.execute("SELECT COUNT(*) FROM cash").fetchone()[0] == 9
+    assert conn.execute("SELECT COUNT(*) FROM cash").fetchone()[0] == 11

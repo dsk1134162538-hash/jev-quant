@@ -2,8 +2,8 @@ import math
 import sqlite3
 from datetime import date, datetime
 
-from jevq.config import (COMMISSION_MIN, COMMISSION_RATE, INITIAL_CASH, LOT, MAX_PER_TRADE,
-                         MAX_POSITIONS, STAMP_RATE, TRANSFER_RATE, builtin_accounts)
+from jevq.config import (ACCOUNT_CAPITAL, ACCOUNT_MAX_POSITIONS, COMMISSION_MIN, COMMISSION_RATE, INITIAL_CASH,
+                         LOT, MAX_PER_TRADE, MAX_POSITIONS, STAMP_RATE, TRANSFER_RATE, builtin_accounts)
 from jevq.models import Fill, Position, Quote
 
 
@@ -30,7 +30,7 @@ class Ledger:
             return
         for a in builtin_accounts():
             conn.execute("INSERT OR IGNORE INTO cash(account, amount) VALUES (?, ?)",
-                         (a, INITIAL_CASH))
+                         (a, ACCOUNT_CAPITAL.get(a, INITIAL_CASH)))
         conn.commit()
 
     def ensure_account(self, account: str, capital: float) -> None:
@@ -53,7 +53,7 @@ class Ledger:
                                  (account, code)).fetchone() is not None
 
     def free_slots(self, account: str) -> int:
-        return MAX_POSITIONS - len(self.positions(account))
+        return ACCOUNT_MAX_POSITIONS.get(account, MAX_POSITIONS) - len(self.positions(account))
 
     def buy(self, account: str, q: Quote, ts: datetime, reason: str,
             budget: float | None = None) -> Fill | None:

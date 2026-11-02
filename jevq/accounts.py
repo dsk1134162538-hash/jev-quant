@@ -51,4 +51,4 @@ def capital_baseline(conn: sqlite3.Connection, strategy: str) -> float:
         cap = custom_store.capital_of(conn, strategy)
         if cap is not None:
             return cap
-    return config.INITIAL_CASH
+    return config.STRATEGY_CAPITAL.get(strategy, config.INITIAL_CASH)

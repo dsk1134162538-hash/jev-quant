@@ -174,7 +174,7 @@ def test_close_summary_lists_builtin_accounts_without_retired_lowbuy():
         assert [line.split(" ")[0] for line in content.splitlines()] == [
             "首板·主(Jev)", "首板·影子", "超跌·主(Jev)", "超跌·影子",
             "低吸·主(Jev)", "低吸·影子", "情绪轮动(实盘跟)",
-            "AI打首板·主(DeepSeek)", "AI打首板·影子"]
+            "AI打首板·主(DeepSeek)", "AI打首板·影子", "高标接力·主(Jev)", "高标接力·影子"]
 
 
 def test_push_notices_new_format_top3_by_score():

@@ -291,3 +291,34 @@ def consecutive_board_codes(conn, codes: Iterable[str], today: date, days: int =
                 out.add(code)
                 break
     return out, len(dates)
+
+
+def limit_streaks(conn, codes: Iterable[str], today: date, max_days: int = 15) -> dict[str, int]:
+    """截至 today 之前最后一个交易日的连板数（收盘价 ≥ 昨收×1.1 四舍五入到分）。昨收优先用 closes.pre_close
+    （已按除权调整）；pre_close 是空的（补抓的那天）就用库里前一天的收盘价。只返回连板数 ≥1 的代码。
+    高标竞价接力用（dj 2026-11-02）。"""
+    codes = set(codes)
+    dates = [r[0] for r in conn.execute(
+        "SELECT DISTINCT date FROM closes WHERE date < ? ORDER BY date DESC LIMIT ?",
+        (today.isoformat(), max_days + 1)).fetchall()]
+    if not dates or not codes:
+        return {}
+    marks = ",".join("?" * len(dates))
+    rows: dict[str, dict[str, tuple]] = {}
+    for d, code, close, pre in conn.execute(
+            f"SELECT date, code, close, pre_close FROM closes WHERE date IN ({marks})", dates):
+        if code in codes:
+            rows.setdefault(code, {})[d] = (close, pre)
+    out = {}
+    for code in codes:
+        days, n = rows.get(code, {}), 0
+        for i, d in enumerate(dates):               # 新 → 旧
+            close, pre = days.get(d, (None, None))
+            if pre is None and i + 1 < len(dates):
+                pre = days.get(dates[i + 1], (None, None))[0]
+            if not close or not pre or close < round(pre * 1.1 + 1e-9, 2):
+                break
+            n += 1
+        if n:
+            out[code] = n
+    return out

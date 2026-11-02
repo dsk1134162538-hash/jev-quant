@@ -50,6 +50,12 @@ class Flash:
                 break
         return out
 
+    def items(self) -> list[tuple[datetime, str, str]]:
+        """缓存里的原始快讯 [(时间, 来源, 标题)]（过期先刷新）；快讯存档用。"""
+        if self._at is None or self.clock() - self._at >= CACHE_SECONDS:
+            self._refresh()
+        return list(self._items)
+
     def _refresh(self) -> None:
         items = []
         for name, fetch in self.sources.items():

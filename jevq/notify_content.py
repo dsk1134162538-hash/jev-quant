@@ -9,7 +9,8 @@ from collections import Counter
 from datetime import date, datetime
 
 from jevq import accounts as accounts_mod
-from jevq.config import ACCOUNT_NAMES, ACCOUNT_STRATEGY, ACCOUNTS, INITIAL_CASH, NOTICE_LOOKBACK_DAYS
+from jevq.config import (ACCOUNT_CAPITAL, ACCOUNT_NAMES, ACCOUNT_STRATEGY, ACCOUNTS, INITIAL_CASH,
+                         NOTICE_LOOKBACK_DAYS)
 from jevq.ledger import Ledger
 from jevq.models import Fill
 
@@ -196,7 +197,8 @@ def close_summary_content(ledger: Ledger, today: date, prices: dict, conn=None) 
     lines = []
     for a in accounts:
         value = ledger.equity(a, prices)
-        base = accounts_mod.capital_baseline(ledger.conn, strategy.get(a, "")) if conn is not None else INITIAL_CASH
+        base = accounts_mod.capital_baseline(ledger.conn, strategy.get(a, "")) if conn is not None \
+            else ACCOUNT_CAPITAL.get(a, INITIAL_CASH)
         pct = (value / base - 1) * 100
         lines.append(f"{names.get(a, a)} 净值 {value:,.2f}（{pct:+.2f}%）今日成交 {counts.get(a, 0)} 笔")
     return "\n".join(lines)
