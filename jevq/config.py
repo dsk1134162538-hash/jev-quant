@@ -216,6 +216,8 @@ STRATEGIES = {
     "wts": {"name": "弱转强", "accounts": ("wts_main", "wts_shadow")},
     # 冰点修复（dj 2026-11-03，知识库）：连续两个冰点日（跌停≥10 家且炸板率≥40%）尾盘买一篮子、持有 3 天。实盘不跟
     "ice": {"name": "冰点修复", "accounts": ("ice_main",)},
+    # 小市值轮动（dj 2026-11-03「可以」）：对照基线。成交额最小 10% 里选 20 只等权，每 20 个交易日调仓。实盘不跟
+    "smallcap": {"name": "小市值轮动", "accounts": ("sc_main",)},
 }
 ACCOUNTS = tuple(a for s in STRATEGIES.values() for a in s["accounts"])
 ACCOUNT_NAMES = {
@@ -227,6 +229,7 @@ ACCOUNT_NAMES = {
     "aiboard_main": "AI打首板·主(DeepSeek)", "aiboard_shadow": "AI打首板·影子",
     "relay_main": "高标接力·主(Jev)", "relay_shadow": "高标接力·影子",
     "wts_main": "弱转强·主(Jev)", "wts_shadow": "弱转强·影子", "ice_main": "冰点修复·篮子",
+    "sc_main": "小市值轮动·篮子",
 }
 # 高标竞价接力（research/dragon_relay.py：训练 +1.12%/笔 n=268、验证 +1.86%/笔 n=88；单笔最差 −23%）。
 # 持有跨两天，两批仓位会重叠：每笔 1/6 本金、最多 6 只，一天最多买 3 只
@@ -257,11 +260,24 @@ ICE_BUY_AT = (14, 50)             # 尾盘买
 ICE_HOLD_DAYS = 3                 # 持有交易日数，第 3 个交易日 ICE_SELL_AT 后卖
 ICE_SELL_AT = (14, 55)
 ICE_MIN_PRICE = 3.0
+# 小市值轮动（research/size_study.py：成交额最小 10%、每 20 个交易日调仓、20 只、扣 0.3% 滑点：年化 +12%、最大回撤 −34%，
+# 逐年极不均匀（2021/2022/2025 是大年），未校正退市票的幸存者偏差，真实预期更低）
+SC_BASKET = 20
+SC_CAPITAL = 120_000.0
+SC_PER_TRADE = SC_CAPITAL / SC_BASKET
+SC_HOLD_DAYS = 20                 # 每这么多个交易日调仓一次
+SC_BOTTOM_PCT = 0.10              # 60 日均成交额最小的 10%
+SC_AMOUNT_DAYS = 60
+SC_MIN_HISTORY = 40               # 成交额历史不足这么多天的票不参与
+SC_MIN_PRICE = 3.0
+SC_BUY_AT = (14, 50)
+SC_SELL_AT = (14, 50)
 ACCOUNT_CAPITAL = {"relay_main": RELAY_CAPITAL, "relay_shadow": RELAY_CAPITAL,
-                   "wts_main": WTS_CAPITAL, "wts_shadow": WTS_CAPITAL, "ice_main": ICE_CAPITAL}
+                   "wts_main": WTS_CAPITAL, "wts_shadow": WTS_CAPITAL, "ice_main": ICE_CAPITAL, "sc_main": SC_CAPITAL}
 ACCOUNT_MAX_POSITIONS = {"relay_main": RELAY_MAX_POSITIONS, "relay_shadow": RELAY_MAX_POSITIONS,
-                         "wts_main": WTS_MAX_POSITIONS, "wts_shadow": WTS_MAX_POSITIONS, "ice_main": ICE_BASKET}
-STRATEGY_CAPITAL = {"relay": RELAY_CAPITAL, "wts": WTS_CAPITAL, "ice": ICE_CAPITAL}
+                         "wts_main": WTS_MAX_POSITIONS, "wts_shadow": WTS_MAX_POSITIONS, "ice_main": ICE_BASKET,
+                         "sc_main": SC_BASKET}
+STRATEGY_CAPITAL = {"relay": RELAY_CAPITAL, "wts": WTS_CAPITAL, "ice": ICE_CAPITAL, "smallcap": SC_CAPITAL}
 AI_BOARD_ENABLED = True
 AI_BOARD_FIRST_PCT = 0.5        # 首次建仓只用一半，另一半留给回本（做T/低吸补仓）
 # dj 2026-11-02：次日开盘就卖（108 天回测：开盘卖优于等反弹/拿到收盘/止损；「不亏不卖」把亏损放大一倍多）。

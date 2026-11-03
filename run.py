@@ -46,6 +46,8 @@ from jevq.strategies.rebound import ReboundStrategy
 from jevq.strategies.lowbuy import LowbuyStrategy
 from jevq.strategies.relay import RelayStrategy, WtsStrategy
 from jevq.strategies.ice import IceStrategy
+from jevq.strategies.smallcap import SmallcapStrategy
+from jevq.rules import smallcap as smallcap_rules
 from jevq.strategies.regime import RegimeStrategy
 
 SESSIONS = [(time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))]
@@ -421,6 +423,9 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     ice = _load_ice(conn, ledger, days, new_can_buy, log)
     if ice is not None:
         customs = [*customs, ("ice", ice)]
+    sc = _load_smallcap(conn, ledger, today, universe, days, new_can_buy, log)
+    if sc is not None:
+        customs = [*customs, ("smallcap", sc)]
     _write_strategy_targets(today, getattr(relay, "streaks", {}) if relay is not None else {},
                             getattr(wts, "pool", {}) if wts is not None else {}, log)
 
@@ -834,6 +839,21 @@ def _load_wts(conn, ledger: Ledger, today: date, universe: dict, notice_judge, n
     except Exception as e:
         conn.rollback()
         log(f"弱转强加载失败：{e!r}")
+        return None
+
+
+def _load_smallcap(conn, ledger: Ledger, today: date, universe: dict, trade_days, can_buy: bool,
+                   log: Callable[[str], None]) -> SmallcapStrategy | None:
+    """小市值轮动：盘前算 60 日均成交额（closes 里有收盘价和成交量）。算不出来就只卖不买。"""
+    try:
+        amount60 = smallcap_rules.amount60_from_db(conn, universe, today) if can_buy else {}
+        if can_buy:
+            log(f"小市值轮动：已加载，有 60 日成交额的票 {len(amount60)} 只，最小 {config.SC_BOTTOM_PCT:.0%} 作为候选池；"
+                f"每 {config.SC_HOLD_DAYS} 个交易日 {config.SC_BUY_AT[0]}:{config.SC_BUY_AT[1]:02d} 调仓")
+        return SmallcapStrategy(conn, ledger, amount60, trade_days=trade_days, can_buy=can_buy)
+    except Exception as e:
+        conn.rollback()
+        log(f"小市值轮动加载失败：{e!r}")
         return None
 
 
