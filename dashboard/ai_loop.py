@@ -135,7 +135,7 @@ def run_once(cycle=None, clock=datetime.now, log=_log, calls_today: int = 0) -> 
 
 
 def loop(cycle=None, clock=datetime.now, sleep=time.sleep, log=_log, max_calls: int = MAX_CALLS_PER_DAY,
-         stop=lambda: False, daily=None, alert=None) -> None:
+         stop=lambda: False, daily=None, alert=None, flex=None) -> None:
     """daily：收盘后任务（main 里传真的 ai_score.daily_job；测试不传就不跑）。
     alert(msg)：连续失败到退避线时推一次提醒，当天只推一次（2026-11-02 下午提示词超长全挂，没人知道）。"""
     alerted = None
@@ -156,6 +156,12 @@ def loop(cycle=None, clock=datetime.now, sleep=time.sleep, log=_log, max_calls: 
             sleep(max(1.0, min((next_session_start(now) - now).total_seconds(), 1800.0)))
             continue
         rec = run_once(cycle, clock, log)
+        if flex is not None:          # AI 灵活交易（dj 2026-11-03）：关键时点才跑，失败只记日志，不影响主循环的退避计数
+            try:
+                if (flexed := flex(clock())):
+                    log({"ts": clock().isoformat(timespec="seconds"), "ok": True, "flex": flexed})
+            except Exception as e:                                   # noqa: BLE001
+                log({"ts": clock().isoformat(timespec="seconds"), "ok": False, "flexError": f"{type(e).__name__}: {str(e)[:200]}"})
         calls += 1 if rec.get("called") else 0
         fails = 0 if rec["ok"] else fails + 1
         if rec.get("retryAt"):                               # WorkBuddy 额度限流：等到它说的恢复时间，不硬撞
@@ -194,6 +200,17 @@ def _daily() -> dict:
     return {**result, "minutes": archived}
 
 
+def _flex(now: datetime) -> dict | None:
+    """到了灵活交易的关键时点就跑一轮（想：调 DeepSeek，写订单文件，推送）；没到返回 None。"""
+    from dashboard import flex_trader
+    from jevq.notify import notifier_from_env
+    slot = flex_trader.due_slot(now)
+    if slot is None:
+        return None
+    return flex_trader.run_cycle(now, slot, gather=flex_trader.gather_context, ask=flex_trader.ask_workbuddy,
+                                 notifier=notifier_from_env(), clock=datetime.now)
+
+
 def _alert(msg: str) -> None:
     from jevq.notify import notifier_from_env
     notifier_from_env().send("⚠️ AI 复盘停了", msg)
@@ -210,7 +227,7 @@ def main(argv=None) -> int:
                 rec = run_once()
                 print(json.dumps(rec, ensure_ascii=False))
                 return 0 if rec["ok"] else 1
-            loop(daily=_daily, alert=_alert)
+            loop(daily=_daily, alert=_alert, flex=_flex)
     except RuntimeError as e:                                # 锁被占用
         print(str(e), file=sys.stderr)
         return 2

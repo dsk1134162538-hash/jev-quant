@@ -52,18 +52,24 @@ def phase(n: int, prev_n: int, maxb: int) -> str:
     return ""
 
 
-def ladder(rows: list[dict], prev_rows: list[dict] | None = None, top: int = 8, min_n: int = 2) -> list[dict]:
+def ladder(rows: list[dict], prev_rows: list[dict] | None = None, top: int = 8, min_n: int = 2,
+           with_members: bool = False) -> list[dict]:
     """今天的题材梯队：[{theme, n, maxb, levels, leaders, prev_n, phase}]，涨停家数多的在前。
     只留涨停 ≥min_n 家、或最高板 ≥3 的题材（单只首板不算梯队）。"""
     prev = _stats(prev_rows or [])
+    codes = {(r.get("name") or r.get("code") or ""): r.get("code") or "" for r in rows}
     out = []
     for theme, s in _stats(rows).items():
         if s["n"] < min_n and s["maxb"] < 3:
             continue
         leaders = [name for b, name in sorted(s["members"], key=lambda x: -x[0]) if b == s["maxb"]][:3]
         prev_n = prev[theme]["n"] if theme in prev else 0
-        out.append({"theme": theme, "n": s["n"], "maxb": s["maxb"], "levels": len(s["levels"]), "leaders": leaders,
-                    "prev_n": prev_n, "phase": phase(s["n"], prev_n, s["maxb"])})
+        item = {"theme": theme, "n": s["n"], "maxb": s["maxb"], "levels": len(s["levels"]), "leaders": leaders,
+                "prev_n": prev_n, "phase": phase(s["n"], prev_n, s["maxb"])}
+        if with_members:      # 灵活账户要真实代码可挑：只留沪深主板，连板高的在前
+            item["members"] = [{"code": codes[name], "name": name, "boards": b} for b, name in sorted(s["members"], key=lambda x: -x[0])
+                               if codes.get(name, "").startswith(MAIN_BOARD)][:8]
+        out.append(item)
     out.sort(key=lambda t: (-t["n"], -t["maxb"]))
     return out[:top]
 

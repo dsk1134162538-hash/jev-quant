@@ -148,7 +148,7 @@ THEME_CACHE = Path(__file__).resolve().parent / "runtime" / "theme_cache.json"
 THEME_CACHE_SECONDS = 120
 
 
-def _theme_ladder(now, fetch_rows, prev_day, path: Path = THEME_CACHE, clock=None) -> list[dict]:
+def _theme_ladder(now, fetch_rows, prev_day, path: Path = THEME_CACHE, clock=None, with_members: bool = False) -> list[dict]:
     """今天的题材梯队（同花顺涨停揭秘按原因题材归好：涨停家数、最高板、龙头、阶段）。今天的每 120 秒刷新一次，
     前一天的每天只取一次，都缓存在文件里（AI 循环每 2~5 分钟一轮，不能每轮都联网）。取不到返回空，不拖垮快照。"""
     import time as _time
@@ -175,7 +175,7 @@ def _theme_ladder(now, fetch_rows, prev_day, path: Path = THEME_CACHE, clock=Non
             Path(path).write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
         except OSError:
             pass
-        return themes.ladder(rows, prev_rows)
+        return themes.ladder(rows, prev_rows, with_members=with_members)
     except Exception:                                            # noqa: BLE001
         return []
 

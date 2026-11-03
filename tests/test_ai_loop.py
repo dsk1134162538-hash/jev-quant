@@ -153,3 +153,19 @@ def test_daily_job_failure_is_logged_not_raised(tmp_path):
         raise RuntimeError("x")
     rec = ai_loop.run_daily_job(datetime(2026, 11, 3, 15, 40), boom, tmp_path / "d.json")
     assert rec["ok"] is False and "RuntimeError" in rec["error"]
+
+
+def test_flex_runs_at_key_times_and_its_failures_never_count_as_main_loop_failures():
+    # AI 灵活交易（dj 2026-11-03）：每次循环都问一下「到点了吗」；它自己的失败只记日志，不触发主循环的退避和告警
+    seen = []
+
+    def flex(now):
+        seen.append(now)
+        if len(seen) == 2:
+            raise RuntimeError("WorkBuddy 超时")
+        return {"slot": "10:00", "orders": 1} if len(seen) == 1 else None
+    alerts = []
+    logs = _run_loop(at(2, 9, 35), at(2, 9, 45), lambda: {"ok": True, "model": "m"}, flex=flex, alert=alerts.append)
+    assert len(seen) >= 3 and alerts == []
+    assert any(l.get("flex") == {"slot": "10:00", "orders": 1} for l in logs)
+    assert any("RuntimeError" in str(l.get("flexError")) and l["ok"] is False for l in logs)

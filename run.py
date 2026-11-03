@@ -46,6 +46,8 @@ from jevq.strategies.rebound import ReboundStrategy
 from jevq.strategies.lowbuy import LowbuyStrategy
 from jevq.strategies.relay import BzStrategy, RelayStrategy, WtsStrategy
 from jevq.strategies.ice import IceStrategy
+from jevq.strategies import flex as flex_strategy
+from jevq.strategies.flex import AiflexStrategy
 from jevq.strategies.smallcap import SmallcapStrategy
 from jevq.rules import smallcap as smallcap_rules
 from jevq.rules import themes
@@ -428,6 +430,9 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     bz = _load_bz(conn, ledger, today, prev_day, universe, notice_judge, news_judge, days, new_can_buy, log)
     if bz is not None:
         customs = [*customs, ("bz", bz)]
+    flex = _load_flex(conn, ledger, days, new_can_buy, log)
+    if flex is not None:
+        customs = [*customs, ("aiflex", flex)]
     sc = _load_smallcap(conn, ledger, today, universe, days, new_can_buy, log)
     if sc is not None:
         customs = [*customs, ("smallcap", sc)]
@@ -876,6 +881,18 @@ def _load_bz(conn, ledger: Ledger, today: date, prev_day: date, universe: dict, 
     except Exception as e:
         conn.rollback()
         log(f"补涨加载失败：{e!r}")
+        return None
+
+
+def _load_flex(conn, ledger: Ledger, trade_days, can_buy: bool, log: Callable[[str], None]) -> AiflexStrategy | None:
+    """AI 灵活交易的执行器：读 ai_loop 写的订单文件，按实时行情成交，实时盯 AI 自己设的止损。"""
+    try:
+        if can_buy:
+            log("AI 灵活交易：执行器已加载（订单来自 ai_loop 的关键时点；护栏：单票≤30%、持仓≤5、买入必带止损、日亏3%/连亏3笔停开仓）")
+        return AiflexStrategy(conn, ledger, trade_days, orders_path=flex_strategy.ORDERS_PATH, can_buy=can_buy)
+    except Exception as e:
+        conn.rollback()
+        log(f"AI 灵活交易加载失败：{e!r}")
         return None
 
 
