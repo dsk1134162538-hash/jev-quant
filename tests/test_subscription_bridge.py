@@ -295,3 +295,140 @@ def test_push_has_a_section_for_other_strategy_targets_or_says_there_are_none():
     notifier2 = FakeNotifier()
     notify_result(notifier2, record, latest, True, quotes={}, targets=[])
     assert "今天没有高标接力 / 弱转强的标的" in notifier2.messages[0][1]
+
+
+def _zt(code, name, reason, hd="首板"):
+    return {"code": code, "name": name, "reason": reason, "high_days": hd}
+
+
+def test_theme_ladder_fetches_today_and_previous_day_once_and_labels_the_phase(tmp_path):
+    from datetime import date
+    from dashboard.subscription_bridge import _theme_ladder
+    today_rows = [_zt("600001", "甲", "机器人", "2天2板"), _zt("600002", "乙", "机器人"), _zt("600003", "丙", "机器人")]
+    prev_rows = [_zt(f"60001{i}", f"前{i}", "机器人") for i in range(1, 2)]
+    calls = []
+
+    def fetch(d):
+        calls.append(d)
+        return today_rows if d == date(2026, 11, 3) else prev_rows
+    path = tmp_path / "theme_cache.json"
+    got = _theme_ladder(datetime(2026, 11, 3, 10, 0), fetch, date(2026, 11, 2), path, clock=lambda: 1000.0)
+    assert got[0]["theme"] == "机器人" and got[0]["n"] == 3 and got[0]["phase"] == "启动" and got[0]["leaders"] == ["甲"]
+    assert sorted(calls) == [date(2026, 11, 2), date(2026, 11, 3)]
+    _theme_ladder(datetime(2026, 11, 3, 10, 1), fetch, date(2026, 11, 2), path, clock=lambda: 1060.0)
+    assert len(calls) == 2                                              # 120 秒内、同一天：不重复联网
+    _theme_ladder(datetime(2026, 11, 3, 10, 5), fetch, date(2026, 11, 2), path, clock=lambda: 1200.0)
+    assert len(calls) == 3                                              # 过期只刷新今天，前一天不再取
+
+
+def test_theme_ladder_failure_returns_nothing_instead_of_breaking_the_snapshot(tmp_path):
+    from datetime import date
+    from dashboard.subscription_bridge import _theme_ladder
+
+    def boom(d):
+        raise TimeoutError("同花顺超时")
+    assert _theme_ladder(datetime(2026, 11, 3, 10, 0), boom, date(2026, 11, 2), tmp_path / "c.json") == []
+
+
+def test_push_shows_the_theme_ladder_section():
+    from dashboard.subscription_bridge import notify_result
+    record = {"id": "AI-1", "ts": "2026-11-03T10:00:00", "regime": "修复观察", "action": "空仓等待",
+              "confidence": 0.58, "market": "m", "sector": "s", "analysis": {}}
+    latest = {"portfolio": {"posture": "防守", "positionPct": 0, "orders": {}}, "execution": {"fills": [], "skipped": []}}
+    ladder = [{"theme": "机器人", "n": 12, "maxb": 5, "levels": 3, "leaders": ["甲", "乙"], "prev_n": 7, "phase": "发酵"}]
+    n = FakeNotifier()
+    notify_result(n, record, latest, True, quotes={}, targets=[], ladder=ladder)
+    body = n.messages[0][1]
+    assert "【题材梯队】" in body and "机器人" in body and "涨停 12 家" in body and "最高 5 板（甲、乙）" in body and "发酵" in body
+    n2 = FakeNotifier()
+    notify_result(n2, record, latest, True, quotes={}, targets=[], ladder=[])
+    assert "今天还没有成型的题材梯队" in n2.messages[0][1]
+
+
+def test_stale_answer_is_still_pushed_as_a_delayed_analysis_but_never_executed(tmp_path):
+    """2026-11-03：机器被占满，一轮要 6~8 分钟，答案回来行情已过 180 秒被拒，整个下午一条推送都没有。
+    过期的答案不能按旧价让模拟账户成交，但分析要照样推给 dj，标题写明延迟。"""
+    snapshot, answers = _files(tmp_path)
+    notifier = FakeNotifier()
+    with pytest.raises(ValueError, match="有效期"):
+        submit_answers(snapshot, answers, tmp_path / "decisions.jsonl", tmp_path / "paper.sqlite",
+                       clock=lambda: NOW + timedelta(seconds=400), notifier=notifier)
+    assert len(notifier.messages) == 1 and notifier.flushed is True
+    title, body = notifier.messages[0]
+    assert "延迟" in title and "修复观察" in title
+    assert "已过期" in body and "订阅集成测试" in body and "没有处理模拟账户" in body
+    assert not (tmp_path / "paper.sqlite").exists() or sqlite3.connect(tmp_path / "paper.sqlite").execute(
+        "SELECT COUNT(*) FROM fills").fetchone()[0] == 0
+
+
+def test_a_push_failure_on_a_stale_answer_does_not_hide_the_staleness_error(tmp_path):
+    snapshot, answers = _files(tmp_path)
+    with pytest.raises(ValueError, match="有效期"):
+        submit_answers(snapshot, answers, tmp_path / "decisions.jsonl", tmp_path / "paper.sqlite",
+                       clock=lambda: NOW + timedelta(seconds=400), notifier=FakeNotifier(fail=True))
+
+
+def _snapshot_service(codes, quotes, held=()):
+    class Market:
+        def payload(self, blocking=False):
+            return {"marketBreadth": {"complete": True, "stale": False}, "sectorBreadth": {"complete": True, "stale": False}}
+
+    class Connection:
+        def close(self):
+            pass
+
+    class Paper:
+        def _connect(self):
+            return Connection()
+
+        def _reconcile(self, conn, now):
+            pass
+
+        def _candidate_codes(self, conn, context):
+            return list(held) if not context.get("sectorBreadth") else list(codes)
+
+        def _account_snapshot(self, conn, quotes):
+            return {"cash": 1000.0, "equity": 1000.0, "marketValue": 0.0, "positions": []}
+
+        @staticmethod
+        def _quote_payload(quotes):
+            return {c: {"name": q.name, "price": q.price, "pct": q.pct} for c, q in quotes.items()}
+
+    class Service:
+        market = Market()
+        paper = Paper()
+
+        def payload(self):
+            return {"snapshot": {"phase": "盘中"}, **Market().payload(), "marketBreadth": {"complete": True, "stale": False},
+                    "sectorBreadth": {"complete": True, "stale": False, "leaders": [{}]}}
+
+        def _paper_quotes(self, cs):
+            return {c: quotes[c] for c in cs if c in quotes}
+    return Service()
+
+
+def test_snapshot_drops_a_stale_candidate_instead_of_skipping_the_whole_round(monkeypatch, tmp_path):
+    """2026-11-03：冷门票/临停票的行情时间戳可能比 180 秒旧，原来只要有一只候选这样，整轮（含所有推送）都被跳过。"""
+    import dashboard.subscription_bridge as sb
+    stale = Quote(code="600002", name="冷门", price=10.0, pre_close=10.0, open=10.0, high=10.0, low=10.0, volume=1, amount=1,
+                  limit_up=11.0, limit_down=9.0, ts=NOW - timedelta(minutes=10))
+    fresh = Quote(code="600001", name="活跃", price=10.5, pre_close=10.0, open=10.0, high=10.6, low=10.0, volume=1, amount=1,
+                  limit_up=11.0, limit_down=9.0, ts=NOW)
+    service = _snapshot_service(["600001", "600002"], {"600001": fresh, "600002": stale})
+    monkeypatch.setattr(sb, "DashboardService", lambda: service)
+    monkeypatch.setattr(sb, "_theme_ladder", lambda *a, **k: [])
+    monkeypatch.setattr(sb, "_strategy_targets", lambda *a, **k: [])
+    monkeypatch.setattr(sb, "_board_context", lambda *a, **k: {"watch": [], "account": None, "fills": [], "sentiment": None})
+    result = create_snapshot(tmp_path / "snapshot.json", clock=lambda: NOW, registry=tmp_path / "no-registry")
+    assert result["eligible"] is True and result["codes"] == ["600001"]
+
+
+def test_snapshot_still_skips_when_a_held_position_has_no_valid_quote(monkeypatch, tmp_path):
+    import dashboard.subscription_bridge as sb
+    stale = Quote(code="600002", name="持仓", price=10.0, pre_close=10.0, open=10.0, high=10.0, low=10.0, volume=1, amount=1,
+                  limit_up=11.0, limit_down=9.0, ts=NOW - timedelta(minutes=10))
+    service = _snapshot_service(["600002"], {"600002": stale}, held=["600002"])
+    monkeypatch.setattr(sb, "DashboardService", lambda: service)
+    monkeypatch.setattr(sb, "_board_context", lambda *a, **k: {"watch": [], "account": None, "fills": [], "sentiment": None})
+    result = create_snapshot(tmp_path / "snapshot.json", clock=lambda: NOW, registry=tmp_path / "no-registry")
+    assert result["eligible"] is False and "持仓" in result["reason"]

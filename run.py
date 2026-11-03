@@ -44,10 +44,12 @@ from jevq.strategies.board import BoardStrategy
 from jevq.strategies.custom import CustomStrategy
 from jevq.strategies.rebound import ReboundStrategy
 from jevq.strategies.lowbuy import LowbuyStrategy
-from jevq.strategies.relay import RelayStrategy, WtsStrategy
+from jevq.strategies.relay import BzStrategy, RelayStrategy, WtsStrategy
 from jevq.strategies.ice import IceStrategy
 from jevq.strategies.smallcap import SmallcapStrategy
 from jevq.rules import smallcap as smallcap_rules
+from jevq.rules import themes
+from jevq.data import ztpool
 from jevq.strategies.regime import RegimeStrategy
 
 SESSIONS = [(time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))]
@@ -423,6 +425,9 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     ice = _load_ice(conn, ledger, days, new_can_buy, log)
     if ice is not None:
         customs = [*customs, ("ice", ice)]
+    bz = _load_bz(conn, ledger, today, prev_day, universe, notice_judge, news_judge, days, new_can_buy, log)
+    if bz is not None:
+        customs = [*customs, ("bz", bz)]
     sc = _load_smallcap(conn, ledger, today, universe, days, new_can_buy, log)
     if sc is not None:
         customs = [*customs, ("smallcap", sc)]
@@ -854,6 +859,23 @@ def _load_smallcap(conn, ledger: Ledger, today: date, universe: dict, trade_days
     except Exception as e:
         conn.rollback()
         log(f"小市值轮动加载失败：{e!r}")
+        return None
+
+
+def _load_bz(conn, ledger: Ledger, today: date, prev_day: date, universe: dict, notice_judge, news_judge, trade_days,
+             can_buy: bool, log: Callable[[str], None]) -> BzStrategy | None:
+    """补涨：盘前用昨天的涨停揭秘（同花顺）算候选池。取不到就空池（今天不买），不影响别的策略。"""
+    try:
+        pool = {}
+        if can_buy:
+            rows = ztpool.fetch_reasons(prev_day)
+            pool = themes.bz_pool(rows, universe)
+            log(f"补涨：昨日涨停 {len(rows)} 只，龙头 ≥{config.BZ_MIN_LEADER} 板的题材里同题材首板 {len(pool)} 只"
+                + (f"（{', '.join(f'{c}({v['theme']}·龙头{v['leader']}板)' for c, v in list(pool.items())[:8])}）" if pool else ""))
+        return BzStrategy(conn, ledger, notice_judge, news_judge, pool, trade_days=trade_days, can_buy=can_buy)
+    except Exception as e:
+        conn.rollback()
+        log(f"补涨加载失败：{e!r}")
         return None
 
 

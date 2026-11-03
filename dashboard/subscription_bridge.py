@@ -19,6 +19,7 @@ from dashboard.decision_journal import DecisionJournal, build_questions
 from dashboard.kimi_judge import _convert_answer
 from dashboard.server import DashboardService
 from jevq import config as jevq_config
+from jevq.data import ztpool
 from jevq.config import AI_ACCOUNT, AI_TOTAL_BUDGET
 from jevq.models import Quote
 from jevq.notify import notifier_from_env
@@ -143,6 +144,54 @@ def _stock_extras(db_path, quotes: dict, day) -> dict[str, dict]:
 
 
 TARGETS_PATH = Path(__file__).resolve().parent / "runtime" / "strategy_targets.json"
+THEME_CACHE = Path(__file__).resolve().parent / "runtime" / "theme_cache.json"
+THEME_CACHE_SECONDS = 120
+
+
+def _theme_ladder(now, fetch_rows, prev_day, path: Path = THEME_CACHE, clock=None) -> list[dict]:
+    """今天的题材梯队（同花顺涨停揭秘按原因题材归好：涨停家数、最高板、龙头、阶段）。今天的每 120 秒刷新一次，
+    前一天的每天只取一次，都缓存在文件里（AI 循环每 2~5 分钟一轮，不能每轮都联网）。取不到返回空，不拖垮快照。"""
+    import time as _time
+    from jevq.rules import themes
+    clock = clock or _time.time
+    try:
+        try:
+            cache = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cache = {}
+        today = now.date().isoformat()
+        rows = cache.get("rows") if cache.get("date") == today and clock() - cache.get("ts", 0) < THEME_CACHE_SECONDS else None
+        if rows is None:
+            rows = fetch_rows(now.date())
+            cache.update(date=today, ts=clock(), rows=rows)
+        prev_rows = []
+        if prev_day is not None:
+            prev_rows = cache.get("prev_rows") if cache.get("prev_date") == prev_day.isoformat() else None
+            if prev_rows is None:
+                prev_rows = fetch_rows(prev_day)
+                cache.update(prev_date=prev_day.isoformat(), prev_rows=prev_rows)
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+        return themes.ladder(rows, prev_rows)
+    except Exception:                                            # noqa: BLE001
+        return []
+
+
+def _prev_trading_day(db_path, today):
+    if not db_path or not Path(db_path).exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"{Path(db_path).as_uri()}?mode=ro", uri=True, timeout=2)
+        try:
+            row = conn.execute("SELECT MAX(date) FROM closes WHERE date < ?", (today.isoformat(),)).fetchone()
+        finally:
+            conn.close()
+        return date.fromisoformat(row[0]) if row and row[0] else None
+    except (sqlite3.Error, ValueError):
+        return None
 
 
 def _strategy_targets(now, fetch_quotes, path: Path = TARGETS_PATH) -> list[dict]:
@@ -297,12 +346,21 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
     board = _board_context(getattr(service, "db_path", None), now.date())
     codes = _main_board_only(dict.fromkeys([*codes, *(w["code"] for w in board["watch"])]))
     quotes = service._paper_quotes(codes)
-    # 首板候选取不到行情就不给 DeepSeek 看，不让一只票拖垮整轮
-    dropped = {w["code"] for w in board["watch"]} - {c for c in codes if _quote_valid(quotes.get(c), now)}
-    codes = [c for c in codes if c not in dropped]
+    # 行情无效（取不到 / 时间戳超过有效期 / 价格无效）的候选只丢掉那一只，不让一只票拖垮整轮：冷门票、临停票的时间戳
+    # 本来就可能很旧，2026-11-03 一天因此跳过 4 轮（含所有推送）。持仓票行情无效才放弃整轮——不能对着看不到价格的持仓做判断。
+    bad = {c for c in codes if not _quote_valid(quotes.get(c), now)}
+    if bad:
+        conn = paper._connect()
+        try:
+            held_codes = set(paper._candidate_codes(conn, {"sectorBreadth": {}, "observations": []}))
+        finally:
+            conn.close()
+        if bad & held_codes:
+            return {"eligible": False, "reason": "持仓票行情缺失、过期或价格无效"}
+    codes = [c for c in codes if c not in bad]
     quotes = {c: q for c, q in quotes.items() if c in codes}
-    board["watch"] = [w for w in board["watch"] if w["code"] not in dropped]
-    if not codes or set(quotes) != set(codes) or not all(_quote_valid(quotes.get(code), now) for code in codes):
+    board["watch"] = [w for w in board["watch"] if w["code"] not in bad]
+    if not codes:
         return {"eligible": False, "reason": "候选代码为空或行情缺失、过期、价格无效"}
 
     conn = paper._connect()
@@ -341,6 +399,8 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
             "previous": _previous_judgment(),
             "boardWatch": board["watch"], "boardAccount": board["account"],
             "strategyTargets": _strategy_targets(now, service._paper_quotes),
+            "themeLadder": _theme_ladder(now, ztpool.fetch_reasons,
+                                         _prev_trading_day(getattr(service, "db_path", None), now.date())),
             "memory": {"todayNotes": _today_notes(now.date()), "recentFills": board["fills"],
                        "sentiment": board["sentiment"], "lessons": _lessons()},
             "auction": phase_now == "竞价",
@@ -369,8 +429,19 @@ def _order_block(code: str, order: dict, quote) -> str:
     return "\n".join(lines)
 
 
+def _ladder_section(ladder) -> list[str]:
+    """【题材梯队】：同花顺涨停揭秘按题材归好。None = 旧快照没有这一项，不写；空列表 = 今天还没有成型的梯队。"""
+    if ladder is None:
+        return []
+    if not ladder:
+        return ["【题材梯队】今天还没有成型的题材梯队（涨停揭秘里没有涨停 ≥2 家或最高板 ≥3 的题材）。"]
+    lines = [f"▶ {t['theme']}｜涨停 {t['n']} 家（前一日 {t['prev_n']}）｜最高 {t['maxb']} 板（{'、'.join(t['leaders'])}）"
+             f"｜{t['levels']} 层梯队" + (f"｜{t['phase']}" if t.get("phase") else "") for t in ladder]
+    return ["【题材梯队】盘中涨停家数还在增加，「分歧/退潮」要收盘后才准\n" + "\n".join(lines)]
+
+
 def notify_result(notifier, record: dict, latest: dict, reconciled: bool, quotes: dict | None = None,
-                  targets: list[dict] | None = None) -> None:
+                  targets: list[dict] | None = None, ladder: list[dict] | None = None) -> None:
     """分析每轮一条、成交每笔一条；推送失败不影响已经完成的模拟账本。
     dj 2026-11-02：推送要写细——股票名、板块、每只票后续怎么做和触发条件、现在什么行情、什么情况做什么。"""
     quotes = quotes or {}
@@ -387,6 +458,7 @@ def notify_result(notifier, record: dict, latest: dict, reconciled: bool, quotes
         "【动作】" + gate,
         "【大盘】" + (text.get("market") or record["market"]),
         "【板块】" + (text.get("sectors") or record["sector"]),
+        *_ladder_section(ladder),
         f"【个股】组合{portfolio['posture']}，仓位上限 {portfolio['positionPct']:.0%}\n"
         + "\n".join(_order_block(code, order, quotes.get(code)) for code, order in orders.items()),
     ]
@@ -417,6 +489,33 @@ def notify_result(notifier, record: dict, latest: dict, reconciled: bool, quotes
     notifier.flush(timeout=55)
 
 
+def notify_stale(notifier, snapshot: dict, answers: dict, age: float, now: datetime) -> None:
+    """答案回来得太晚（行情已过期）：模拟账户不处理，分析照样推给 dj，标题和正文都写明延迟，价格不再显示（已过期）。"""
+    regime = (answers.get("regime") or {}).get("choice") or "—"
+    action = answers.get("action") or {}
+    text = answers.get("analysis") or {}
+    portfolio = answers.get("portfolio") or {}
+    names = {}
+    for code, raw in (snapshot.get("quotes") or {}).items():
+        names[code] = {"name": raw.get("name", "")} if isinstance(raw, dict) else {}
+    lines = []
+    for code, order in (portfolio.get("orders") or {}).items():
+        quote = type("Q", (), names.get(code, {}))()
+        lines.append(_order_block(code, order, quote))
+    sections = [f"{now:%H:%M}｜{regime} · {action.get('choice', '—')}｜置信 {action.get('confidence', 0):.0%}",
+                f"⚠️ 这一轮分析回来得太晚（行情是 {age / 60:.1f} 分钟前的，已过期），只作参考：没有处理模拟账户。"]
+    for label, key in (("大盘", "market"), ("板块", "sectors")):
+        if text.get(key):
+            sections.append(f"【{label}】" + text[key])
+    if lines:
+        sections.append("【个股】\n" + "\n".join(lines))
+    for label, key in (("选股思路", "picks"), ("预判", "forecast"), ("计划·触发条件", "plan"), ("复盘上一轮", "review")):
+        if text.get(key):
+            sections.append(f"【{label}】" + text[key])
+    notifier.send(f"📊 {regime}｜{action.get('choice', '—')}（延迟 {age / 60:.0f} 分钟）", "\n\n".join(sections))
+    notifier.flush(timeout=55)
+
+
 def submit_answers(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANSWERS_PATH,
                    decisions_path: Path = DECISIONS_PATH, paper_path: Path = PAPER_PATH,
                    clock=datetime.now, notifier=None,
@@ -431,6 +530,11 @@ def submit_answers(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANS
         raise ValueError("订阅答案与行情快照编号不一致")
     created = datetime.fromisoformat(snapshot["createdAt"])
     age = (now - created).total_seconds()
+    if age > MAX_QUOTE_AGE_SECONDS:
+        try:        # 2026-11-03：机器被占满、一轮 6~8 分钟，答案回来行情已过期 → 整个下午一条推送都没有。
+            notify_stale(notifier, snapshot, answers, age, now)    # 不处理模拟账户（不能按旧价成交），但分析照推
+        except Exception:                                          # noqa: BLE001
+            pass
     if not -30 <= age <= MAX_QUOTE_AGE_SECONDS:
         raise ValueError("订阅答案已超过行情有效期，拒绝处理模拟策略")
 
@@ -455,7 +559,8 @@ def submit_answers(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANS
     notification_error = ""
     try:
         notify_result(notifier, record, latest, paper_status["reconciled"], quotes=quotes,
-                      targets=snapshot.get("portfolioContext", {}).get("strategyTargets"))
+                      targets=snapshot.get("portfolioContext", {}).get("strategyTargets"),
+                      ladder=snapshot.get("portfolioContext", {}).get("themeLadder"))
     except Exception as exc:
         notification_error = str(exc)
     result = {"ok": True, "decisionId": record["id"], "strategyId": latest["id"],

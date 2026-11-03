@@ -18,6 +18,7 @@ from jevq import config
 from jevq.ledger import Ledger
 from jevq.models import Fill, Quote
 from jevq.rules.relay import decide_relay_sell, relay_candidates
+from jevq.rules.themes import bz_candidates
 from jevq.rules.wts import wts_candidates
 
 SID = "relay"
@@ -159,3 +160,20 @@ class WtsStrategy(AuctionStrategy):
 
     def tag(self, q, n):
         return f"弱转强｜前{n}连板炸板｜竞价高开{q.open_pct:+.2f}%"
+
+
+class BzStrategy(AuctionStrategy):
+    """补涨（dj 2026-11-03）：题材龙头 ≥5 板，同题材昨日首板，竞价高开 0~3% 买；买卖流程同接力 / 弱转强。"""
+    SID, PREFIX = "bz", "BZ"
+
+    def __init__(self, conn: sqlite3.Connection, ledger: Ledger, notice_judge, news_judge,
+                 pool: dict[str, dict], trade_days: list[date] | None = None, can_buy: bool = True):
+        super().__init__(conn, ledger, notice_judge, news_judge, trade_days, can_buy)
+        self.pool = pool                  # 代码 → {"theme", "leader"}（jevq.rules.themes.bz_pool）
+
+    def candidates(self, quotes, day):
+        return bz_candidates(quotes, self.pool, day)
+
+    def tag(self, q, n):
+        theme = (self.pool.get(q.code) or {}).get("theme", "")
+        return f"补涨｜{theme} 龙头{n}板｜竞价高开{q.open_pct:+.2f}%"

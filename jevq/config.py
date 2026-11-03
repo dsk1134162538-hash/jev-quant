@@ -218,6 +218,10 @@ STRATEGIES = {
     "ice": {"name": "冰点修复", "accounts": ("ice_main",)},
     # 小市值轮动（dj 2026-11-03「可以」）：对照基线。成交额最小 10% 里选 20 只等权，每 20 个交易日调仓。实盘不跟
     "smallcap": {"name": "小市值轮动", "accounts": ("sc_main",)},
+    # 补涨（dj 2026-11-03，research/theme_ladder.py）：题材龙头 ≥5 板，同题材昨日首板，竞价高开 0~3% 买、次日收盘前卖。实盘不跟
+    "bz": {"name": "补涨", "accounts": ("bz_main", "bz_shadow")},
+    # 灵活账户（dj 2026-11-03「要灵活交易，有时候就得突破一下」）：DeepSeek 自己判断买卖和仓位，只有风控护栏。实盘不跟
+    "aiflex": {"name": "AI灵活交易", "accounts": ("aiflex_main",)},
 }
 ACCOUNTS = tuple(a for s in STRATEGIES.values() for a in s["accounts"])
 ACCOUNT_NAMES = {
@@ -230,6 +234,7 @@ ACCOUNT_NAMES = {
     "relay_main": "高标接力·主(Jev)", "relay_shadow": "高标接力·影子",
     "wts_main": "弱转强·主(Jev)", "wts_shadow": "弱转强·影子", "ice_main": "冰点修复·篮子",
     "sc_main": "小市值轮动·篮子",
+    "bz_main": "补涨·主(Jev)", "bz_shadow": "补涨·影子", "aiflex_main": "AI灵活交易",
 }
 # 高标竞价接力（research/dragon_relay.py：训练 +1.12%/笔 n=268、验证 +1.86%/笔 n=88；单笔最差 −23%）。
 # 持有跨两天，两批仓位会重叠：每笔 1/6 本金、最多 6 只，一天最多买 3 只
@@ -272,12 +277,30 @@ SC_MIN_HISTORY = 40               # 成交额历史不足这么多天的票不�
 SC_MIN_PRICE = 3.0
 SC_BUY_AT = (14, 50)
 SC_SELL_AT = (14, 50)
+# 补涨（research/theme_ladder.py：龙头 ≥5 板的题材里同题材首板，竞价高开 0~3%，次收 +0.51% / +0.83%，n=201/39；高开 3~7% 亏）
+BZ_MIN_LEADER = 5                 # 题材龙头至少几板
+BZ_GAP_PCT = (0.0, 3.0)           # 竞价开盘涨幅 [0%, 3%)
+BZ_MAX_PER_DAY = 3
+BZ_MAX_POSITIONS = 6
+BZ_CAPITAL = 120_000.0
+BZ_PER_TRADE = BZ_CAPITAL / BZ_MAX_POSITIONS
+BZ_BUY_UNTIL = (9, 33)
+BZ_SELL_AT = (14, 55)
+# 灵活账户的护栏（不是选股规则，是让账户活下去；知识库「仓位与风控」）：
+FLEX_CAPITAL = 120_000.0
+FLEX_MAX_POSITIONS = 5
+FLEX_MAX_PCT = 0.30               # 单票最多占账户净值
+FLEX_DAY_LOSS = 0.03              # 当日亏到净值的 3% 当天不再开新仓
+FLEX_LOSS_STREAK = 3              # 连亏 3 笔，当天不再开新仓
 ACCOUNT_CAPITAL = {"relay_main": RELAY_CAPITAL, "relay_shadow": RELAY_CAPITAL,
-                   "wts_main": WTS_CAPITAL, "wts_shadow": WTS_CAPITAL, "ice_main": ICE_CAPITAL, "sc_main": SC_CAPITAL}
+                   "wts_main": WTS_CAPITAL, "wts_shadow": WTS_CAPITAL, "ice_main": ICE_CAPITAL, "sc_main": SC_CAPITAL,
+                   "bz_main": BZ_CAPITAL, "bz_shadow": BZ_CAPITAL, "aiflex_main": FLEX_CAPITAL}
 ACCOUNT_MAX_POSITIONS = {"relay_main": RELAY_MAX_POSITIONS, "relay_shadow": RELAY_MAX_POSITIONS,
                          "wts_main": WTS_MAX_POSITIONS, "wts_shadow": WTS_MAX_POSITIONS, "ice_main": ICE_BASKET,
-                         "sc_main": SC_BASKET}
-STRATEGY_CAPITAL = {"relay": RELAY_CAPITAL, "wts": WTS_CAPITAL, "ice": ICE_CAPITAL, "smallcap": SC_CAPITAL}
+                         "sc_main": SC_BASKET, "bz_main": BZ_MAX_POSITIONS, "bz_shadow": BZ_MAX_POSITIONS,
+                         "aiflex_main": FLEX_MAX_POSITIONS}
+STRATEGY_CAPITAL = {"relay": RELAY_CAPITAL, "wts": WTS_CAPITAL, "ice": ICE_CAPITAL, "smallcap": SC_CAPITAL,
+                    "bz": BZ_CAPITAL, "aiflex": FLEX_CAPITAL}
 AI_BOARD_ENABLED = True
 AI_BOARD_FIRST_PCT = 0.5        # 首次建仓只用一半，另一半留给回本（做T/低吸补仓）
 # dj 2026-11-02：次日开盘就卖（108 天回测：开盘卖优于等反弹/拿到收盘/止损；「不亏不卖」把亏损放大一倍多）。
