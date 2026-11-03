@@ -1599,3 +1599,12 @@ def test_claude_judges_wired_when_enabled(env, monkeypatch):
 
 def test_market_ret5_is_median_of_universe():
     assert run._market_ret5({"a": -5.0, "b": -1.0, "c": 3.0}) == -1.0 and run._market_ret5({}) is None
+
+
+def test_relay_still_buys_when_legacy_rules_are_off(env, monkeypatch):
+    # 2026-11-03 事故：LEGACY_BUY_ENABLED=False 把 sell_only 置位，高标接力跟着变成只卖，开盘一笔没买。
+    # 老规则开关只管老策略；接力和 AI 打首板一样只看 data_sell_only（数据/环境原因的只卖）。
+    monkeypatch.setattr("jevq.config.LEGACY_BUY_ENABLED", False)
+    env.run(once=True)
+    assert "高标接力：昨日" in env.log_text()
+    assert "只卖模式：今日不开新仓" in env.log_text()          # 老策略确实只卖，接力不受它影响

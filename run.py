@@ -406,7 +406,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     customs = [] if late else _load_customs(
         conn, ledger, today, universe, ret5, sell_only, notice_judge, news_judge, concept_map,
         lambda: {"sentiment": engine.sentiment_label, "overseas": overseas}, prev_day, log, trade_days=days)
-    relay = _load_relay(conn, ledger, today, universe, notice_judge, news_judge, days, not (late or sell_only), log)
+    relay = _load_relay(conn, ledger, today, universe, notice_judge, news_judge, days, not (late or data_sell_only), log)
     if relay is not None:           # 高标竞价接力（dj 2026-11-02）：走自定义策略同一条卖/买通道；晚启动、只卖日照样卖
         customs = [*customs, ("relay", relay)]
 
