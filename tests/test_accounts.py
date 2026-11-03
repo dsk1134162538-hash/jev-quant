@@ -17,7 +17,7 @@ def spec(name="尾盘弱转强"):
 
 
 BUILTIN = ("board_main", "board_shadow", "rebound_main", "rebound_shadow", "lowbuy_main", "lowbuy_shadow", "regime_main",
-           "aiboard_main", "aiboard_shadow", "relay_main", "relay_shadow")
+           "aiboard_main", "aiboard_shadow", "relay_main", "relay_shadow", "wts_main", "wts_shadow", "ice_main")
 
 
 def test_all_accounts_is_builtin_four_with_no_custom_strategies():

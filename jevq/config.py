@@ -212,6 +212,10 @@ STRATEGIES = {
     "aiboard": {"name": "AI打首板", "accounts": ("aiboard_main", "aiboard_shadow")},
     # 高标竞价接力（dj 2026-11-02）：昨天 3 板以上、竞价高开 3~6%，开盘价买、下一交易日收盘前卖。实盘不跟
     "relay": {"name": "高标接力", "accounts": ("relay_main", "relay_shadow")},
+    # 弱转强（dj 2026-11-03，知识库）：昨天炸板的高标、今天竞价高开 0~6%，开盘价买、次日收盘前卖。实盘不跟
+    "wts": {"name": "弱转强", "accounts": ("wts_main", "wts_shadow")},
+    # 冰点修复（dj 2026-11-03，知识库）：连续两个冰点日（跌停≥10 家且炸板率≥40%）尾盘买一篮子、持有 3 天。实盘不跟
+    "ice": {"name": "冰点修复", "accounts": ("ice_main",)},
 }
 ACCOUNTS = tuple(a for s in STRATEGIES.values() for a in s["accounts"])
 ACCOUNT_NAMES = {
@@ -222,6 +226,7 @@ ACCOUNT_NAMES = {
     "regime_main": "情绪轮动(实盘跟)",
     "aiboard_main": "AI打首板·主(DeepSeek)", "aiboard_shadow": "AI打首板·影子",
     "relay_main": "高标接力·主(Jev)", "relay_shadow": "高标接力·影子",
+    "wts_main": "弱转强·主(Jev)", "wts_shadow": "弱转强·影子", "ice_main": "冰点修复·篮子",
 }
 # 高标竞价接力（research/dragon_relay.py：训练 +1.12%/笔 n=268、验证 +1.86%/笔 n=88；单笔最差 −23%）。
 # 持有跨两天，两批仓位会重叠：每笔 1/6 本金、最多 6 只，一天最多买 3 只
@@ -233,9 +238,30 @@ RELAY_CAPITAL = 120_000.0
 RELAY_PER_TRADE = RELAY_CAPITAL / RELAY_MAX_POSITIONS
 RELAY_BUY_UNTIL = (9, 33)          # 开盘后几分钟内还按开盘价算；更晚启动就不买（价格已经不是竞价价）
 RELAY_SELL_AT = (14, 55)
-ACCOUNT_CAPITAL = {"relay_main": RELAY_CAPITAL, "relay_shadow": RELAY_CAPITAL}
-ACCOUNT_MAX_POSITIONS = {"relay_main": RELAY_MAX_POSITIONS, "relay_shadow": RELAY_MAX_POSITIONS}
-STRATEGY_CAPITAL = {"relay": RELAY_CAPITAL}
+# 弱转强（知识库 + research/kb_events.py：606 笔/450 日，日均 +0.72%，中位 −0.31%，t≈2.6，偏弱的苗头）
+WTS_MIN_PRIOR_STREAK = 2          # 炸板前至少几连板
+WTS_GAP_PCT = (0.0, 6.0)          # 竞价开盘涨幅 [0%, 6%)
+WTS_MAX_PER_DAY = 3
+WTS_MAX_POSITIONS = 6
+WTS_CAPITAL = 120_000.0
+WTS_PER_TRADE = WTS_CAPITAL / WTS_MAX_POSITIONS
+WTS_BUY_UNTIL = (9, 33)
+WTS_SELL_AT = (14, 55)
+# 冰点修复（research/kb_events.py：连续第 2 个冰点日 21 个事件、持有 3 天均 +2.34% 胜 81% 最差 −9.1%，一年 2~3 次）
+ICE_DT_MIN = 10                   # 跌停家数 ≥
+ICE_BREAK_RATE = 40.0             # 炸板率 % ≥（知识库：超过四成是高风险）
+ICE_BASKET = 20                   # 一篮子几只
+ICE_CAPITAL = 120_000.0
+ICE_PER_TRADE = ICE_CAPITAL / ICE_BASKET
+ICE_BUY_AT = (14, 50)             # 尾盘买
+ICE_HOLD_DAYS = 3                 # 持有交易日数，第 3 个交易日 ICE_SELL_AT 后卖
+ICE_SELL_AT = (14, 55)
+ICE_MIN_PRICE = 3.0
+ACCOUNT_CAPITAL = {"relay_main": RELAY_CAPITAL, "relay_shadow": RELAY_CAPITAL,
+                   "wts_main": WTS_CAPITAL, "wts_shadow": WTS_CAPITAL, "ice_main": ICE_CAPITAL}
+ACCOUNT_MAX_POSITIONS = {"relay_main": RELAY_MAX_POSITIONS, "relay_shadow": RELAY_MAX_POSITIONS,
+                         "wts_main": WTS_MAX_POSITIONS, "wts_shadow": WTS_MAX_POSITIONS, "ice_main": ICE_BASKET}
+STRATEGY_CAPITAL = {"relay": RELAY_CAPITAL, "wts": WTS_CAPITAL, "ice": ICE_CAPITAL}
 AI_BOARD_ENABLED = True
 AI_BOARD_FIRST_PCT = 0.5        # 首次建仓只用一半，另一半留给回本（做T/低吸补仓）
 # dj 2026-11-02：次日开盘就卖（108 天回测：开盘卖优于等反弹/拿到收盘/止损；「不亏不卖」把亏损放大一倍多）。

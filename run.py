@@ -19,6 +19,8 @@ from jevq.data.notice_body import prefetch_bodies
 from jevq.data.notice_store import sync_notices
 from jevq.data.touch_snaps import TouchRecorder
 from jevq.data.flash_archive import FlashArchiver
+from jevq.data.open_snaps import OpenSnapper
+from jevq.data import wts_pool
 from jevq.engine import Engine
 from jevq.judge.jev import JevClient
 from jevq.judge.market import MarketJudge
@@ -42,11 +44,13 @@ from jevq.strategies.board import BoardStrategy
 from jevq.strategies.custom import CustomStrategy
 from jevq.strategies.rebound import ReboundStrategy
 from jevq.strategies.lowbuy import LowbuyStrategy
-from jevq.strategies.relay import RelayStrategy
+from jevq.strategies.relay import RelayStrategy, WtsStrategy
+from jevq.strategies.ice import IceStrategy
 from jevq.strategies.regime import RegimeStrategy
 
 SESSIONS = [(time(9, 30), time(11, 30)), (time(13, 0), time(15, 0))]
 REPORT_AT = time(15, 5)
+TARGETS_PATH = Path(__file__).resolve().parent / "dashboard" / "runtime" / "strategy_targets.json"   # 给 AI 复盘推送看的其他策略标的
 NOTICE_RESYNC_AT = time(13, 0)
 FAST_INTERVAL = 3.0     # 扫首板节拍：观察池非空时每隔这么多秒扫一次
 
@@ -409,6 +413,16 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     relay = _load_relay(conn, ledger, today, universe, notice_judge, news_judge, days, not (late or data_sell_only), log)
     if relay is not None:           # 高标竞价接力（dj 2026-11-02）：走自定义策略同一条卖/买通道；晚启动、只卖日照样卖
         customs = [*customs, ("relay", relay)]
+    # 弱转强、冰点修复（dj 2026-11-03）：同样只看 data_sell_only——老规则开关（LEGACY_BUY_ENABLED）只管老策略（11-03 接力就栽在这）
+    new_can_buy = not (late or data_sell_only)
+    wts = _load_wts(conn, ledger, today, universe, notice_judge, news_judge, days, new_can_buy, log)
+    if wts is not None:
+        customs = [*customs, ("wts", wts)]
+    ice = _load_ice(conn, ledger, days, new_can_buy, log)
+    if ice is not None:
+        customs = [*customs, ("ice", ice)]
+    _write_strategy_targets(today, getattr(relay, "streaks", {}) if relay is not None else {},
+                            getattr(wts, "pool", {}) if wts is not None else {}, log)
 
     if once:
         t = now()
@@ -425,6 +439,7 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     after_sell = sell_followups.AfterSellTracker()     # 卖飞统计：盘中跟踪每笔卖出之后的最高价
     touches = TouchRecorder()                          # 全市场主板第一次涨到 9% 的盘口快照（dj 2026-11-02）
     flashes = FlashArchiver()                          # 7x24 快讯存档（dj 2026-11-02）
+    opens = OpenSnapper()                              # 开盘首笔快照：竞价量等（dj 2026-11-03）
     own_intraday = _own_intraday_recorder(conn, key, universe, ret5, log, sell_only or late)
     while now().time() < REPORT_AT:
         t = now()
@@ -448,6 +463,10 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
                 touches.step(_fresh_quotes(engine, t), t)
             except Exception as e:
                 log(f"触线快照失败：{e!r}")
+            try:        # 开盘首笔快照（竞价量比等分钟级字段）：每天第一次，只记录
+                opens.step(_fresh_quotes(engine, t), t)
+            except Exception as e:
+                log(f"开盘快照失败：{e!r}")
             try:        # 7x24 快讯带时间戳存档（以后回测「快讯后几分钟买题材股」）：只记录
                 flashes.step(flash, t)
             except Exception as e:
@@ -783,6 +802,49 @@ def _load_relay(conn, ledger: Ledger, today: date, universe: dict, notice_judge,
     except Exception as e:
         conn.rollback()
         log(f"高标接力加载失败：{e!r}")
+        return None
+
+
+def _write_strategy_targets(today: date, streaks: dict, pool: dict, log: Callable[[str], None],
+                            path: Path | None = None) -> None:
+    """把今天高标接力 / 弱转强的标的写给 AI 复盘推送看（dashboard/subscription_bridge._strategy_targets）。只是展示，出错只记日志。"""
+    path = path or TARGETS_PATH
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"date": today.isoformat(),
+                "relay": {c: n for c, n in streaks.items() if n >= config.RELAY_MIN_STREAK},
+                "wts": dict(pool)}
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except Exception as e:
+        log(f"策略标的文件写入失败：{e!r}")
+
+
+def _load_wts(conn, ledger: Ledger, today: date, universe: dict, notice_judge, news_judge, trade_days,
+              can_buy: bool, log: Callable[[str], None]) -> WtsStrategy | None:
+    """弱转强：盘前算昨天炸板的高标候选池（要对前天还在 ≥2 连板、昨天断板的少数几只取新浪日 K 看昨天最高价）。
+    取不到的票跳过；构造失败不影响别的策略。"""
+    try:
+        pool = {}
+        if can_buy:
+            pool = wts_pool.build_pool(conn, universe, today, lambda c: akdata.fetch_daily_bars_sina(c, today), log)
+            log(f"弱转强：昨日炸板的高标 {len(pool)} 只" + (f"（{', '.join(f'{c}({n}板)' for c, n in pool.items())}）" if pool else ""))
+        return WtsStrategy(conn, ledger, notice_judge, news_judge, pool, trade_days=trade_days, can_buy=can_buy)
+    except Exception as e:
+        conn.rollback()
+        log(f"弱转强加载失败：{e!r}")
+        return None
+
+
+def _load_ice(conn, ledger: Ledger, trade_days, can_buy: bool, log: Callable[[str], None]) -> IceStrategy | None:
+    try:
+        if can_buy:
+            log("冰点修复：已加载（连续两个冰点日的 14:50 买一篮子，持有 3 个交易日；其余日子只记状态）")
+        return IceStrategy(conn, ledger, trade_days=trade_days, can_buy=can_buy)
+    except Exception as e:
+        conn.rollback()
+        log(f"冰点修复加载失败：{e!r}")
         return None
 
 

@@ -28,6 +28,12 @@ def _no_real_pushplus(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_targets_file(monkeypatch, tmp_path):
+    """run_day 会把高标接力 / 弱转强的标的写进 dashboard/runtime/strategy_targets.json：测试写到临时目录，别碰真文件。"""
+    monkeypatch.setattr("run.TARGETS_PATH", tmp_path / "strategy_targets.json")
+
+
+@pytest.fixture(autouse=True)
 def _no_extra_market_data(monkeypatch):
     """新闻催化、人气与资金、涨停补充数据都要联网：跑 run_day 的测试一律关掉，测这些功能的测试直接调模块函数。"""
     monkeypatch.setattr("jevq.config.CATALYST_ENABLED", False)

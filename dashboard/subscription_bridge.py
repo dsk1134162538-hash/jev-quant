@@ -142,6 +142,48 @@ def _stock_extras(db_path, quotes: dict, day) -> dict[str, dict]:
     return out
 
 
+TARGETS_PATH = Path(__file__).resolve().parent / "runtime" / "strategy_targets.json"
+
+
+def _strategy_targets(now, fetch_quotes, path: Path = TARGETS_PATH) -> list[dict]:
+    """高标接力、弱转强今天的标的和买入计划（dj 2026-11-03：「出了首板还有其他策略的标的吗」）。
+    标的清单是 daemon 盘前算好写进文件的（只认今天的）；这里补实时行情，按竞价开盘幅度说明买不买。"""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if data.get("date") != now.date().isoformat():
+        return []
+    items = [("高标接力", c, n) for c, n in sorted((data.get("relay") or {}).items(), key=lambda kv: -kv[1])]
+    items += [("弱转强", c, n) for c, n in sorted((data.get("wts") or {}).items(), key=lambda kv: -kv[1])]
+    if not items:
+        return []
+    try:
+        quotes = fetch_quotes([c for _, c, _ in items]) or {}
+    except Exception:                                            # noqa: BLE001
+        quotes = {}
+    out = []
+    for strategy, code, n in items:
+        lo, hi = jevq_config.RELAY_GAP_PCT if strategy == "高标接力" else jevq_config.WTS_GAP_PCT
+        label = f"{n} 板" if strategy == "高标接力" else f"炸板前 {n} 连板"
+        q = quotes.get(code)
+        if q is None or q.ts.date() != now.date() or q.open <= 0:
+            plan = f"{label}；等 09:25 竞价结果（竞价高开 {lo:g}~{hi:g}% 才买）"
+        else:
+            gap = q.open_pct
+            if lo <= gap < hi:
+                verdict = f"在 {lo:g}~{hi:g}% 区间：09:30 按开盘价买入（主账户先过 Jev 排雷，每天最多 3 只），下一交易日 14:55 后卖"
+            elif strategy == "高标接力" and gap >= hi:
+                verdict = f"超过 {hi:g}%，预期已打满，不买"
+            elif strategy == "高标接力":
+                verdict = f"不到 {lo:g}%，资金不接力，不买"
+            else:
+                verdict = f"不在 {lo:g}~{hi:g}% 区间，不买"
+            plan = f"{label}；竞价高开 {gap:+.2f}%，{verdict}"
+        out.append({"strategy": strategy, "code": code, "name": getattr(q, "name", "") or code, "plan": plan})
+    return out
+
+
 def _board_context(db_path, day) -> dict:
     """后台扫首板今天的观察池 + AI 打首板主账户（持仓、成本、回本价），给 DeepSeek 表态用。读不到就是空。"""
     out = {"watch": [], "account": None, "fills": [], "sentiment": None}
@@ -298,6 +340,7 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
             "constraints": constraints,
             "previous": _previous_judgment(),
             "boardWatch": board["watch"], "boardAccount": board["account"],
+            "strategyTargets": _strategy_targets(now, service._paper_quotes),
             "memory": {"todayNotes": _today_notes(now.date()), "recentFills": board["fills"],
                        "sentiment": board["sentiment"], "lessons": _lessons()},
             "auction": phase_now == "竞价",
@@ -326,7 +369,8 @@ def _order_block(code: str, order: dict, quote) -> str:
     return "\n".join(lines)
 
 
-def notify_result(notifier, record: dict, latest: dict, reconciled: bool, quotes: dict | None = None) -> None:
+def notify_result(notifier, record: dict, latest: dict, reconciled: bool, quotes: dict | None = None,
+                  targets: list[dict] | None = None) -> None:
     """分析每轮一条、成交每笔一条；推送失败不影响已经完成的模拟账本。
     dj 2026-11-02：推送要写细——股票名、板块、每只票后续怎么做和触发条件、现在什么行情、什么情况做什么。"""
     quotes = quotes or {}
@@ -346,6 +390,10 @@ def notify_result(notifier, record: dict, latest: dict, reconciled: bool, quotes
         f"【个股】组合{portfolio['posture']}，仓位上限 {portfolio['positionPct']:.0%}\n"
         + "\n".join(_order_block(code, order, quotes.get(code)) for code, order in orders.items()),
     ]
+    if targets is not None:             # None = 旧快照没有这一项，不写；空列表 = 今天确实没有
+        lines = [f"▶ {t['strategy']} {t['code']} {t.get('name', '')}：{t['plan']}" for t in targets]
+        body = "\n" + "\n".join(lines) if lines else "今天没有高标接力 / 弱转强的标的（昨日没有 3 板以上的高标，也没有炸板的高标）。"
+        sections.append("【其他策略标的】" + body)
     if text.get("picks"):
         sections.append("【选股思路】" + text["picks"])
     if text.get("forecast"):
@@ -406,7 +454,8 @@ def submit_answers(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANS
         raise RuntimeError(status["listenerError"] or (latest or {}).get("error") or "模拟策略未完成")
     notification_error = ""
     try:
-        notify_result(notifier, record, latest, paper_status["reconciled"], quotes=quotes)
+        notify_result(notifier, record, latest, paper_status["reconciled"], quotes=quotes,
+                      targets=snapshot.get("portfolioContext", {}).get("strategyTargets"))
     except Exception as exc:
         notification_error = str(exc)
     result = {"ok": True, "decisionId": record["id"], "strategyId": latest["id"],

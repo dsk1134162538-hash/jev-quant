@@ -1608,3 +1608,4 @@ def test_relay_still_buys_when_legacy_rules_are_off(env, monkeypatch):
     env.run(once=True)
     assert "高标接力：昨日" in env.log_text()
     assert "只卖模式：今日不开新仓" in env.log_text()          # 老策略确实只卖，接力不受它影响
+    assert "弱转强：昨日炸板的高标" in env.log_text() and "冰点修复：已加载" in env.log_text()   # 弱转强、冰点同理

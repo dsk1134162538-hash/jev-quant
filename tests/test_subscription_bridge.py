@@ -241,3 +241,57 @@ def test_stock_extras_add_seal_position_cap_and_holders(tmp_path):
     assert out["sealAmount亿"] == 0.22 and out["sealRatio"] == 0.11
     assert out["floatMcap亿"] == 55.5 and out["holders万"] == 3.5
     assert out["pos5%"] == round((12.4 / 11.9 - 1) * 100, 1) and out["pos20%"] == round((12.4 / 10.4 - 1) * 100, 1)
+
+
+def _targets_file(tmp_path, day="2026-11-03", relay=None, wts=None):
+    import json
+    p = tmp_path / "strategy_targets.json"
+    p.write_text(json.dumps({"date": day, "relay": relay or {}, "wts": wts or {}}), encoding="utf-8")
+    return p
+
+
+def _tq(code, name, open_pct, pct, ts=None, pre=10.0):
+    ts = ts or datetime(2026, 11, 3, 9, 26)
+    price = round(pre * (1 + pct / 100), 2)
+    return Quote(code=code, name=name, price=price, pre_close=pre, open=round(pre * (1 + open_pct / 100), 2),
+                 high=price, low=price, volume=1, amount=1e8, limit_up=round(pre * 1.1, 2),
+                 limit_down=round(pre * 0.9, 2), ts=ts)
+
+
+def test_strategy_targets_list_other_strategies_with_the_buy_plan(tmp_path):
+    """dj 2026-11-03：「出了首板还有其他策略的标的吗」——高标接力、弱转强的标的和今天的买入计划也要在推送里。"""
+    from dashboard.subscription_bridge import _strategy_targets
+    path = _targets_file(tmp_path, relay={"001219": 6, "002172": 4, "600261": 3}, wts={"600001": 2, "600002": 3})
+    qs = {"001219": _tq("001219", "甲", 4.2, 4.5), "002172": _tq("002172", "乙", 7.5, 8.0),
+          "600261": _tq("600261", "丙", 1.0, 0.5), "600001": _tq("600001", "丁", -1.0, 1.0),
+          "600002": _tq("600002", "戊", 2.0, 3.0)}
+    got = _strategy_targets(datetime(2026, 11, 3, 9, 26), lambda codes: qs, path)
+    by = {(t["strategy"], t["code"]): t for t in got}
+    assert "在 3~6% 区间" in by[("高标接力", "001219")]["plan"] and "6 板" in by[("高标接力", "001219")]["plan"]
+    assert "超过 6%" in by[("高标接力", "002172")]["plan"]
+    assert "不到 3%" in by[("高标接力", "600261")]["plan"]
+    assert "不在 0~6%" in by[("弱转强", "600001")]["plan"]
+    assert "在 0~6% 区间" in by[("弱转强", "600002")]["plan"]
+    assert _strategy_targets(datetime(2026, 11, 4, 9, 26), lambda codes: qs, path) == []      # 文件是昨天的：不用
+
+
+def test_strategy_targets_without_auction_result_say_to_wait(tmp_path):
+    from dashboard.subscription_bridge import _strategy_targets
+    path = _targets_file(tmp_path, relay={"001219": 6})
+    got = _strategy_targets(datetime(2026, 11, 3, 9, 10), lambda codes: {}, path)
+    assert got and "等 09:25" in got[0]["plan"]
+
+
+def test_push_has_a_section_for_other_strategy_targets_or_says_there_are_none():
+    from dashboard.subscription_bridge import notify_result
+    record = {"id": "AI-1", "ts": "2026-11-03T09:26:00", "regime": "修复观察", "action": "空仓等待",
+              "confidence": 0.58, "market": "m", "sector": "s", "analysis": {}}
+    latest = {"portfolio": {"posture": "防守", "positionPct": 0, "orders": {}}, "execution": {"fills": [], "skipped": []}}
+    targets = [{"strategy": "高标接力", "code": "001219", "name": "甲", "plan": "6 板；竞价高开 +4.2%，在 3~6% 区间"}]
+    notifier = FakeNotifier()
+    notify_result(notifier, record, latest, True, quotes={}, targets=targets)
+    body = notifier.messages[0][1]
+    assert "【其他策略标的】" in body and "高标接力" in body and "001219" in body and "在 3~6% 区间" in body
+    notifier2 = FakeNotifier()
+    notify_result(notifier2, record, latest, True, quotes={}, targets=[])
+    assert "今天没有高标接力 / 弱转强的标的" in notifier2.messages[0][1]

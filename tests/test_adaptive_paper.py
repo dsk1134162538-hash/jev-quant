@@ -171,3 +171,16 @@ def test_board_executor_on_means_ai_experiment_never_buys(tmp_path, monkeypatch)
     status = paper.status()
     assert status["account"]["positions"] == 0 and status["account"]["fillsToday"] == 0
     assert any("AI 打首板执行器" in s for s in status["latestStrategy"]["execution"]["skipped"])
+
+
+def test_dashboard_demo_watchlist_is_not_an_ai_candidate_source(tmp_path):
+    """2026-11-03：dashboard/server.py 里写死的三只演示票（万向钱潮等）经 observations 每一轮都进 AI 候选、
+    一直判「观察」，占掉注意力。候选只来自 AI 持仓和行业龙头（首板观察池由 subscription_bridge 另加）。"""
+    paper = engine(tmp_path)
+    ctx = context()
+    ctx["observations"] = [{"code": "000559.SZ"}, {"code": "603081.SH"}, {"code": "603933.SH"}]
+    conn = paper._connect()
+    try:
+        assert paper._candidate_codes(conn, ctx) == ["600001"]
+    finally:
+        conn.close()

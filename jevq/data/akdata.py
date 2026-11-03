@@ -52,6 +52,16 @@ def fetch_daily_sina(code: str, today: date | None = None, days: int = 60) -> li
             for _, r in df.iterrows()]
 
 
+def fetch_daily_bars_sina(code: str, today: date | None = None, days: int = 15) -> list[dict]:
+    """新浪日 K（不复权）最近 days 个自然日：[{"day", "open", "high", "low", "close"}]，按日期升序。弱转强看昨天最高价用。"""
+    today = today or date.today()
+    sym = ("sh" if code.startswith("6") else "sz") + code
+    df = _ak(ak.stock_zh_a_daily, symbol=sym, start_date=(today - timedelta(days=days)).strftime("%Y%m%d"),
+             end_date=today.strftime("%Y%m%d"), adjust="")
+    return [{"day": pd.Timestamp(r["date"]).date().isoformat(), "open": float(r["open"]), "high": float(r["high"]),
+             "low": float(r["low"]), "close": float(r["close"])} for _, r in df.iterrows()]
+
+
 def filter_universe(rows: Iterable[tuple[str, str, date]], today: date,
                     days: list[date]) -> dict[str, str]:
     out = {}

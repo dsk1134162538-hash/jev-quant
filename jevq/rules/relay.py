@@ -23,7 +23,8 @@ def relay_candidates(quotes: dict[str, Quote], streaks: dict[str, int], today: d
     return out
 
 
-def decide_relay_sell(pos: Position, q: Quote, now: datetime, calendar: list[date] | None) -> SellDecision:
+def decide_relay_sell(pos: Position, q: Quote, now: datetime, calendar: list[date] | None,
+                      sell_at: tuple[int, int] | None = None) -> SellDecision:
     """买入后的下一个交易日 RELAY_SELL_AT 之后卖；那天没卖成（没跑、跌停卖不掉）就之后任何一分钟卖。"""
     today = now.date()
     if today <= pos.buy_date:
@@ -32,6 +33,6 @@ def decide_relay_sell(pos: Position, q: Quote, now: datetime, calendar: list[dat
     due = later[0] if later else today
     if today > due:
         return SellDecision(True, f"接力超期卖（{q.pct:+.2f}%）")
-    if now.time() >= time(*config.RELAY_SELL_AT):
+    if now.time() >= time(*(sell_at or config.RELAY_SELL_AT)):
         return SellDecision(True, f"接力次日收盘卖（{q.pct:+.2f}%）")
     return SellDecision(False)

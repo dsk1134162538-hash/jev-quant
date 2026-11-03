@@ -117,10 +117,7 @@ class AdaptivePaperEngine:
             code = _plain_code(row.get("leaderCode", ""))
             if len(code) == 6 and code.startswith(("60", "00")) and code not in codes:
                 codes.append(code)
-        for row in context.get("observations", []):
-            code = _plain_code(row.get("code", ""))
-            if len(code) == 6 and code.startswith(("60", "00")) and code not in codes:
-                codes.append(code)
+        # 不再并入 context["observations"]：那是 dashboard/server.py 写死的三只演示票，不是任何规则选出来的（2026-11-03）
         return codes
 
     @staticmethod
