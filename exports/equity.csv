@@ -147,3 +147,14 @@ date,account,value
 2026-11-02,rebound_main,23114.74
 2026-11-02,rebound_shadow,24742.98
 2026-11-02,regime_main,24924.95
+2026-11-03,aiboard_main,30000.0
+2026-11-03,aiboard_shadow,30000.0
+2026-11-03,board_main,30811.8
+2026-11-03,board_shadow,30811.8
+2026-11-03,lowbuy_main,26963.66
+2026-11-03,lowbuy_shadow,25279.92
+2026-11-03,rebound_main,23114.74
+2026-11-03,rebound_shadow,24742.98
+2026-11-03,regime_main,24924.95
+2026-11-03,relay_main,120000.0
+2026-11-03,relay_shadow,120000.0
