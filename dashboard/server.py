@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sqlite3
 import sys
 import threading
@@ -412,6 +413,18 @@ class Handler(SimpleHTTPRequestHandler):
         print(f"[dashboard] {self.address_string()} {fmt % args}")
 
 
+class ExclusiveHTTPServer(ThreadingHTTPServer):
+    """独占端口。Windows 下 ThreadingHTTPServer 默认设 SO_REUSEADDR，允许多个进程绑同一个端口：重复启动的第二个进程
+    不报错、不退出，常驻后台各自刷新行情，一个吃 1~2 GB（2026-11-03 同时跑了 4 个、共 5.8 GB）。
+    改成独占：端口已被占用时 bind 直接抛 OSError，main() 据此退出。"""
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if sys.platform == "win32":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def main() -> None:
     if sys.stdout is None:
         sys.stdout = open(Path.home() / "NUL" if sys.platform == "win32" else "/dev/null", "w")
@@ -423,10 +436,15 @@ def main() -> None:
     parser.add_argument("--api-only", action="store_true")
     parser.add_argument("--db", type=Path)
     args = parser.parse_args()
-    service = DashboardService(db_path=args.db)
     directory = str(DIST) if not args.api_only else None
-    handler = partial(type("BoundHandler", (Handler,), {"service": service}), directory=directory)
-    server = ThreadingHTTPServer((args.host, args.port), handler)
+    bound = type("BoundHandler", (Handler,), {"service": None})
+    try:        # 先占端口再加载行情服务：重复启动的进程在这里就退出，不去取一遍全市场数据
+        server = ExclusiveHTTPServer((args.host, args.port), partial(bound, directory=directory))
+    except OSError as exc:
+        print(f"端口 {args.port} 已被占用（面板服务器已经在运行），本进程退出：{exc}")
+        raise SystemExit(0)
+    service = DashboardService(db_path=args.db)
+    bound.service = service
     service.start_background()
     print(f"衡策只读服务：http://{args.host}:{args.port} · SQLite={service.db_path} · Kimi 后台盯盘")
     try:

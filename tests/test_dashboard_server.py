@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -111,3 +112,34 @@ def test_missing_ai_account_does_not_invent_positions(tmp_path):
     assert payload["account"]["available"] is False
     assert payload["account"]["positions"] == 0
     assert "无 AI 账户" in payload["account"]["source"]
+
+
+def test_a_second_server_cannot_bind_the_same_port_so_duplicate_launches_exit():
+    """2026-11-03：start-dashboard.bat 每运行一次就起一个面板服务器。Windows 下 ThreadingHTTPServer 默认能和别的进程共绑同一端口，
+    第二个不报错也不退出，常驻在后台各自刷新行情，一个吃 1~2 GB（同时跑了 4 个、共 5.8 GB）。必须独占端口。"""
+    from http.server import BaseHTTPRequestHandler
+    first = server.ExclusiveHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+    port = first.server_address[1]
+    try:
+        with pytest.raises(OSError):
+            server.ExclusiveHTTPServer(("127.0.0.1", port), BaseHTTPRequestHandler)
+    finally:
+        first.server_close()
+    server.ExclusiveHTTPServer(("127.0.0.1", port), BaseHTTPRequestHandler).server_close()      # 释放后能再绑
+
+
+def test_main_exits_quietly_before_loading_anything_when_the_port_is_taken(monkeypatch, capsys):
+    from http.server import BaseHTTPRequestHandler
+    holder = server.ExclusiveHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+    port = holder.server_address[1]
+
+    def boom(*a, **k):
+        raise AssertionError("端口被占时不该去加载行情服务")
+    monkeypatch.setattr(server, "DashboardService", boom)
+    monkeypatch.setattr(sys, "argv", ["server.py", "--port", str(port)])
+    try:
+        with pytest.raises(SystemExit) as exc:
+            server.main()
+    finally:
+        holder.server_close()
+    assert exc.value.code == 0 and str(port) in capsys.readouterr().out
