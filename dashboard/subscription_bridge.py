@@ -15,7 +15,7 @@ from dashboard.adaptive_paper import (
     _quote_valid,
     build_portfolio_questions,
 )
-from dashboard.decision_journal import DecisionJournal, build_questions
+from dashboard.decision_journal import DecisionJournal, build_questions, light_context
 from dashboard.kimi_judge import _convert_answer
 from dashboard.server import DashboardService
 from jevq import config as jevq_config
@@ -318,7 +318,7 @@ def create_snapshot(output: Path = SNAPSHOT_PATH, clock=datetime.now,
     selection = load_candidate_selection(now.date(), registry)
     service = DashboardService()
     service.market.payload(blocking=True)
-    context = service.payload()
+    context = light_context(service.payload())
     market = context.get("marketBreadth", {})
     sectors = context.get("sectorBreadth", {})
     # 09:25 集合竞价出结果后到 09:30 开盘前算「竞价」轮（dj 2026-11-01：要分析竞价），让 DeepSeek 开盘前就定开不开闸

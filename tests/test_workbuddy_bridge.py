@@ -80,6 +80,23 @@ def test_analysis_text_question_is_in_schema_validated_and_kept_verbatim():
     assert "analysis" not in build_questions()                          # 不要的地方不问，Kimi 老路径不受影响
 
 
+def test_record_evidence_never_embeds_earlier_records():
+    # 2026-11-03：面板 payload 带着最近 100 条历史判断，原样存进 evidence，下一条又把它们（连同它们的 evidence）存一遍——
+    # 每条体积翻倍，16 条涨到 960 MB，一轮 AI 判断要 6~8 分钟、答案过期被拒，面板返回 1 GB 的 JSON 一片空白
+    from datetime import datetime
+    from dashboard.decision_journal import light_context, make_record
+    prior = {"id": "AI-1", "ts": "2026-11-02T09:40:00", "evidence": {"decisions": ["很大" * 1000]}}
+    ctx = {"marketBreadth": {"up": 1, "down": 2, "upRatio": 33, "total": 3, "universe": 3, "limitUp": 0, "limitDown": 0},
+           "sectorBreadth": {"up": 1, "down": 1, "leaders": []},
+           "decisions": [prior], "decisionStore": {"count": 1}, "systemItems": [1, 2]}
+    answers = {"regime": {"choice": "防守观察", "confidence": 0.7}, "action": {"choice": "空仓等待", "confidence": 0.8}}
+    rec = make_record(answers, ctx, datetime(2026, 11, 2, 9, 45))
+    assert not {"decisions", "decisionStore", "systemItems"} & set(rec["evidence"]) and rec["evidence"]["marketBreadth"]["up"] == 1
+    assert "decisions" in ctx                                                    # 不改调用方的 dict
+    assert set(light_context(ctx)) == {"marketBreadth", "sectorBreadth"}
+    assert len(json.dumps(rec, ensure_ascii=False)) < 3000
+
+
 def test_record_keeps_analysis_and_previous_judgment_feeds_review(tmp_path):
     from datetime import datetime
     from dashboard.decision_journal import ANALYSIS_FIELDS, make_record

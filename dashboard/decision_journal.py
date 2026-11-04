@@ -38,6 +38,15 @@ def build_questions(analysis: bool = False) -> dict:
     }
 
 
+HEAVY_CONTEXT_KEYS = ("decisions", "decisionStore", "systemItems")
+
+
+def light_context(context: dict) -> dict:
+    """面板 payload 里带着最近的历史判断；存进新记录的 evidence 或快照，下一条又把它们连同各自的 evidence 存一遍，
+    体积每条翻倍（2026-11-03：16 条 960 MB，一轮 AI 判断 6~8 分钟、答案过期被拒，面板一片空白）。只留当下的行情证据。"""
+    return {k: v for k, v in context.items() if k not in HEAVY_CONTEXT_KEYS}
+
+
 def make_record(answers: dict, context: dict, now: datetime, model: str = "unknown") -> dict:
     regime = answers["regime"]["choice"]
     action = answers["action"]["choice"]
@@ -60,7 +69,7 @@ def make_record(answers: dict, context: dict, now: datetime, model: str = "unkno
         "stock": f"AI 研究动作：{action}。{ACTIONS[action]}；未生成 quote.json，未调用 buy 或 sell。",
         "trigger": "仅在新鲜全市场与行业数据完整时进行下一次判断；历史记录不被覆盖。",
         "invalidation": "行情过期、覆盖不足、行业数据失效或证据冲突时，本判断立即失效。",
-        "evidence": context, "answers": answers, "persisted": True, "analysis": analysis,
+        "evidence": light_context(context), "answers": answers, "persisted": True, "analysis": analysis,
     }
 
 
