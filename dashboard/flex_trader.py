@@ -53,6 +53,10 @@ SYSTEM_PROMPT = (
     "题材涨停 ≥8 家、有二板先锋、梯队完整的一致高潮日，次日竞价追买平均亏 1~2%；题材涨停数回落的分歧日更好；"
     "2 板龙头竞价追买最差（平均亏 2% 以上）；5 板以上龙头有溢价但样本很小；9% 追板买不到快板，能买到的平均亏；"
     "补涨高开 0~3% 小幅为正，高开 3~7% 亏。每笔不要太大，对了拿住，错了按止损认。\n\n"
+    "【轮动警示（2026-11-04 实例）】那天昨天的 3~4 连板全部低开低走（-8%~-11%），涨停榜没有连板，116 只首板里三季报增长占 48 只，"
+    "资金从旧题材换去低位科技（先进封装、存储芯片、半导体设备、有色）。看 context.highBoards：verdict 是「高标走弱」时，"
+    "接力、补涨这类押旧题材延续的打法不要做，改去找低位首板、有业绩或消息催化、放量的新方向；是「高标强势」时才考虑接力。"
+    "这是参考信号，不是开关，有盘感可以突破，标「模式外」。\n\n"
     "输出要求：先写判断（market：大盘一两句；stage：冰点/启动/发酵/高潮/分歧/退潮/混沌 之一；plan：接下来盯什么），"
     "再给订单（可以为空：没把握就不动）。每轮最多 3 张订单。只能从 context.quotes 里挑买入标的，卖出只能卖 account.positions 里的持仓。"
 )
@@ -266,6 +270,24 @@ def _account_state(db_path: Path, quotes: dict, day) -> dict:
         conn.close()
 
 
+def high_board_state(rows: list[dict], quotes: dict) -> dict:
+    """昨天 ≥3 连板的主板票今天怎么走（2026-11-04 实例：高标全部低开低走 -8%~-11%，资金换去低位科技）。
+    走弱 = 当前涨幅 <0；一半以上走弱就判「高标走弱」，接力/补涨这类押旧题材延续的打法这时候要收手。"""
+    from jevq.rules.themes import parse_boards
+    picked = sorted(((parse_boards(r.get("high_days")), r["code"]) for r in rows
+                     if str(r.get("code", "")).startswith(("60", "00")) and parse_boards(r.get("high_days")) >= 3), reverse=True)
+    items = [{"code": c, "name": quotes[c].name, "boards": n, "openPct": quotes[c].open_pct, "pct": quotes[c].pct}
+             for n, c in picked if c in quotes][:8]
+    weak = sum(1 for i in items if i["pct"] < 0)
+    if not picked:
+        verdict = "无高标"
+    elif not items:
+        verdict = "无数据"
+    else:
+        verdict = "高标走弱" if weak * 2 >= len(items) else "高标强势"
+    return {"count": len(picked), "weak": weak, "verdict": verdict, "items": items}
+
+
 def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapshot_path: Path = SNAPSHOT_PATH,
                    fetch_quotes=None, fetch_rows=None, log_path: Path = LOG_PATH, theme_cache: Path = THEME_CACHE) -> dict:
     """市场状态 + 题材梯队（带成员代码）+ 所有策略的标的 + 候选实时行情 + 账户 + 今天前几轮的想法。
@@ -290,7 +312,13 @@ def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapsho
         targets = []
 
     account = _account_state(db_path, {}, day)
-    codes = [p["code"] for p in account["positions"]]
+    try:
+        prev_rows = list(fetch_rows(sb._prev_trading_day(db_path, day)) or [])
+    except Exception:                                            # noqa: BLE001
+        prev_rows = []
+    from jevq.rules.themes import parse_boards
+    high_codes = [r["code"] for r in prev_rows if parse_boards(r.get("high_days")) >= 3][:8]
+    codes = [p["code"] for p in account["positions"]] + high_codes
     codes += [t["code"] for t in targets] + [w["code"] for w in pctx.get("boardWatch") or []]
     for t in ladder[:6]:
         codes += [m["code"] for m in t.get("members", [])[:5]]
@@ -316,4 +344,5 @@ def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapsho
         pass
     return {"time": f"{now:%H:%M}", "slot": slot, "snapshotId": f"FLEX-{now:%Y%m%d}-{slot.replace(':', '')}",
             "market": {"breadth": breadth, "sentiment": (pctx.get("memory") or {}).get("sentiment")},
+            "highBoards": high_board_state(prev_rows, quotes),
             "themeLadder": ladder, "strategyTargets": targets, "quotes": payload, "account": account, "notes": notes[-6:]}

@@ -155,6 +155,34 @@ def test_gather_context_collects_positions_stops_ladder_members_and_quotes(tmp_p
     assert ctx["themeLadder"][0]["theme"] == "机器人" and ctx["themeLadder"][0]["members"][0]["code"] == "600001"
 
 
+def test_high_board_state_tells_whether_yesterdays_leaders_are_collapsing():
+    # 2026-11-04：昨天的 3~4 连板全部低开低走（-8%~-11%），资金换去低位科技。让 AI 一眼看到「高标今天怎么走」
+    from factories import quote
+    rows = [{"code": "600261", "name": "甲", "reason": "x", "high_days": "4天4板"},
+            {"code": "002086", "name": "乙", "reason": "x", "high_days": "4天4板"},
+            {"code": "000995", "name": "丙", "reason": "x", "high_days": "3天3板"},
+            {"code": "600003", "name": "首", "reason": "x", "high_days": "首板"},
+            {"code": "300009", "name": "创", "reason": "x", "high_days": "5天5板"}]
+    qs = {"600261": quote("600261", pct=-9.9, pre_close=10.0, ts=at(10, 0)),
+          "002086": quote("002086", pct=-3.0, pre_close=10.0, ts=at(10, 0)),
+          "000995": quote("000995", pct=2.0, pre_close=10.0, ts=at(10, 0))}
+    st = ft.high_board_state(rows, qs)
+    assert [i["code"] for i in st["items"]] == ["600261", "002086", "000995"]          # 只看主板 ≥3 板；首板、创业板不算
+    assert st["count"] == 3 and st["weak"] == 2 and st["verdict"] == "高标走弱"
+    assert ft.high_board_state(rows, {})["verdict"] == "无数据"
+    assert ft.high_board_state([], qs)["count"] == 0
+
+
+def test_gather_context_includes_high_board_state_and_prompt_carries_the_rotation_case(tmp_path):
+    from factories import quote
+    rows = [{"code": "600001", "name": "甲", "reason": "机器人", "high_days": "4天4板"}]
+    ctx = ft.gather_context(at(10, 0, 20), "10:00", db_path=_flex_db(tmp_path), snapshot_path=tmp_path / "none.json",
+                            fetch_quotes=lambda codes: {c: quote(c, pct=-5.0, pre_close=10.0, ts=at(10, 0)) for c in codes},
+                            fetch_rows=lambda d: rows, log_path=tmp_path / "log.jsonl", theme_cache=tmp_path / "theme.json")
+    assert ctx["highBoards"]["weak"] == 1 and ctx["highBoards"]["verdict"] == "高标走弱"
+    assert "11-04" in ft.SYSTEM_PROMPT and "highBoards" in ft.SYSTEM_PROMPT and "低位" in ft.SYSTEM_PROMPT
+
+
 def test_gather_context_survives_missing_snapshot_theme_data_and_empty_account(tmp_path):
     from jevq import db
     path = tmp_path / "jevq.sqlite"
