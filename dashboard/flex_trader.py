@@ -58,6 +58,7 @@ SYSTEM_PROMPT = (
     "空仓是代价最高的选择：每天至少试 1~2 笔小仓位（单笔 ≤10% 净值、止损 ≤3%），挑未涨停、涨幅 <7%、有资金承接的票；"
     "只有跌停扩散、炸板率抬头，或日亏 3% / 连亏 3 笔的护栏触发了，才可以整天不动。不限市值：大盘股小盘股都可以，按资金、题材、承接判断。"
     "某个时点不下单，plan 里必须写出「最想买的两只」是谁、这次为什么放弃，不要只写「观望」。\n"
+    "plan 或 next 里说要买/要卖的票，必须同时写进 orders（code 用 quotes 里的 6 位代码），orders 里没有的就不会成交——写了「买通富微电」orders 却是空的，等于没买。\n"
     "不要只盯昨日首板：quotes 里每只票有 src（持仓/高标/策略/扫板/梯队/异动）。src 为「异动」的是今天盘中放量走强、涨幅 2~8%、还没封板的票，"
     "老题材、大票、低位启动、放量突破、板块跟涨都可以买，不需要是首板或涨停股，买入照样要写止损和错了的信号。\n\n"
     "【轮动警示（2026-11-04 实例）】那天昨天的 3~4 连板全部低开低走（-8%~-11%），涨停榜没有连板，116 只首板里三季报增长占 48 只，"
@@ -148,22 +149,28 @@ def validate_answer(answer, ctx: dict) -> dict:
         raise ValueError("灵活交易的回答与快照编号不一致")
     held = {p["code"] for p in ctx.get("account", {}).get("positions", [])}
     quotes = set(ctx.get("quotes", {}))
-    orders = []
-    for raw in answer.get("orders") or []:
-        if not isinstance(raw, dict):
-            continue
+    orders, dropped = [], []
+    raw_orders = [r for r in (answer.get("orders") or []) if isinstance(r, dict)]
+    for raw in raw_orders:
         action, code = raw.get("action"), str(raw.get("code", ""))
-        if (action == "买入" and code in quotes) or (action == "卖出" and code in held):
+        if action == "买入" and code not in quotes:
+            dropped.append({"action": action, "code": code, "why": "不在候选里"})
+        elif action == "卖出" and code not in held:
+            dropped.append({"action": action, "code": code, "why": "没有这只持仓"})
+        elif (action == "买入" and code in quotes) or (action == "卖出" and code in held):
+            if len(orders) >= MAX_ORDERS_PER_CYCLE:
+                dropped.append({"action": action, "code": code, "why": "超过每轮上限"})
+                continue
             orders.append({"id": f"{ctx['snapshotId']}-{len(orders) + 1}", "action": action, "code": code,
                            "pct": _number(raw.get("pct")), "stop": _number(raw.get("stop")), "ref_price": _number(raw.get("ref_price")),
                            "invalid": _text(raw.get("invalid"), 80), "mode": raw.get("mode"), "pattern": _text(raw.get("pattern"), 20),
                            "reason": _text(raw.get("reason"), 120)})
-        if len(orders) >= MAX_ORDERS_PER_CYCLE:
-            break
+        else:
+            dropped.append({"action": str(action), "code": code, "why": "动作不是买入/卖出"})
     a = answer.get("analysis") if isinstance(answer.get("analysis"), dict) else {}
     return {"snapshotId": ctx["snapshotId"], "analysis": {"market": _text(a.get("market"), 300), "stage": _text(a.get("stage"), 10),
                                                          "plan": _text(a.get("plan"), 300)},
-            "orders": orders, "next": _text(answer.get("next"), 200)}
+            "orders": orders, "rawOrders": len(raw_orders), "dropped": dropped, "next": _text(answer.get("next"), 200)}
 
 
 # ---------- 一轮 ----------
@@ -194,6 +201,8 @@ def run_cycle(now: datetime, slot: str, *, gather, ask, orders_path: Path = ORDE
         a = result["analysis"]
         acct = ctx.get("account", {})
         orders = "\n".join(_order_line(o, ctx) for o in result["orders"]) or "本轮不动（没把握就空着）"
+        if result["dropped"]:
+            orders += "\n⚠ 被丢弃：" + "；".join(f"{d['action']}{d['code']}（{d['why']}）" for d in result["dropped"])
         sections = [f"{now:%H:%M}｜阶段：{a['stage']}", "【判断】" + a["market"], "【计划】" + a["plan"], "【订单】\n" + orders,
                     f"【账户】净值 {acct.get('equity', 0):,.0f}｜现金 {acct.get('cash', 0):,.0f}｜持仓 "
                     f"{len(acct.get('positions', []))} 只｜{acct.get('guards', '')}",

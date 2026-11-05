@@ -229,6 +229,24 @@ def test_gather_context_adds_market_movers_tagged_by_source_and_survives_a_faile
     assert "601111" not in ctx["quotes"] and "600002" in ctx["quotes"]
 
 
+def test_validate_answer_reports_dropped_orders_instead_of_silently_losing_them():
+    # 2026-11-05 13:20：plan 写了「第一笔买通富微电、第二笔买歌尔股份」，orders 却是空的，日志里看不出是模型没给还是被丢了
+    ctx = {"snapshotId": "S1", "quotes": {"002156": {"name": "通富微电"}}, "account": {"positions": []}}
+    ans = {"snapshotId": "S1", "analysis": {"market": "m", "stage": "高潮", "plan": "p"},
+           "orders": [{"action": "买入", "code": "002156", "pct": 0.08, "stop": 43.0, "reason": "r"},
+                      {"action": "买入", "code": "002241", "pct": 0.08, "stop": 24.0, "reason": "不在候选里"},
+                      {"action": "卖出", "code": "600001", "reason": "没持仓"}]}
+    r = ft.validate_answer(ans, ctx)
+    assert [o["code"] for o in r["orders"]] == ["002156"] and r["rawOrders"] == 3
+    assert {(d["code"], d["why"]) for d in r["dropped"]} == {("002241", "不在候选里"), ("600001", "没有这只持仓")}
+    empty = ft.validate_answer({"snapshotId": "S1", "analysis": {}, "orders": []}, ctx)
+    assert empty["rawOrders"] == 0 and empty["dropped"] == []
+
+
+def test_prompt_says_planned_buys_must_be_in_orders():
+    assert "必须同时写进 orders" in ft.SYSTEM_PROMPT
+
+
 def test_prompt_tells_it_not_to_fixate_on_first_boards():
     assert "不要只盯" in ft.SYSTEM_PROMPT and "异动" in ft.SYSTEM_PROMPT
 
