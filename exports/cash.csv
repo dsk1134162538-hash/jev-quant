@@ -1,6 +1,6 @@
 account,amount
 aiboard_main,30000.0
-aiboard_shadow,30000.0
+aiboard_shadow,15252.85
 aiflex_main,120000.0
 board_main,30811.80000000001
 board_shadow,30811.80000000001
@@ -15,7 +15,7 @@ rebound_shadow,24742.979999999992
 regime_main,24924.94999999999
 relay_main,120000.0
 relay_shadow,120000.0
-sc_main,120000.0
+sc_main,10555.870000000024
 shadow,3012.100000000002
-wts_main,120000.0
-wts_shadow,120000.0
+wts_main,101041.81
+wts_shadow,101041.81
