@@ -192,6 +192,47 @@ def test_prompt_lets_it_probe_on_strong_days_instead_of_vetoing_every_climax_day
     assert "单票最多占账户净值 30%" in p and "只做沪深主板" in p     # 护栏原样保留
 
 
+def test_pick_movers_finds_strong_unsealed_main_board_stocks_that_are_not_first_boards():
+    # 2026-11-05：候选只来自昨日涨停/梯队/策略标的，永远在首板里挑；盘中放量走强、没封板的票（老题材、大票）AI 看不到
+    from factories import quote
+    t = at(10, 30)
+    qs = {"600001": quote("600001", pct=5.0, amount=8e8, ts=t, name="放量甲"),
+          "000002": quote("000002", pct=3.0, amount=3e8, ts=t, name="温和乙"),
+          "600003": quote("600003", pct=7.5, amount=2.5e8, ts=t, name="强势丙"),
+          "600004": quote("600004", pct=10.0, amount=9e8, ts=t, name="已封板"),
+          "600005": quote("600005", pct=5.0, amount=8e8, ts=t, name="ST丁"),
+          "300006": quote("300006", pct=5.0, amount=8e8, ts=t, name="创业板"),
+          "600007": quote("600007", pct=1.0, amount=8e8, ts=t, name="涨幅不够"),
+          "600008": quote("600008", pct=5.0, amount=5e7, ts=t, name="没量"),
+          "600009": quote("600009", pct=5.0, amount=8e8, ts=t - timedelta(days=1), name="旧数据")}
+    assert ft.pick_movers(qs, t) == ["600001", "000002", "600003"] or set(ft.pick_movers(qs, t)) == {"600001", "000002", "600003"}
+    assert ft.pick_movers(qs, t)[0] == "600001"                                   # 成交额大的在前
+
+
+def test_gather_context_adds_market_movers_tagged_by_source_and_survives_a_failed_scan(tmp_path):
+    from factories import quote
+    rows = [{"code": "600001", "name": "甲", "reason": "机器人", "high_days": "首板"}]
+    market = {"601111": quote("601111", pct=4.0, amount=6e8, ts=at(10, 0), name="异动股")}
+    ctx = ft.gather_context(at(10, 0, 20), "10:00", db_path=_flex_db(tmp_path), snapshot_path=tmp_path / "none.json",
+                            fetch_quotes=lambda codes: {c: quote(c, pct=3.0, ts=at(10, 0)) for c in codes},
+                            fetch_rows=lambda d: rows, fetch_market=lambda: market,
+                            log_path=tmp_path / "log.jsonl", theme_cache=tmp_path / "theme.json")
+    assert "601111" in ctx["quotes"] and ctx["quotes"]["601111"]["src"] == "异动"
+    assert ctx["quotes"]["600002"]["src"] == "持仓"                               # 账户里的持仓仍在，来源另标
+
+    def boom():
+        raise TimeoutError("腾讯超时")
+    ctx = ft.gather_context(at(10, 0, 20), "10:00", db_path=_flex_db(tmp_path), snapshot_path=tmp_path / "none.json",
+                            fetch_quotes=lambda codes: {c: quote(c, pct=3.0, ts=at(10, 0)) for c in codes},
+                            fetch_rows=lambda d: rows, fetch_market=boom,
+                            log_path=tmp_path / "log.jsonl", theme_cache=tmp_path / "theme.json")
+    assert "601111" not in ctx["quotes"] and "600002" in ctx["quotes"]
+
+
+def test_prompt_tells_it_not_to_fixate_on_first_boards():
+    assert "不要只盯" in ft.SYSTEM_PROMPT and "异动" in ft.SYSTEM_PROMPT
+
+
 def test_gather_context_survives_missing_snapshot_theme_data_and_empty_account(tmp_path):
     from jevq import db
     path = tmp_path / "jevq.sqlite"

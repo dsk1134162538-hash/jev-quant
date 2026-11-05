@@ -57,7 +57,9 @@ SYSTEM_PROMPT = (
     "【试错额度与不限市值（dj 2026-11-05：分析了半天一只没买，太严了）】没有哪一条经验是一票否决。上涨占比 ≥75% 且昨日涨停股红盘率 ≥85% 这类赚钱效应强的日子，"
     "空仓是代价最高的选择：每天至少试 1~2 笔小仓位（单笔 ≤10% 净值、止损 ≤3%），挑未涨停、涨幅 <7%、有资金承接的票；"
     "只有跌停扩散、炸板率抬头，或日亏 3% / 连亏 3 笔的护栏触发了，才可以整天不动。不限市值：大盘股小盘股都可以，按资金、题材、承接判断。"
-    "某个时点不下单，plan 里必须写出「最想买的两只」是谁、这次为什么放弃，不要只写「观望」。\n\n"
+    "某个时点不下单，plan 里必须写出「最想买的两只」是谁、这次为什么放弃，不要只写「观望」。\n"
+    "不要只盯昨日首板：quotes 里每只票有 src（持仓/高标/策略/扫板/梯队/异动）。src 为「异动」的是今天盘中放量走强、涨幅 2~8%、还没封板的票，"
+    "老题材、大票、低位启动、放量突破、板块跟涨都可以买，不需要是首板或涨停股，买入照样要写止损和错了的信号。\n\n"
     "【轮动警示（2026-11-04 实例）】那天昨天的 3~4 连板全部低开低走（-8%~-11%），涨停榜没有连板，116 只首板里三季报增长占 48 只，"
     "资金从旧题材换去低位科技（先进封装、存储芯片、半导体设备、有色）。看 context.highBoards：verdict 是「高标走弱」时，"
     "接力、补涨这类押旧题材延续的打法不要做，改去找低位首板、有业绩或消息催化、放量的新方向；是「高标强势」时可以考虑接力。"
@@ -223,7 +225,7 @@ def ask_workbuddy(system: str, prompt: str, schema: dict, model: str | None = No
 
 
 # ---------- 给 DeepSeek 的现场 ----------
-MAX_CANDIDATES = 50
+MAX_CANDIDATES = 80
 
 
 def _read_json(path: Path) -> dict:
@@ -293,8 +295,34 @@ def high_board_state(rows: list[dict], quotes: dict) -> dict:
     return {"count": len(picked), "weak": weak, "verdict": verdict, "items": items}
 
 
+MOVER_MIN_AMOUNT = 2e8          # 成交额 ≥2 亿才算有资金在动
+MOVER_PCT = (2.0, 8.0)          # 涨幅 [2%, 8%)：已经走强、还没封板，追得进去
+MOVER_BY_AMOUNT = 20
+MOVER_BY_PCT = 10
+
+
+def pick_movers(quotes: dict, now: datetime) -> list[str]:
+    """盘中异动：沪深主板、非 ST、今天有行情、涨幅 2~8% 没封板、成交额 ≥2 亿，成交额前 20 + 涨幅前 10。
+    不要求是首板或涨停股——候选只来自昨日涨停会让 AI 永远在首板里挑（dj 2026-11-05：别老是盯着首板）。"""
+    ok = [(c, q) for c, q in quotes.items()
+          if c.startswith(("60", "00")) and "ST" not in q.name.upper() and q.price > 0 and not getattr(q, "suspended", False)
+          and q.ts.date() == now.date() and MOVER_PCT[0] <= q.pct < MOVER_PCT[1] and q.price < q.limit_up
+          and q.amount >= MOVER_MIN_AMOUNT]
+    by_amount = [c for c, q in sorted(ok, key=lambda x: x[1].amount, reverse=True)[:MOVER_BY_AMOUNT]]
+    by_pct = [c for c, q in sorted(ok, key=lambda x: x[1].pct, reverse=True)[:MOVER_BY_PCT]]
+    return list(dict.fromkeys(by_amount + by_pct))
+
+
+def _scan_market() -> dict:
+    from dashboard.market_snapshot import MarketSnapshotService
+    svc = MarketSnapshotService()
+    svc.refresh_now()
+    return svc.all_quotes()
+
+
 def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapshot_path: Path = SNAPSHOT_PATH,
-                   fetch_quotes=None, fetch_rows=None, log_path: Path = LOG_PATH, theme_cache: Path = THEME_CACHE) -> dict:
+                   fetch_quotes=None, fetch_rows=None, fetch_market=None, log_path: Path = LOG_PATH,
+                   theme_cache: Path = THEME_CACHE) -> dict:
     """市场状态 + 题材梯队（带成员代码）+ 所有策略的标的 + 候选实时行情 + 账户 + 今天前几轮的想法。
     任何一块取不到都只是缺那一块，不整轮失败。"""
     from dashboard import subscription_bridge as sb
@@ -323,11 +351,22 @@ def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapsho
         prev_rows = []
     from jevq.rules.themes import parse_boards
     high_codes = [r["code"] for r in prev_rows if parse_boards(r.get("high_days")) >= 3][:8]
-    codes = [p["code"] for p in account["positions"]] + high_codes
-    codes += [t["code"] for t in targets] + [w["code"] for w in pctx.get("boardWatch") or []]
+    src: dict[str, str] = {}
+
+    def add(codes_, tag):
+        for c in codes_:
+            src.setdefault(c, tag)
+    add([p["code"] for p in account["positions"]], "持仓")
+    add(high_codes, "高标")
+    add([t["code"] for t in targets], "策略")
+    add([w["code"] for w in pctx.get("boardWatch") or []], "扫板")
     for t in ladder[:6]:
-        codes += [m["code"] for m in t.get("members", [])[:5]]
-    codes = [c for c in dict.fromkeys(codes) if c.startswith(("60", "00"))][:MAX_CANDIDATES]
+        add([m["code"] for m in t.get("members", [])[:5]], "梯队")
+    try:
+        add(pick_movers((fetch_market or _scan_market)(), now), "异动")
+    except Exception:                                            # noqa: BLE001  全市场扫描失败只是少了异动股
+        pass
+    codes = [c for c in src if c.startswith(("60", "00"))][:MAX_CANDIDATES]
     try:
         quotes = fetch_quotes(codes) if codes else {}
     except Exception:                                            # noqa: BLE001
@@ -335,7 +374,7 @@ def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapsho
     boards = {m["code"]: m["boards"] for t in ladder for m in t.get("members", [])}
     payload = {c: {"name": q.name, "price": q.price, "pct": q.pct, "openPct": q.open_pct, "amount亿": round(q.amount / 1e8, 2),
                    "turnover": q.turnover, "volumeRatio": q.volume_ratio, "limitUp": q.limit_up, "sealed": q.price >= q.limit_up,
-                   "yesterdayBoards": boards.get(c)} for c, q in quotes.items() if q.price > 0}
+                   "yesterdayBoards": boards.get(c), "src": src.get(c)} for c, q in quotes.items() if q.price > 0}
     account = _account_state(db_path, quotes, day)
     notes = []
     try:

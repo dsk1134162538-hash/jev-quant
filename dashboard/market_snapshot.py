@@ -167,6 +167,11 @@ class MarketSnapshotService:
             with self._lock:
                 self._refreshing = False
 
+    def all_quotes(self) -> dict:
+        """最近一次全市场快照的浅拷贝（灵活交易找盘中异动股用）。"""
+        with self._lock:
+            return dict(self._quotes)
+
     def quotes_for(self, codes: list[str]) -> dict:
         """返回最近一次全市场快照中的候选股；不向调用方暴露可变的整表。"""
         with self._lock:
