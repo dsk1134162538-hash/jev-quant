@@ -183,6 +183,15 @@ def test_gather_context_includes_high_board_state_and_prompt_carries_the_rotatio
     assert "11-04" in ft.SYSTEM_PROMPT and "highBoards" in ft.SYSTEM_PROMPT and "低位" in ft.SYSTEM_PROMPT
 
 
+def test_prompt_lets_it_probe_on_strong_days_instead_of_vetoing_every_climax_day():
+    # 2026-11-05：普涨放量日（上涨 85%、昨日涨停红盘率 91%），aiflex 三个时点 0 单——「高潮日兑现，不接」被当成一票否决
+    p = ft.SYSTEM_PROMPT
+    assert "兑现，不接" not in p                                   # 兑现只针对已有持仓
+    assert "试错" in p and "最想买的两只" in p and "不限市值" in p
+    assert "不是禁令" in p and "一票否决" in p
+    assert "单票最多占账户净值 30%" in p and "只做沪深主板" in p     # 护栏原样保留
+
+
 def test_gather_context_survives_missing_snapshot_theme_data_and_empty_account(tmp_path):
     from jevq import db
     path = tmp_path / "jevq.sqlite"
