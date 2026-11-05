@@ -1,4 +1,4 @@
-"""AI 灵活交易账户的执行器（dj 2026-11-03「要灵活交易，有时候就得突破一下」）。
+﻿"""AI 灵活交易账户的执行器（dj 2026-11-03「要灵活交易，有时候就得突破一下」）。
 
 DeepSeek 在关键时点（ai_loop，dashboard/flex_trader.py）自己判断买什么、买多少、什么时候卖，把订单写进
 dashboard/runtime/flex_orders.json；这里每分钟读订单，按实时行情成交，并实时盯着 AI 自己设的止损线。
@@ -23,6 +23,8 @@ from jevq.models import Fill, Position, Quote
 SID = "aiflex"
 ROOT = Path(__file__).resolve().parents[2]
 ORDERS_PATH = ROOT / "dashboard" / "runtime" / "flex_orders.json"
+ORDERS2_PATH = ROOT / "dashboard" / "runtime" / "flex2_orders.json"      # 二号交易员（趋势风格）
+ORDERS2_PATH = ROOT / "dashboard" / "runtime" / "flex2_orders.json"      # 二号交易员（趋势风格）
 ORDER_TTL_SECONDS = 600
 MAX_STOP_DISTANCE = 0.12          # 止损位最多低于现价 12%
 MAX_REF_DEVIATION = 0.02          # 成交价相对 AI 看到的参考价最多偏离 2%
@@ -40,12 +42,13 @@ def _num(value):
 
 class AiflexStrategy:
     def __init__(self, conn: sqlite3.Connection, ledger: Ledger, trade_days: list[date] | None = None,
-                 orders_path: Path = ORDERS_PATH, can_buy: bool = True):
+                 orders_path: Path = ORDERS_PATH, can_buy: bool = True, sid: str = SID):
         self.conn, self.ledger = conn, ledger
+        self.sid = sid
         self.calendar = sorted(trade_days) if trade_days else None
         self.orders_path = Path(orders_path)
         self.can_buy = can_buy
-        self.account = config.STRATEGIES[SID]["accounts"][0]
+        self.account = config.STRATEGIES[sid]["accounts"][0]
         self.accounts = (self.account,)
 
     # ---------- 读订单 ----------
@@ -60,7 +63,7 @@ class AiflexStrategy:
         out = set()
         for (trace,) in self.conn.execute(
                 "SELECT trace FROM decisions WHERE strategy=? AND verdict IN ('order_ok', 'order_reject') "
-                "AND substr(ts, 1, 10)=?", (SID, day.isoformat())):
+                "AND substr(ts, 1, 10)=?", (self.sid, day.isoformat())):
             try:
                 out.add(json.loads(trace)["id"])
             except (ValueError, KeyError, TypeError):
@@ -70,7 +73,7 @@ class AiflexStrategy:
     def _log(self, now: datetime, verdict: str, code: str, detail: str, trace: dict):
         self.conn.execute("INSERT INTO decisions(ts, code, verdict, detail, trace, strategy) VALUES (?, ?, ?, ?, ?, ?)",
                           (now.isoformat(timespec="seconds"), code, verdict, detail[:300],
-                           json.dumps(trace, ensure_ascii=False), SID))
+                           json.dumps(trace, ensure_ascii=False), self.sid))
         self.conn.commit()
 
     def _reject(self, now: datetime, order: dict, why: str):
@@ -208,7 +211,7 @@ class AiflexStrategy:
 
     def _stop_row(self, code: str) -> dict | None:
         row = self.conn.execute("SELECT trace FROM decisions WHERE strategy=? AND verdict='stop' AND code=? "
-                                "ORDER BY ts DESC, rowid DESC LIMIT 1", (SID, code)).fetchone()
+                                "ORDER BY ts DESC, rowid DESC LIMIT 1", (self.sid, code)).fetchone()
         try:
             return json.loads(row[0]) if row else None
         except ValueError:

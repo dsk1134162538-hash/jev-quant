@@ -146,6 +146,26 @@ def test_orders_older_than_ten_minutes_are_expired_and_a_restart_does_not_repeat
     assert again.buy_step({"600001": _q("600001")}, NOW + timedelta(minutes=1)) == []
 
 
+def test_second_trader_has_its_own_account_orders_file_and_decision_trail(tmp_path):
+    # 二号交易员（趋势风格）共用执行器和护栏，但账户、订单文件、decisions 里的 strategy 和止损记录都各自独立
+    path1, path2 = tmp_path / "flex_orders.json", tmp_path / "flex2_orders.json"
+    for p, oid in ((path1, "A-1"), (path2, "B-1")):
+        p.write_text(json.dumps({"cycleId": "c", "ts": NOW.isoformat(timespec="seconds"),
+                                 "orders": [_order(id=oid, code="600001" if p is path1 else "600002")]}, ensure_ascii=False), encoding="utf-8")
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    one = AiflexStrategy(conn, ledger, CAL, orders_path=path1)
+    two = AiflexStrategy(conn, ledger, CAL, orders_path=path2, sid="aiflex2")
+    assert two.account == "aiflex2_main" and one.account == "aiflex_main"
+    qs = {"600001": _q("600001"), "600002": _q("600002")}
+    f1, f2 = one.buy_step(qs, NOW), two.buy_step(qs, NOW)
+    assert [f.account for f in f1] == ["aiflex_main"] and [f.account for f in f2] == ["aiflex2_main"]
+    rows = conn.execute("SELECT strategy, code FROM decisions WHERE verdict='stop' ORDER BY rowid").fetchall()
+    assert rows == [("aiflex", "600001"), ("aiflex2", "600002")]
+    assert one._stop_of("600002") is None and two._stop_of("600002") == 9.5          # 止损各看各的
+    assert ledger.cash("aiflex2_main") < config.FLEX_CAPITAL and ledger.free_slots("aiflex2_main") == config.FLEX_MAX_POSITIONS - 1
+
+
 def test_missing_or_broken_orders_file_is_harmless(tmp_path):
     conn = db.connect(":memory:")
     s = AiflexStrategy(conn, Ledger(conn), CAL, orders_path=tmp_path / "nope.json")

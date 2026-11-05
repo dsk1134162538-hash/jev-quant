@@ -155,6 +155,26 @@ def test_daily_job_failure_is_logged_not_raised(tmp_path):
     assert rec["ok"] is False and "RuntimeError" in rec["error"]
 
 
+def test_flex_hook_runs_every_trader_and_one_traders_failure_does_not_skip_the_other(monkeypatch, tmp_path):
+    # 二号交易员（dj 2026-11-05）：两位各自按自己的时点记录跑，一位 DeepSeek 失败不影响另一位
+    from dashboard import flex_trader
+    ran = []
+
+    def fake_run_cycle(now, slot, *, trader, **kw):
+        ran.append(trader.sid)
+        if trader.sid == "aiflex":
+            raise TimeoutError("WorkBuddy 超时")
+        return {"slot": slot, "orders": 0, "stage": "分歧"}
+    monkeypatch.setattr(flex_trader, "run_cycle", fake_run_cycle)
+    monkeypatch.setattr(flex_trader, "due_slot", lambda now, state_path: "10:00")
+    monkeypatch.setattr("jevq.notify.notifier_from_env", lambda: object())
+    out = ai_loop._flex(at(2, 10, 1))
+    assert ran == ["aiflex", "aiflex2"]
+    assert "TimeoutError" in out["aiflex"]["error"] and out["aiflex2"]["slot"] == "10:00"
+    monkeypatch.setattr(flex_trader, "due_slot", lambda now, state_path: None)
+    assert ai_loop._flex(at(2, 10, 1)) is None
+
+
 def test_flex_runs_at_key_times_and_its_failures_never_count_as_main_loop_failures():
     # AI 灵活交易（dj 2026-11-03）：每次循环都问一下「到点了吗」；它自己的失败只记日志，不触发主循环的退避和告警
     seen = []

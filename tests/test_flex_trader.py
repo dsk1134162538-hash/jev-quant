@@ -119,6 +119,55 @@ def test_cycle_failure_is_recorded_but_does_not_leave_stale_orders_behind(tmp_pa
     assert ft.due_slot(at(10, 1), tmp_path / "state.json") == "10:00"               # 失败不记为已跑，窗口内还会再试
 
 
+def test_two_traders_share_guardrails_but_differ_in_style_and_files():
+    # 二号交易员（dj 2026-11-05「再加一个 deepseek 交易员」）：趋势/强势跟随，不打板、不接力
+    one, two = ft.TRADERS["aiflex"], ft.TRADERS["aiflex2"]
+    assert one.system is ft.SYSTEM_PROMPT and two.system != one.system
+    for text in ("单票最多占账户净值 30%", "止损", "错了的信号", "只做沪深主板", "orders"):
+        assert text in two.system, text                                             # 护栏和输出要求原样共用
+    assert "趋势" in two.system and "不打板" in two.system and "src" in two.system
+    assert "弱转强" not in two.system                                                # 手册里的打板打法不带过来
+    assert len({one.orders_path, two.orders_path}) == 2 and len({one.log_path, two.log_path}) == 2
+    assert len({one.state_path, two.state_path}) == 2 and one.account == "aiflex_main" and two.account == "aiflex2_main"
+    assert ft.build_prompt(_ctx(), two)[0] == two.system and ft.build_prompt(_ctx())[0] == one.system
+
+
+def test_second_trader_cycle_uses_its_own_files_label_and_slot_state(tmp_path):
+    orders_path, log_path, state = tmp_path / "o2.json", tmp_path / "l2.jsonl", tmp_path / "s2.json"
+    notifier, seen = Notifier(), {}
+
+    def ask(system, prompt, schema):
+        seen["system"] = system
+        return _good_answer(pattern="放量突破")
+    ft.run_cycle(at(10, 0, 20), "10:00", gather=lambda now, slot: _ctx(), ask=ask, orders_path=orders_path, log_path=log_path,
+                 state_path=state, notifier=notifier, trader=ft.TRADERS["aiflex2"])
+    assert seen["system"] == ft.TRADERS["aiflex2"].system and json.loads(orders_path.read_text(encoding="utf-8"))["orders"][0]["pattern"] == "放量突破"
+    assert "趋势交易员" in notifier.messages[0][0]
+    assert ft.due_slot(at(10, 5), state) is None and ft.due_slot(at(10, 5), tmp_path / "other.json") == "10:00"   # 各记各的时点
+
+
+def test_gather_context_for_the_second_trader_reads_its_own_account_and_notes(tmp_path):
+    from factories import quote
+    from jevq import db
+    from jevq.ledger import Ledger
+    path = tmp_path / "jevq.sqlite"
+    conn = db.connect(str(path))
+    Ledger(conn).buy("aiflex2_main", quote("600003", pct=0.0, pre_close=30.0, ts=at(10, 0)), at(10, 0) - timedelta(days=1), "x", budget=30000)
+    conn.commit()
+    conn.close()
+    log2 = tmp_path / "log2.jsonl"
+    log2.write_text(json.dumps({"ts": "2026-11-03T09:30:00", "slot": "09:26", "analysis": {"stage": "启动", "plan": "二号的计划"}, "orders": []}) + "\n",
+                    encoding="utf-8")
+    ctx = ft.gather_context(at(10, 0, 20), "10:00", db_path=path, snapshot_path=tmp_path / "none.json",
+                            fetch_quotes=lambda codes: {c: quote(c, pct=1.0, pre_close=30.0, ts=at(10, 0)) for c in codes},
+                            fetch_rows=lambda d: [], fetch_market=lambda: {}, log_path=log2, theme_cache=tmp_path / "t.json",
+                            trader=ft.TRADERS["aiflex2"])
+    assert [p["code"] for p in ctx["account"]["positions"]] == ["600003"] and ctx["notes"][0]["plan"] == "二号的计划"
+    plain = ft.gather_context(at(10, 0, 20), "10:00", db_path=path, snapshot_path=tmp_path / "none.json", fetch_quotes=lambda codes: {},
+                              fetch_rows=lambda d: [], fetch_market=lambda: {}, log_path=tmp_path / "x.jsonl", theme_cache=tmp_path / "t.json")
+    assert plain["account"]["positions"] == []                                       # 一号的账户里没有这只
+
+
 def _flex_db(tmp_path):
     from datetime import date
     from jevq import config, db

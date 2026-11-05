@@ -222,6 +222,8 @@ STRATEGIES = {
     "bz": {"name": "补涨", "accounts": ("bz_main", "bz_shadow")},
     # 灵活账户（dj 2026-11-03「要灵活交易，有时候就得突破一下」）：DeepSeek 自己判断买卖和仓位，只有风控护栏。实盘不跟
     "aiflex": {"name": "AI灵活交易", "accounts": ("aiflex_main",)},
+    # 二号交易员（dj 2026-11-05「再加一个 deepseek 交易员」）：同样的执行器和护栏，风格不同——趋势/强势跟随，不打板、不接力。实盘不跟
+    "aiflex2": {"name": "AI趋势交易员", "accounts": ("aiflex2_main",)},
 }
 ACCOUNTS = tuple(a for s in STRATEGIES.values() for a in s["accounts"])
 ACCOUNT_NAMES = {
@@ -234,7 +236,7 @@ ACCOUNT_NAMES = {
     "relay_main": "高标接力·主(Jev)", "relay_shadow": "高标接力·影子",
     "wts_main": "弱转强·主(Jev)", "wts_shadow": "弱转强·影子", "ice_main": "冰点修复·篮子",
     "sc_main": "小市值轮动·篮子",
-    "bz_main": "补涨·主(Jev)", "bz_shadow": "补涨·影子", "aiflex_main": "AI灵活交易",
+    "bz_main": "补涨·主(Jev)", "bz_shadow": "补涨·影子", "aiflex_main": "AI灵活交易", "aiflex2_main": "AI趋势交易员",
 }
 # 高标竞价接力（research/dragon_relay.py：训练 +1.12%/笔 n=268、验证 +1.86%/笔 n=88；单笔最差 −23%）。
 # 持有跨两天，两批仓位会重叠：每笔 1/6 本金、最多 6 只，一天最多买 3 只
@@ -294,13 +296,13 @@ FLEX_DAY_LOSS = 0.03              # 当日亏到净值的 3% 当天不再开新�
 FLEX_LOSS_STREAK = 3              # 连亏 3 笔，当天不再开新仓
 ACCOUNT_CAPITAL = {"relay_main": RELAY_CAPITAL, "relay_shadow": RELAY_CAPITAL,
                    "wts_main": WTS_CAPITAL, "wts_shadow": WTS_CAPITAL, "ice_main": ICE_CAPITAL, "sc_main": SC_CAPITAL,
-                   "bz_main": BZ_CAPITAL, "bz_shadow": BZ_CAPITAL, "aiflex_main": FLEX_CAPITAL}
+                   "bz_main": BZ_CAPITAL, "bz_shadow": BZ_CAPITAL, "aiflex_main": FLEX_CAPITAL, "aiflex2_main": FLEX_CAPITAL}
 ACCOUNT_MAX_POSITIONS = {"relay_main": RELAY_MAX_POSITIONS, "relay_shadow": RELAY_MAX_POSITIONS,
                          "wts_main": WTS_MAX_POSITIONS, "wts_shadow": WTS_MAX_POSITIONS, "ice_main": ICE_BASKET,
                          "sc_main": SC_BASKET, "bz_main": BZ_MAX_POSITIONS, "bz_shadow": BZ_MAX_POSITIONS,
-                         "aiflex_main": FLEX_MAX_POSITIONS}
+                         "aiflex_main": FLEX_MAX_POSITIONS, "aiflex2_main": FLEX_MAX_POSITIONS}
 STRATEGY_CAPITAL = {"relay": RELAY_CAPITAL, "wts": WTS_CAPITAL, "ice": ICE_CAPITAL, "smallcap": SC_CAPITAL,
-                    "bz": BZ_CAPITAL, "aiflex": FLEX_CAPITAL}
+                    "bz": BZ_CAPITAL, "aiflex": FLEX_CAPITAL, "aiflex2": FLEX_CAPITAL}
 AI_BOARD_ENABLED = True
 AI_BOARD_FIRST_PCT = 0.5        # 首次建仓只用一半，另一半留给回本（做T/低吸补仓）
 # dj 2026-11-02：次日开盘就卖（108 天回测：开盘卖优于等反弹/拿到收盘/止损；「不亏不卖」把亏损放大一倍多）。

@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -70,6 +72,52 @@ SYSTEM_PROMPT = (
 )
 
 
+def _slice(text: str, start: str, end: str | None = None) -> str:
+    i = text.index(start)
+    return text[i:text.index(end)] if end else text[i:]
+
+
+# 二号交易员（dj 2026-11-05「再加一个 deepseek 交易员」）：护栏、试错额度、输出要求和一号共用同一份文字（单一来源），
+# 只有风格不同——趋势/强势跟随，不打板、不接力。
+TREND_PROMPT = (
+    "你是 A 股趋势/强势跟随交易员（二号），管理一个模拟账户（12 万本金，不下真单）。和一号灵活交易员不同：你不打板、不接力、不追涨停、"
+    "不做首板，也不买一字板；你吃的是趋势——板块有资金推动、个股放量走强（涨幅 2~8%、成交额大）、回踩分时均价线或 5 日线不破后再放量的票，"
+    "大小盘不限，持有 1~5 个交易日，趋势在就拿，破位就走。目标是在可承受的回撤内尽量赚钱，每天都想赚，但不为赚而乱做，空仓也是一种决策。"
+    "你可以突破任何选股偏好，订单里标「模式外」并写清楚为什么。\n\n"
+    + _slice(SYSTEM_PROMPT, "【护栏", "【经验手册") +
+    "【趋势打法手册】\n"
+    "买点：①放量突破前高或平台（成交额明显放大、量比 >1.5）；②强势股回踩分时均价线或 5 日线企稳后再放量转折；"
+    "③板块龙头/中军带动下的跟涨：同板块有 3 只以上同时走强，买领先但没封板的那只；④低位首次放量启动（前面横盘或超跌）。\n"
+    "卖点：买入前就想好；趋势没坏就拿；跌破止损、分时均价线站不回、5 日线失守、冲高放量滞涨、板块整体转弱就走；浮盈 5% 以上把止损上移到成本。\n"
+    "不买：已涨停或一字（买不到也不追）、涨幅已超 8%、下跌趋势里的反抽、缩量冲高、大股东减持、利好兑现的放量大阴线。\n"
+    "思路参考（不是禁令，有盘感可以突破）：大盘普涨放量时，找板块里成交额最大的几只走强票；大盘缩量分化时，只买板块里相对最强且回踩不破均价线的；"
+    "大盘走弱、跌停扩散就空仓。\n\n"
+    + _slice(SYSTEM_PROMPT, "【试错额度", "【轮动警示") + _slice(SYSTEM_PROMPT, "输出要求")
+)
+
+
+@dataclass(frozen=True)
+class Trader:
+    """一位 DeepSeek 交易员：自己的提示词、订单文件、日志、时点记录和账户（执行器里的 strategy id 同名）。"""
+    sid: str
+    label: str
+    system: str
+    orders_path: Path
+    log_path: Path
+    state_path: Path
+
+    @property
+    def account(self) -> str:
+        return config.STRATEGIES[self.sid]["accounts"][0]
+
+
+TRADERS = {
+    "aiflex": Trader("aiflex", "AI灵活交易", SYSTEM_PROMPT, ORDERS_PATH, LOG_PATH, STATE_PATH),
+    "aiflex2": Trader("aiflex2", "AI趋势交易员", TREND_PROMPT, RUNTIME / "flex2_orders.json", RUNTIME / "flex2_log.jsonl",
+                      RUNTIME / "flex2_state.json"),
+}
+
+
 # ---------- 调度 ----------
 def _read_state(path: Path) -> dict:
     try:
@@ -121,11 +169,12 @@ def answer_schema(ctx: dict) -> dict:
                            "next": {"type": "string", "maxLength": 200}}}
 
 
-def build_prompt(ctx: dict) -> tuple[str, str]:
+def build_prompt(ctx: dict, trader: Trader | None = None) -> tuple[str, str]:
+    system = (trader or TRADERS["aiflex"]).system
     prompt = ("模拟账户，不下真单。快照编号必须原样返回。不调用任何工具。\n"
               "实时数据：\n" + json.dumps(ctx, ensure_ascii=False)
               + "\n\n请按系统提示里的输出要求，返回一个 JSON 对象：snapshotId、analysis{market,stage,plan}、orders[]、next。")
-    return SYSTEM_PROMPT, prompt
+    return system, prompt
 
 
 def _text(value, limit: int) -> str:
@@ -182,11 +231,14 @@ def _order_line(o: dict, ctx: dict) -> str:
     return f"▶ 卖出 {o['code']} {name}\n  理由：{o['reason']}"
 
 
-def run_cycle(now: datetime, slot: str, *, gather, ask, orders_path: Path = ORDERS_PATH, log_path: Path = LOG_PATH,
-              state_path: Path = STATE_PATH, notifier=None, clock=None) -> dict:
-    """gather(now, slot) -> ctx；ask(system, prompt, schema) -> 回答 dict。失败（超时、格式错）直接抛出，不记为已跑，窗口内还会再试。"""
+def run_cycle(now: datetime, slot: str, *, gather, ask, orders_path: Path | None = None, log_path: Path | None = None,
+              state_path: Path | None = None, notifier=None, clock=None, trader: Trader | None = None) -> dict:
+    """gather(now, slot) -> ctx；ask(system, prompt, schema) -> 回答 dict。失败（超时、格式错）直接抛出，不记为已跑，窗口内还会再试。
+    trader 选哪位交易员（提示词、订单文件、日志、时点记录各自独立）；不传就是一号。"""
+    trader = trader or TRADERS["aiflex"]
+    orders_path, log_path, state_path = orders_path or trader.orders_path, log_path or trader.log_path, state_path or trader.state_path
     ctx = gather(now, slot)
-    system, prompt = build_prompt(ctx)
+    system, prompt = build_prompt(ctx, trader)
     result = validate_answer(ask(system, prompt, answer_schema(ctx)), ctx)
     Path(orders_path).parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(orders_path).with_suffix(".tmp")
@@ -208,7 +260,7 @@ def run_cycle(now: datetime, slot: str, *, gather, ask, orders_path: Path = ORDE
                     f"{len(acct.get('positions', []))} 只｜{acct.get('guards', '')}",
                     "订单由 daemon 按实时行情执行（10 分钟内有效，价格偏离参考价超过 2% 不追），成交另推；模拟账户，不是真实委托。"]
         try:
-            notifier.send(f"🧭 灵活交易｜{slot}｜{a['stage']}", "\n\n".join(sections))
+            notifier.send(f"🧭 {trader.label}｜{slot}｜{a['stage']}", "\n\n".join(sections))
             notifier.flush(timeout=55)
         except Exception:                                          # noqa: BLE001
             pass
@@ -244,7 +296,7 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
-def _account_state(db_path: Path, quotes: dict, day) -> dict:
+def _account_state(db_path: Path, quotes: dict, day, sid: str = "aiflex") -> dict:
     """账户现状（只读库）：净值、现金、持仓（含买入价、AI 自己设的止损位）、护栏状态。库不在 / 读不出来就当空账户。"""
     import sqlite3
     from jevq.ledger import Ledger
@@ -258,7 +310,7 @@ def _account_state(db_path: Path, quotes: dict, day) -> dict:
         return empty
     try:
         ledger = Ledger(conn, init=False)
-        strat = AiflexStrategy(conn, ledger, None)
+        strat = AiflexStrategy(conn, ledger, None, sid=sid)
         account = strat.account
         prices = {c: q.price for c, q in quotes.items()}
         equity, cash = ledger.equity(account, prices), ledger.cash(account)
@@ -322,18 +374,28 @@ def pick_movers(quotes: dict, now: datetime) -> list[str]:
     return list(dict.fromkeys(by_amount + by_pct))
 
 
+_market_memo: tuple[float, dict] = (0.0, {})
+
+
 def _scan_market() -> dict:
+    """全市场行情（约 22 秒）。两位交易员背靠背跑时共用 90 秒内的同一份，不扫两遍。"""
+    global _market_memo
+    if time.monotonic() - _market_memo[0] < 90 and _market_memo[1]:
+        return _market_memo[1]
     from dashboard.market_snapshot import MarketSnapshotService
     svc = MarketSnapshotService()
     svc.refresh_now()
-    return svc.all_quotes()
+    _market_memo = (time.monotonic(), svc.all_quotes())
+    return _market_memo[1]
 
 
 def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapshot_path: Path = SNAPSHOT_PATH,
-                   fetch_quotes=None, fetch_rows=None, fetch_market=None, log_path: Path = LOG_PATH,
-                   theme_cache: Path = THEME_CACHE) -> dict:
+                   fetch_quotes=None, fetch_rows=None, fetch_market=None, log_path: Path | None = None,
+                   theme_cache: Path = THEME_CACHE, trader: Trader | None = None) -> dict:
     """市场状态 + 题材梯队（带成员代码）+ 所有策略的标的 + 候选实时行情 + 账户 + 今天前几轮的想法。
-    任何一块取不到都只是缺那一块，不整轮失败。"""
+    任何一块取不到都只是缺那一块，不整轮失败。trader 决定读哪个账户和哪份日志；不传就是一号。"""
+    trader = trader or TRADERS["aiflex"]
+    log_path = log_path or trader.log_path
     from dashboard import subscription_bridge as sb
     from jevq.data import tencent, ztpool
     fetch_quotes = fetch_quotes or tencent.fetch_quotes
@@ -353,7 +415,7 @@ def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapsho
     except Exception:                                            # noqa: BLE001
         targets = []
 
-    account = _account_state(db_path, {}, day)
+    account = _account_state(db_path, {}, day, trader.sid)
     try:
         prev_rows = list(fetch_rows(sb._prev_trading_day(db_path, day)) or [])
     except Exception:                                            # noqa: BLE001
@@ -384,7 +446,7 @@ def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapsho
     payload = {c: {"name": q.name, "price": q.price, "pct": q.pct, "openPct": q.open_pct, "amount亿": round(q.amount / 1e8, 2),
                    "turnover": q.turnover, "volumeRatio": q.volume_ratio, "limitUp": q.limit_up, "sealed": q.price >= q.limit_up,
                    "yesterdayBoards": boards.get(c), "src": src.get(c)} for c, q in quotes.items() if q.price > 0}
-    account = _account_state(db_path, quotes, day)
+    account = _account_state(db_path, quotes, day, trader.sid)
     notes = []
     try:
         for line in Path(log_path).read_text(encoding="utf-8").splitlines()[-12:]:

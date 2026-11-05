@@ -201,14 +201,22 @@ def _daily() -> dict:
 
 
 def _flex(now: datetime) -> dict | None:
-    """到了灵活交易的关键时点就跑一轮（想：调 DeepSeek，写订单文件，推送）；没到返回 None。"""
+    """到了灵活交易的关键时点就让每位交易员各跑一轮（想：调 DeepSeek，写订单文件，推送）；都没到返回 None。
+    一位失败（超时、格式错）只记在自己名下，不影响另一位。"""
     from dashboard import flex_trader
     from jevq.notify import notifier_from_env
-    slot = flex_trader.due_slot(now)
-    if slot is None:
-        return None
-    return flex_trader.run_cycle(now, slot, gather=flex_trader.gather_context, ask=flex_trader.ask_workbuddy,
-                                 notifier=notifier_from_env(), clock=datetime.now)
+    out = {}
+    for sid, trader in flex_trader.TRADERS.items():
+        slot = flex_trader.due_slot(now, trader.state_path)
+        if slot is None:
+            continue
+        try:
+            out[sid] = flex_trader.run_cycle(
+                now, slot, gather=lambda n, s, t=trader: flex_trader.gather_context(n, s, trader=t),
+                ask=flex_trader.ask_workbuddy, notifier=notifier_from_env(), clock=datetime.now, trader=trader)
+        except Exception as e:                                   # noqa: BLE001
+            out[sid] = {"slot": slot, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+    return out or None
 
 
 def _alert(msg: str) -> None:

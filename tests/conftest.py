@@ -32,6 +32,7 @@ def _isolated_targets_file(monkeypatch, tmp_path):
     """run_day 会把高标接力 / 弱转强的标的写进 dashboard/runtime/strategy_targets.json：测试写到临时目录，别碰真文件。"""
     monkeypatch.setattr("run.TARGETS_PATH", tmp_path / "strategy_targets.json")
     monkeypatch.setattr("jevq.strategies.flex.ORDERS_PATH", tmp_path / "flex_orders.json")
+    monkeypatch.setattr("jevq.strategies.flex.ORDERS2_PATH", tmp_path / "flex2_orders.json")
 
 
 @pytest.fixture(autouse=True)
