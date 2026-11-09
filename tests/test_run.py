@@ -1601,6 +1601,28 @@ def test_market_ret5_is_median_of_universe():
     assert run._market_ret5({"a": -5.0, "b": -1.0, "c": 3.0}) == -1.0 and run._market_ret5({}) is None
 
 
+def test_morning_push_lists_every_strategys_plan(env):
+    # dj 2026-11-09：「怎么一直在发打板的消息？各个策略的消息我也要看到」——各策略加载时的标的 / 计划合成一条推送
+    class FakeNotifier:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, title, content):
+            self.sent.append((title, content))
+
+        def once(self, *a):
+            pass
+
+        def flush(self, timeout=5):
+            pass
+    notifier = FakeNotifier()
+    env.run(once=True, notifier=notifier)
+    plans = [c for t, c in notifier.sent if t.startswith("📋 今日各策略")]
+    assert len(plans) == 1
+    for text in ("高标接力", "弱转强", "冰点修复", "小市值轮动", "AI 灵活交易", "AI 趋势交易员"):
+        assert text in plans[0], text
+
+
 def test_relay_still_buys_when_legacy_rules_are_off(env, monkeypatch):
     # 2026-11-03 事故：LEGACY_BUY_ENABLED=False 把 sell_only 置位，高标接力跟着变成只卖，开盘一笔没买。
     # 老规则开关只管老策略；接力和 AI 打首板一样只看 data_sell_only（数据/环境原因的只卖）。

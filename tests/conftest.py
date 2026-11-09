@@ -33,6 +33,7 @@ def _isolated_targets_file(monkeypatch, tmp_path):
     monkeypatch.setattr("run.TARGETS_PATH", tmp_path / "strategy_targets.json")
     monkeypatch.setattr("jevq.strategies.flex.ORDERS_PATH", tmp_path / "flex_orders.json")
     monkeypatch.setattr("jevq.strategies.flex.ORDERS2_PATH", tmp_path / "flex2_orders.json")
+    monkeypatch.setattr("dashboard.subscription_bridge.PUSH_STATE_PATH", tmp_path / "board_push_state.json")
 
 
 @pytest.fixture(autouse=True)

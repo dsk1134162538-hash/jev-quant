@@ -416,31 +416,44 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     customs = [] if late else _load_customs(
         conn, ledger, today, universe, ret5, sell_only, notice_judge, news_judge, concept_map,
         lambda: {"sentiment": engine.sentiment_label, "overseas": overseas}, prev_day, log, trade_days=days)
-    relay = _load_relay(conn, ledger, today, universe, notice_judge, news_judge, days, not (late or data_sell_only), log)
+    plan_lines: list[str] = []          # 各策略今天的标的 / 计划：照常写日志，加载完再合成一条推送（dj 2026-11-09：各个策略的消息我也要看到）
+
+    def slog(msg: str) -> None:
+        log(msg)
+        plan_lines.append(msg)
+    relay = _load_relay(conn, ledger, today, universe, notice_judge, news_judge, days, not (late or data_sell_only), slog)
     if relay is not None:           # 高标竞价接力（dj 2026-11-02）：走自定义策略同一条卖/买通道；晚启动、只卖日照样卖
         customs = [*customs, ("relay", relay)]
     # 弱转强、冰点修复（dj 2026-11-03）：同样只看 data_sell_only——老规则开关（LEGACY_BUY_ENABLED）只管老策略（11-03 接力就栽在这）
     new_can_buy = not (late or data_sell_only)
-    wts = _load_wts(conn, ledger, today, universe, notice_judge, news_judge, days, new_can_buy, log)
+    wts = _load_wts(conn, ledger, today, universe, notice_judge, news_judge, days, new_can_buy, slog)
     if wts is not None:
         customs = [*customs, ("wts", wts)]
-    ice = _load_ice(conn, ledger, days, new_can_buy, log)
+    ice = _load_ice(conn, ledger, days, new_can_buy, slog)
     if ice is not None:
         customs = [*customs, ("ice", ice)]
-    bz = _load_bz(conn, ledger, today, prev_day, universe, notice_judge, news_judge, days, new_can_buy, log)
+    bz = _load_bz(conn, ledger, today, prev_day, universe, notice_judge, news_judge, days, new_can_buy, slog)
     if bz is not None:
         customs = [*customs, ("bz", bz)]
-    flex = _load_flex(conn, ledger, days, new_can_buy, log)
+    flex = _load_flex(conn, ledger, days, new_can_buy, slog)
     if flex is not None:
         customs = [*customs, ("aiflex", flex)]
-    flex2 = _load_flex(conn, ledger, days, new_can_buy, log, sid="aiflex2")
+    flex2 = _load_flex(conn, ledger, days, new_can_buy, slog, sid="aiflex2")
     if flex2 is not None:
         customs = [*customs, ("aiflex2", flex2)]
-    sc = _load_smallcap(conn, ledger, today, universe, days, new_can_buy, log)
+    sc = _load_smallcap(conn, ledger, today, universe, days, new_can_buy, slog)
     if sc is not None:
         customs = [*customs, ("smallcap", sc)]
     _write_strategy_targets(today, getattr(relay, "streaks", {}) if relay is not None else {},
                             getattr(wts, "pool", {}) if wts is not None else {}, log)
+    if plan_lines:
+        try:
+            notifier.send(f"📋 今日各策略 {today:%m-%d}",
+                          "\n\n".join("▶ " + line for line in plan_lines)
+                          + ("\n\n今天只卖不开新仓（数据/启动时间原因）。" if not new_can_buy else "")
+                          + "\n\n高标接力、弱转强按竞价结果决定买不买，两位 DeepSeek 交易员每个时点单独推「推荐 / 不推荐」；成交逐笔另推。模拟账户。")
+        except Exception:                                          # noqa: BLE001  推送失败不影响开盘
+            pass
 
     if once:
         t = now()

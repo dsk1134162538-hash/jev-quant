@@ -282,6 +282,31 @@ def test_strategy_targets_without_auction_result_say_to_wait(tmp_path):
     assert got and "等 09:25" in got[0]["plan"]
 
 
+def test_board_analysis_is_pushed_only_when_the_verdict_changes_or_every_30_minutes(tmp_path):
+    # dj 2026-11-09：「怎么一直在发打板的消息？」——每 2~5 分钟一条「防守观察｜空仓等待」，把别的策略都淹了
+    from dashboard.subscription_bridge import notify_result, push_due
+    state = tmp_path / "s.json"
+
+    def rec(t, action="空仓等待"):
+        return {"id": "AI-1", "ts": f"2026-11-09T{t}", "regime": "防守观察", "action": action}
+    assert push_due(rec("14:10:00"), False, state)
+    assert not push_due(rec("14:15:00"), False, state)                     # 结论没变、不到 30 分钟：不推
+    assert push_due(rec("14:20:00"), True, state)                          # 有成交：推
+    assert not push_due(rec("14:25:00"), False, state)
+    assert push_due(rec("14:28:00", action="09:30 扫板"), False, state)     # 结论变了：推
+    assert push_due(rec("15:00:00", action="09:30 扫板"), False, state)     # 超过 30 分钟：补一条
+    latest = {"portfolio": {"posture": "防守", "positionPct": 0, "orders": {}},
+              "execution": {"fills": [{"side": "buy", "code": "600001", "shares": 100, "price": 10.0}], "skipped": []}}
+    n = FakeNotifier()
+    notify_result(n, {**rec("14:30:00"), "confidence": 0.5, "market": "m", "sector": "s", "analysis": {}}, latest, True,
+                  quotes={}, analysis=False)
+    assert [t for t, _ in n.messages] == ["💰 模拟买入｜600001"]                # 不推分析时成交照推
+    n2 = FakeNotifier()
+    notify_result(n2, {**rec("14:30:00"), "confidence": 0.5, "market": "m", "sector": "s", "analysis": {}},
+                  {**latest, "execution": {"fills": [], "skipped": []}}, True, quotes={})
+    assert n2.messages[0][0].startswith("📊 AI打首板｜")
+
+
 def test_push_has_a_section_for_other_strategy_targets_or_says_there_are_none():
     from dashboard.subscription_bridge import notify_result
     record = {"id": "AI-1", "ts": "2026-11-03T09:26:00", "regime": "修复观察", "action": "空仓等待",

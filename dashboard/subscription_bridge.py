@@ -440,10 +440,39 @@ def _ladder_section(ladder) -> list[str]:
     return ["【题材梯队】盘中涨停家数还在增加，「分歧/退潮」要收盘后才准\n" + "\n".join(lines)]
 
 
+PUSH_STATE_PATH = RUNTIME / "board_push_state.json"
+PUSH_EVERY = 30 * 60
+
+
+def push_due(record: dict, has_fills: bool, state_path: Path = PUSH_STATE_PATH) -> bool:
+    """AI 打首板的分析推送要不要发（dj 2026-11-09：「怎么一直在发打板的消息」——每 2~5 分钟一条，结论没变也推，把别的策略都淹了）。
+    结论（regime + action）变了、有成交、或者离上一条超过 30 分钟才推；发了就记下来。"""
+    key = f"{record.get('regime')}|{record.get('action')}"
+    try:
+        ts = datetime.fromisoformat(record["ts"])
+    except (KeyError, ValueError):
+        return True
+    try:
+        state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+        last = datetime.fromisoformat(state["ts"])
+        same = state.get("key") == key and last.date() == ts.date() and (ts - last).total_seconds() < PUSH_EVERY
+    except (OSError, ValueError, KeyError):
+        same = False
+    if same and not has_fills:
+        return False
+    try:
+        Path(state_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(state_path).write_text(json.dumps({"key": key, "ts": record["ts"]}), encoding="utf-8")
+    except OSError:
+        pass
+    return True
+
+
 def notify_result(notifier, record: dict, latest: dict, reconciled: bool, quotes: dict | None = None,
-                  targets: list[dict] | None = None, ladder: list[dict] | None = None) -> None:
+                  targets: list[dict] | None = None, ladder: list[dict] | None = None, analysis: bool = True) -> None:
     """分析每轮一条、成交每笔一条；推送失败不影响已经完成的模拟账本。
-    dj 2026-11-02：推送要写细——股票名、板块、每只票后续怎么做和触发条件、现在什么行情、什么情况做什么。"""
+    dj 2026-11-02：推送要写细——股票名、板块、每只票后续怎么做和触发条件、现在什么行情、什么情况做什么。
+    analysis=False（结论没变、没到 30 分钟）只推成交，不推分析。"""
     quotes = quotes or {}
     portfolio = latest["portfolio"]
     execution = latest["execution"]
@@ -479,7 +508,8 @@ def notify_result(notifier, record: dict, latest: dict, reconciled: bool, quotes
         + f"｜模拟成交 {len(execution.get('fills', []))} 笔｜对账{'一致' if reconciled else '异常'}",
         "仅为隔离模拟，不是真实委托。",
     ]
-    notifier.send(f"📊 {record['regime']}｜{record['action']}", "\n\n".join(sections))
+    if analysis:
+        notifier.send(f"📊 AI打首板｜{record['regime']}｜{record['action']}", "\n\n".join(sections))
     for fill in execution.get("fills", []):
         side = "买入" if fill["side"] == "buy" else "卖出"
         reason = orders.get(fill["code"], {}).get("reason", "")
@@ -560,7 +590,8 @@ def submit_answers(snapshot_path: Path = SNAPSHOT_PATH, answers_path: Path = ANS
     try:
         notify_result(notifier, record, latest, paper_status["reconciled"], quotes=quotes,
                       targets=snapshot.get("portfolioContext", {}).get("strategyTargets"),
-                      ladder=snapshot.get("portfolioContext", {}).get("themeLadder"))
+                      ladder=snapshot.get("portfolioContext", {}).get("themeLadder"),
+                      analysis=push_due(record, bool(latest["execution"].get("fills")), PUSH_STATE_PATH))
     except Exception as exc:
         notification_error = str(exc)
     result = {"ok": True, "decisionId": record["id"], "strategyId": latest["id"],
