@@ -203,9 +203,16 @@ def _daily() -> dict:
 def _flex(now: datetime) -> dict | None:
     """到了灵活交易的关键时点就让每位交易员各跑一轮（想：调 DeepSeek，写订单文件，推送）；都没到返回 None。
     一位失败（超时、格式错）只记在自己名下，不影响另一位。"""
-    from dashboard import flex_trader
+    from dashboard import flex_trader, manager
     from jevq.notify import notifier_from_env
     out = {}
+    mslot = manager.due_slot(now)
+    if mslot is not None:                # 交易台经理先跑（dj 2026-11-09）：同一轮交易员就能读到新指令；经理失败交易员照旧
+        try:
+            out["manager"] = manager.run_manager(now, mslot, gather=manager.gather_scene, ask=flex_trader.ask_workbuddy,
+                                                 notifier=notifier_from_env())
+        except Exception as e:                                   # noqa: BLE001
+            out["manager"] = {"slot": mslot, "error": f"{type(e).__name__}: {str(e)[:200]}"}
     for sid, trader in flex_trader.TRADERS.items():
         slot = flex_trader.due_slot(now, trader.state_path)
         if slot is None:

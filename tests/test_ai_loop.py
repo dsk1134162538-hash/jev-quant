@@ -175,6 +175,24 @@ def test_flex_hook_runs_every_trader_and_one_traders_failure_does_not_skip_the_o
     assert ai_loop._flex(at(2, 10, 1)) is None
 
 
+def test_flex_hook_runs_the_manager_first_so_traders_see_todays_directive(monkeypatch):
+    # 交易台经理（dj 2026-11-09）：经理到点先跑，交易员同一轮读到新指令；经理失败不挡交易员
+    from dashboard import flex_trader, manager
+    ran = []
+
+    def fake_manager(now, slot, **kw):
+        ran.append("manager")
+        raise TimeoutError("经理超时")
+    monkeypatch.setattr(manager, "run_manager", fake_manager)
+    monkeypatch.setattr(manager, "due_slot", lambda now, state_path=None: "09:26")
+    monkeypatch.setattr(flex_trader, "run_cycle", lambda now, slot, *, trader, **kw: ran.append(trader.sid) or {"slot": slot})
+    monkeypatch.setattr(flex_trader, "due_slot", lambda now, state_path: "09:26")
+    monkeypatch.setattr("jevq.notify.notifier_from_env", lambda: object())
+    out = ai_loop._flex(at(2, 9, 27))
+    assert ran == ["manager", "aiflex", "aiflex2"]
+    assert "TimeoutError" in out["manager"]["error"] and out["aiflex"]["slot"] == "09:26"
+
+
 def test_flex_runs_at_key_times_and_its_failures_never_count_as_main_loop_failures():
     # AI 灵活交易（dj 2026-11-03）：每次循环都问一下「到点了吗」；它自己的失败只记日志，不触发主循环的退避和告警
     seen = []

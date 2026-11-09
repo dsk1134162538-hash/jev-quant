@@ -24,7 +24,9 @@ ACCOUNTS = ("regime_main", "rebound_main", "lowbuy_main", "board_main",
             "rebound_shadow", "lowbuy_shadow", "board_shadow")
 MAIN_ACCOUNTS = ACCOUNTS[:4]
 AI_ACCOUNTS = tuple(config.STRATEGIES["aiboard"]["accounts"])   # AI 打首板，单独放在右栏
-INDEX_CODES = {"000001", "399001", "399006"}     # 和个股代码会撞（平安银行 000001），持仓里遇到就不进秒级通道
+FLEX_ACCOUNTS = tuple(a for sid in ("aiflex", "aiflex2") if sid in config.STRATEGIES
+                      for a in config.STRATEGIES[sid]["accounts"])   # 交易台页的 DeepSeek 交易员持仓也走秒级行情
+INDEX_CODES ={"000001", "399001", "399006"}     # 和个股代码会撞（平安银行 000001），持仓里遇到就不进秒级通道
 GATEWAY_URL = "http://127.0.0.1:5000/health"
 CURVE_DAYS = 30
 
@@ -57,7 +59,7 @@ class TerminalData:
             try:
                 conn = _ro(self.db_path)
                 try:
-                    accts = ACCOUNTS + AI_ACCOUNTS
+                    accts = ACCOUNTS + AI_ACCOUNTS + FLEX_ACCOUNTS
                     marks = ",".join("?" * len(accts))
                     codes = [r[0] for r in conn.execute(
                         f"SELECT DISTINCT code FROM positions WHERE account IN ({marks}) AND shares > 0", accts)]

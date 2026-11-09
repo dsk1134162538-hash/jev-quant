@@ -384,6 +384,7 @@ export default function Terminal({ onDetail }) {
         <span className={`t-phase ${phase === '盘中' ? 'on' : ''}`}>{phase}</span>
         <Clock iso={data?.now} />
         <IndexTape markets={markets} />
+        <button className="t-link" onClick={() => { window.location.hash = '' }}>交易台</button>
         <button className="t-link" onClick={onDetail}>详细记录</button>
       </header>
       <Breadth market={data?.market} />

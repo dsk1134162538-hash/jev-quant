@@ -108,6 +108,13 @@ class DashboardService:
         return self.terminal.payload(self._quotes, self.market.payload().get("marketBreadth", {}),
                                      status["account"] if status else None, self.journal.records(), status)
 
+    def desk_payload(self) -> dict:
+        """交易台页（dj 2026-11-09）：岗位卡、经理指令、交易员漏斗、事件日志（只读）。"""
+        from dashboard.desk import desk_payload
+        self._refresh_quotes()
+        return desk_payload(self.db_path, ROOT / "dashboard" / "runtime", self._quotes,
+                            self.market.payload().get("marketBreadth", {}))
+
     @staticmethod
     def _default_decision_judge():
         if os.environ.get("DASHBOARD_DECISION_SOURCE", "subscription") != "api" or not os.environ.get("KIMI_API_KEY"):
@@ -383,6 +390,12 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/api/dashboard":
             try:
                 self._json(200, self.service.payload())
+            except Exception as exc:
+                self._json(503, {"ok": False, "error": str(exc)})
+            return
+        if self.path == "/api/desk":
+            try:
+                self._json(200, self.service.desk_payload())
             except Exception as exc:
                 self._json(503, {"ok": False, "error": str(exc)})
             return

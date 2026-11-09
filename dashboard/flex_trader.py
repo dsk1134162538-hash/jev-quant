@@ -128,6 +128,7 @@ class Trader:
     orders_path: Path
     log_path: Path
     state_path: Path
+    style: str = ""                 # 给经理看的一句话：这位擅长什么行情
 
     @property
     def account(self) -> str:
@@ -135,9 +136,10 @@ class Trader:
 
 
 TRADERS = {
-    "aiflex": Trader("aiflex", "AI灵活交易", SYSTEM_PROMPT, ORDERS_PATH, LOG_PATH, STATE_PATH),
+    "aiflex": Trader("aiflex", "AI灵活交易", SYSTEM_PROMPT, ORDERS_PATH, LOG_PATH, STATE_PATH,
+                     "题材情绪型：打板、接力、弱转强、补涨，吃连板梯队和龙头溢价"),
     "aiflex2": Trader("aiflex2", "AI趋势交易员", TREND_PROMPT, RUNTIME / "flex2_orders.json", RUNTIME / "flex2_log.jsonl",
-                      RUNTIME / "flex2_state.json"),
+                      RUNTIME / "flex2_state.json", "趋势/强势跟随：不打板，买放量走强、回踩不破的票，持有 1~5 天"),
 }
 
 
@@ -322,11 +324,27 @@ def run_cycle(now: datetime, slot: str, *, gather, ask, orders_path: Path | None
               state_path: Path | None = None, notifier=None, clock=None, trader: Trader | None = None) -> dict:
     """gather(now, slot) -> ctx；ask(system, prompt, schema) -> 回答 dict。失败（超时、格式错）直接抛出，不记为已跑，窗口内还会再试。
     trader 选哪位交易员（提示词、订单文件、日志、时点记录各自独立）；不传就是一号。"""
+    from dashboard import manager
     trader = trader or TRADERS["aiflex"]
     orders_path, log_path, state_path = orders_path or trader.orders_path, log_path or trader.log_path, state_path or trader.state_path
     ctx = gather(now, slot)
-    system, prompt = build_prompt(ctx, trader)
-    result = validate_answer(ask(system, prompt, answer_schema(ctx)), ctx)
+    directive = manager.directive_for(trader.sid, now, manager.DIRECTIVE_PATH)   # 交易台经理今天对我的指令（没有就照旧）
+    if directive:
+        ctx["manager"] = {k: directive.get(k) for k in ("regime", "buy", "maxPct", "why", "slot")}
+    if directive and not directive["buy"] and not ctx.get("account", {}).get("positions"):
+        # 经理关了开仓、手上又没票：这一轮没什么可想的，不花一次 DeepSeek
+        skipped = f"经理关了开仓（{directive['regime']}），空仓不调用"
+        result = {"snapshotId": ctx["snapshotId"], "analysis": {"market": "", "stage": "—", "plan": ""}, "orders": [],
+                  "rawOrders": 0, "dropped": [], "next": "", "skipped": skipped}
+    else:
+        system, prompt = build_prompt(ctx, trader)
+        if directive:
+            system += (f"\n\n【交易台经理的指令（{directive['slot']}）】今天判断为{directive['regime']}；你今天"
+                       + (f"可以开新仓，单笔不超过 {directive['maxPct']:.0%}" if directive["buy"] else "不开新仓，只管持仓（该卖就卖）")
+                       + f"。理由：{directive['why']}。买单超出指令会被程序丢弃或压到上限。")
+        result = manager.apply_directive(validate_answer(ask(system, prompt, answer_schema(ctx)), ctx), directive)
+    result["manager"] = ctx.get("manager")
+    result["candidates"] = len(ctx.get("quotes") or {})
     Path(orders_path).parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(orders_path).with_suffix(".tmp")
     wrote_at = clock() if clock else now          # 订单有效期从写入这一刻算：模型一轮可能要几分钟
@@ -336,13 +354,15 @@ def run_cycle(now: datetime, slot: str, *, gather, ask, orders_path: Path | None
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps({"ts": now.isoformat(timespec="seconds"), "slot": slot, **result}, ensure_ascii=False) + "\n")
     mark_done(slot, now, state_path)
-    if notifier is not None:
+    if notifier is not None and not result.get("skipped"):
         a = result["analysis"]
         acct = ctx.get("account", {})
         orders = "\n".join(_order_line(o, ctx) for o in result["orders"]) or "本轮不动（没把握就空着）"
         if result["dropped"]:
             orders += "\n⚠ 被丢弃：" + "；".join(f"{d['action']}{d['code']}（{d['why']}）" for d in result["dropped"])
-        sections = [f"{now:%H:%M}｜阶段：{a['stage']}", *picks_text(result, ctx, trader.sid == "aiflex"),
+        m = result.get("manager")
+        boss = [f"【经理】{m['regime']}｜{'开新仓，单笔≤' + format(m['maxPct'] or 0, '.0%') if m['buy'] else '关新仓，只管持仓'}｜{m['why']}"] if m else []
+        sections = [f"{now:%H:%M}｜阶段：{a['stage']}", *boss, *picks_text(result, ctx, trader.sid == "aiflex"),
                     "【判断】" + a["market"], "【计划】" + a["plan"], "【订单】\n" + orders,
                     f"【账户】净值 {acct.get('equity', 0):,.0f}｜现金 {acct.get('cash', 0):,.0f}｜持仓 "
                     f"{len(acct.get('positions', []))} 只｜{acct.get('guards', '')}",
@@ -352,7 +372,10 @@ def run_cycle(now: datetime, slot: str, *, gather, ask, orders_path: Path | None
             notifier.flush(timeout=55)
         except Exception:                                          # noqa: BLE001
             pass
-    return {"slot": slot, "orders": len(result["orders"]), "stage": result["analysis"]["stage"]}
+    out = {"slot": slot, "orders": len(result["orders"]), "stage": result["analysis"]["stage"]}
+    if result.get("skipped"):
+        out["skipped"] = result["skipped"]
+    return out
 
 
 def ask_workbuddy(system: str, prompt: str, schema: dict, model: str | None = None, timeout: float = 240.0,

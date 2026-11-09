@@ -34,6 +34,11 @@ def _isolated_targets_file(monkeypatch, tmp_path):
     monkeypatch.setattr("jevq.strategies.flex.ORDERS_PATH", tmp_path / "flex_orders.json")
     monkeypatch.setattr("jevq.strategies.flex.ORDERS2_PATH", tmp_path / "flex2_orders.json")
     monkeypatch.setattr("dashboard.subscription_bridge.PUSH_STATE_PATH", tmp_path / "board_push_state.json")
+    # 交易台经理的指令 / 日志 / 汇报：测试写到临时目录，也不读到本机真实的当天指令
+    monkeypatch.setattr("dashboard.manager.DIRECTIVE_PATH", tmp_path / "manager_directive.json")
+    monkeypatch.setattr("dashboard.manager.LOG_PATH", tmp_path / "manager_log.jsonl")
+    monkeypatch.setattr("dashboard.manager.STATE_PATH", tmp_path / "manager_state.json")
+    monkeypatch.setattr("dashboard.manager.REPORTS_PATH", tmp_path / "desk_reports.json")
 
 
 @pytest.fixture(autouse=True)
