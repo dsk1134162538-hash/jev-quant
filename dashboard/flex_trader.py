@@ -29,6 +29,7 @@ STATE_PATH = RUNTIME / "flex_state.json"
 SLOTS = ("09:26", "10:00", "10:30", "11:15", "13:20", "14:00", "14:35")
 SLOT_WINDOW = timedelta(minutes=20)       # 时点过了 20 分钟还没跑就不补了（行情早就变了）
 MAX_ORDERS_PER_CYCLE = 3
+MAX_PICKS = 6
 STAGES = ("冰点", "启动", "发酵", "高潮", "分歧", "退潮", "混沌")
 
 SYSTEM_PROMPT = (
@@ -69,6 +70,10 @@ SYSTEM_PROMPT = (
     "这是参考信号，不是开关，有盘感可以突破，标「模式外」。\n\n"
     "输出要求：先写判断（market：大盘一两句；stage：冰点/启动/发酵/高潮/分歧/退潮/混沌 之一；plan：接下来盯什么），"
     "再给订单（可以为空：没把握就不动）。每轮最多 3 张订单。只能从 context.quotes 里挑买入标的，卖出只能卖 account.positions 里的持仓。"
+    "订单的 action 只能写「买入」或「卖出」两个中文词。\n"
+    "最后给 picks：这一轮你看过的票里最值得说的 3~6 只（code 用 quotes 或持仓里的 6 位代码），verdict 写「推荐」或「不推荐」，"
+    "why 一句话说为什么（推荐写买点和止损位，不推荐写卡在哪：已封板追不进、高位放量滞涨、题材退潮……）。"
+    "dj 会看这份清单决定自己要不要手动买，所以要具体；orders 里的买入自动算推荐，不用重复写。"
 )
 
 
@@ -166,7 +171,11 @@ def answer_schema(ctx: dict) -> dict:
                                                        "stage": {"enum": list(STAGES)},
                                                        "plan": {"type": "string", "maxLength": 300}}},
                            "orders": {"type": "array", "maxItems": MAX_ORDERS_PER_CYCLE, "items": order},
-                           "next": {"type": "string", "maxLength": 200}}}
+                           "next": {"type": "string", "maxLength": 200},
+                           "picks": {"type": "array", "maxItems": MAX_PICKS, "items": {
+                               "type": "object", "additionalProperties": False, "required": ["code", "verdict", "why"],
+                               "properties": {"code": {"type": "string"}, "verdict": {"enum": ["推荐", "不推荐"]},
+                                              "why": {"type": "string", "maxLength": 60}}}}}}
 
 
 def build_prompt(ctx: dict, trader: Trader | None = None) -> tuple[str, str]:
@@ -241,7 +250,45 @@ def validate_answer(answer, ctx: dict) -> dict:
     a = answer.get("analysis") if isinstance(answer.get("analysis"), dict) else {}
     return {"snapshotId": ctx["snapshotId"], "analysis": {"market": _text(a.get("market"), 300), "stage": _text(a.get("stage"), 10),
                                                          "plan": _text(a.get("plan"), 300)},
-            "orders": orders, "rawOrders": len(raw_orders), "dropped": dropped, "next": _text(answer.get("next"), 200)}
+            "orders": orders, "rawOrders": len(raw_orders), "dropped": dropped, "next": _text(answer.get("next"), 200),
+            "picks": _picks(answer, quotes | held, {o["code"] for o in orders if o["action"] == "买入"})}
+
+
+def _picks(answer: dict, known: set, bought: set) -> list[dict]:
+    """推荐 / 不推荐清单（dj 2026-11-09：参考着手动买）：只留候选或持仓里的代码，已经下了买单的不重复，最多 MAX_PICKS 只。"""
+    out, seen = [], set(bought)
+    for p in answer.get("picks") or []:
+        if not isinstance(p, dict):
+            continue
+        code = str(p.get("code", ""))
+        verdict = "推荐" if str(p.get("verdict")) == "推荐" else "不推荐" if str(p.get("verdict")) == "不推荐" else None
+        if code in known and code not in seen and verdict:
+            seen.add(code)
+            out.append({"code": code, "verdict": verdict, "why": _text(p.get("why"), 60)})
+    return out[:MAX_PICKS]
+
+
+def _quote_tag(code: str, ctx: dict) -> str:
+    q = ctx.get("quotes", {}).get(code) or {}
+    tag = f"{code} {q.get('name', '')}".rstrip()
+    if q.get("price"):
+        tag += f" {q['price']}"
+    if isinstance(q.get("pct"), (int, float)):
+        tag += f" {q['pct']:+.1f}%"
+    return tag
+
+
+def picks_text(result: dict, ctx: dict, with_targets: bool) -> list[str]:
+    """推送里的三段：推荐（买单 + 推荐）、不推荐、规则策略标的（只附在一号的推送里，不重复推两遍）。"""
+    rec = [f"✅ {_quote_tag(o['code'], ctx)}｜{o.get('reason') or ''}" + (f"（止损 {o['stop']}）" if o.get("stop") else "")
+           for o in result["orders"] if o["action"] == "买入"]
+    rec += [f"✅ {_quote_tag(p['code'], ctx)}｜{p['why']}" for p in result.get("picks", []) if p["verdict"] == "推荐"]
+    rej = [f"❌ {_quote_tag(p['code'], ctx)}｜{p['why']}" for p in result.get("picks", []) if p["verdict"] == "不推荐"]
+    out = ["【推荐】\n" + ("\n".join(rec) or "无"), "【不推荐】\n" + ("\n".join(rej) or "无")]
+    targets = ctx.get("strategyTargets") or []
+    if with_targets and targets:
+        out.append("【规则策略标的】\n" + "\n".join(f"{t.get('strategy')} {t.get('code')} {t.get('name', '')}｜{t.get('plan', '')}" for t in targets))
+    return out
 
 
 # ---------- 一轮 ----------
@@ -277,7 +324,8 @@ def run_cycle(now: datetime, slot: str, *, gather, ask, orders_path: Path | None
         orders = "\n".join(_order_line(o, ctx) for o in result["orders"]) or "本轮不动（没把握就空着）"
         if result["dropped"]:
             orders += "\n⚠ 被丢弃：" + "；".join(f"{d['action']}{d['code']}（{d['why']}）" for d in result["dropped"])
-        sections = [f"{now:%H:%M}｜阶段：{a['stage']}", "【判断】" + a["market"], "【计划】" + a["plan"], "【订单】\n" + orders,
+        sections = [f"{now:%H:%M}｜阶段：{a['stage']}", *picks_text(result, ctx, trader.sid == "aiflex"),
+                    "【判断】" + a["market"], "【计划】" + a["plan"], "【订单】\n" + orders,
                     f"【账户】净值 {acct.get('equity', 0):,.0f}｜现金 {acct.get('cash', 0):,.0f}｜持仓 "
                     f"{len(acct.get('positions', []))} 只｜{acct.get('guards', '')}",
                     "订单由 daemon 按实时行情执行（10 分钟内有效，价格偏离参考价超过 2% 不追），成交另推；模拟账户，不是真实委托。"]

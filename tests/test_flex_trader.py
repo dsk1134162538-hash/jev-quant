@@ -328,3 +328,32 @@ def test_validate_understands_english_or_alternative_action_fields_instead_of_dr
     weird = _good_answer(action="hold")
     d = ft.validate_answer(weird, ctx)["dropped"][0]
     assert d["why"] == "动作不是买入/卖出" and "keys" in d                        # 丢掉时留下原始字段，查得出模型写了什么
+
+
+def test_push_lists_recommended_and_rejected_stocks_and_rule_strategy_targets(tmp_path):
+    # dj 2026-11-09：「我要看各个策略推荐和不推荐什么票，我会参考要不要买」
+    ctx = _ctx()
+    ctx["quotes"]["600001"].update(price=10.0, pct=3.0)
+    ctx["strategyTargets"] = [{"strategy": "高标接力", "code": "601599", "name": "高标甲", "plan": "5 板；竞价高开 +7.10%，超过 6%，预期已打满，不买"}]
+    ans = _good_answer()
+    ans["picks"] = [{"code": "600002", "verdict": "不推荐", "why": "冲高无量，等回踩"},
+                    {"code": "600999", "verdict": "推荐", "why": "编的代码"},                # 不在候选里的丢掉
+                    {"code": "600001", "verdict": "推荐", "why": "重复，订单里已有"}]
+    n = Notifier()
+    ft.run_cycle(at(10, 0), "10:00", gather=lambda now, slot: ctx, ask=lambda *a: ans, orders_path=tmp_path / "o.json",
+                 log_path=tmp_path / "l.jsonl", state_path=tmp_path / "s.json", notifier=n)
+    body = n.messages[0][1]
+    rec, rej, rule = body.index("【推荐】"), body.index("【不推荐】"), body.index("【规则策略标的】")
+    assert rec < rej < rule
+    assert "✅ 600001 甲 10.0 +3.0%" in body and "龙头 5 板" in body                 # 买单自动算推荐，带理由
+    assert body.count("600001") >= 1 and "600999" not in body
+    assert "❌ 600002 乙" in body and "冲高无量" in body
+    assert "高标接力 601599 高标甲" in body and "不买" in body
+    assert json.loads((tmp_path / "l.jsonl").read_text(encoding="utf-8").splitlines()[-1])["picks"][0]["code"] == "600002"
+
+
+def test_schema_and_prompt_ask_for_picks():
+    schema = ft.answer_schema(_ctx())
+    assert "picks" in schema["properties"]
+    assert set(schema["properties"]["picks"]["items"]["properties"]["verdict"]["enum"]) == {"推荐", "不推荐"}
+    assert "picks" in ft.SYSTEM_PROMPT and "picks" in ft.TREND_PROMPT
