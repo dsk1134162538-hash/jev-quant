@@ -30,6 +30,24 @@ SLOTS = ("09:26", "10:00", "10:30", "11:15", "13:20", "14:00", "14:35")
 SLOT_WINDOW = timedelta(minutes=20)       # 时点过了 20 分钟还没跑就不补了（行情早就变了）
 MAX_ORDERS_PER_CYCLE = 3
 MAX_PICKS = 6
+DEFAULT_PCT = 0.10              # 模型没写仓位时按试错额度（单笔 10% 净值），不整单拒（2026-11-09 13:20：5 张单 pct 为空全被拒）
+_PCT_KEYS = ("pct", "position", "size", "weight", "ratio", "仓位", "仓位比例", "比例")
+
+
+def _pct_of(raw: dict) -> float:
+    """仓位比例：认 "10%"、15（当百分数）、0.08，以及别的字段名；没写按 DEFAULT_PCT，超上限压到上限。"""
+    for key in _PCT_KEYS:
+        v = raw.get(key)
+        if v is None or v == "":
+            continue
+        s = str(v).strip()
+        num = _number(s.rstrip("%"))
+        if num is None or num <= 0:
+            continue
+        if s.endswith("%") or num > 1:
+            num /= 100
+        return round(min(num, config.FLEX_MAX_PCT), 4)
+    return DEFAULT_PCT
 STAGES = ("冰点", "启动", "发酵", "高潮", "分歧", "退潮", "混沌")
 
 SYSTEM_PROMPT = (
@@ -70,7 +88,7 @@ SYSTEM_PROMPT = (
     "这是参考信号，不是开关，有盘感可以突破，标「模式外」。\n\n"
     "输出要求：先写判断（market：大盘一两句；stage：冰点/启动/发酵/高潮/分歧/退潮/混沌 之一；plan：接下来盯什么），"
     "再给订单（可以为空：没把握就不动）。每轮最多 3 张订单。只能从 context.quotes 里挑买入标的，卖出只能卖 account.positions 里的持仓。"
-    "订单的 action 只能写「买入」或「卖出」两个中文词。\n"
+    "订单的 action 只能写「买入」或「卖出」两个中文词；买入的 pct 写占账户净值的小数（0.1 表示 10%），reason 必须写。\n"
     "最后给 picks：这一轮你看过的票里最值得说的 3~6 只（code 用 quotes 或持仓里的 6 位代码），verdict 写「推荐」或「不推荐」，"
     "why 一句话说为什么（推荐写买点和止损位，不推荐写卡在哪：已封板追不进、高位放量滞涨、题材退潮……）。"
     "dj 会看这份清单决定自己要不要手动买，所以要具体；orders 里的买入自动算推荐，不用重复写。"
@@ -241,9 +259,9 @@ def validate_answer(answer, ctx: dict) -> dict:
                 dropped.append({"action": action, "code": code, "why": "超过每轮上限"})
                 continue
             orders.append({"id": f"{ctx['snapshotId']}-{len(orders) + 1}", "action": action, "code": code,
-                           "pct": _number(raw.get("pct")), "stop": _number(raw.get("stop")), "ref_price": _number(raw.get("ref_price")),
+                           "pct": _pct_of(raw) if action == "买入" else _number(raw.get("pct")), "stop": _number(raw.get("stop")), "ref_price": _number(raw.get("ref_price")),
                            "invalid": _text(raw.get("invalid"), 80), "mode": raw.get("mode"), "pattern": _text(raw.get("pattern"), 20),
-                           "reason": _text(raw.get("reason"), 120)})
+                           "reason": _text(next((raw[k] for k in ("reason", "理由", "why", "原因") if raw.get(k)), ""), 120)})
         else:
             dropped.append({"action": str(action), "code": code, "why": "动作不是买入/卖出",
                             "keys": {k: str(v)[:20] for k, v in raw.items() if k not in ("reason", "invalid")}})

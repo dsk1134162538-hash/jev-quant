@@ -352,6 +352,24 @@ def test_push_lists_recommended_and_rejected_stocks_and_rule_strategy_targets(tm
     assert json.loads((tmp_path / "l.jsonl").read_text(encoding="utf-8").splitlines()[-1])["picks"][0]["code"] == "600002"
 
 
+def test_validate_reads_position_size_and_reason_from_alternative_fields():
+    # 2026-11-09 13:20 实盘：5 张买单 pct 为空、reason 为空，执行器全按「仓位比例无效」拒掉；模型在计划里写了「单笔 ≤10% 净值」
+    ctx = _ctx()
+    for raw, want in (({"pct": "10%"}, 0.10), ({"pct": 15}, 0.15), ({"position": 0.08}, 0.08), ({"仓位": "12%"}, 0.12),
+                      ({"size": "0.2"}, 0.2), ({}, ft.DEFAULT_PCT)):
+        ans = _good_answer()
+        ans["orders"][0].pop("pct")
+        ans["orders"][0].update(raw)
+        assert ft.validate_answer(ans, ctx)["orders"][0]["pct"] == pytest.approx(want), raw
+    ans = _good_answer()
+    ans["orders"][0].pop("reason")
+    ans["orders"][0]["理由"] = "放量突破"
+    assert ft.validate_answer(ans, ctx)["orders"][0]["reason"] == "放量突破"
+    over = _good_answer(pct=0.9)
+    assert ft.validate_answer(over, ctx)["orders"][0]["pct"] == ft.config.FLEX_MAX_PCT       # 超上限压到上限，不整单拒
+    assert "pct" in ft.SYSTEM_PROMPT and "0.1" in ft.SYSTEM_PROMPT
+
+
 def test_schema_and_prompt_ask_for_picks():
     schema = ft.answer_schema(_ctx())
     assert "picks" in schema["properties"]
