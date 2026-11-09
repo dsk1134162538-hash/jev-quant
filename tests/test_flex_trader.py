@@ -310,3 +310,21 @@ def test_gather_context_survives_missing_snapshot_theme_data_and_empty_account(t
     ctx = ft.gather_context(at(10, 0), "10:00", db_path=path, snapshot_path=tmp_path / "none.json", fetch_quotes=lambda codes: {},
                             fetch_rows=boom, log_path=tmp_path / "log.jsonl", theme_cache=tmp_path / "theme.json")
     assert ctx["themeLadder"] == [] and ctx["quotes"] == {} and ctx["account"]["positions"] == []
+
+
+def test_validate_understands_english_or_alternative_action_fields_instead_of_dropping_every_buy():
+    # 2026-11-09 实盘：两位交易员 10:00/10:30/11:15 共提名 14 张单，动作字段是空的或写成 "buy"，全按「动作不是买入/卖出」丢掉，一天 0 成交
+    ctx = _ctx()
+    for raw in ({"action": "buy"}, {"action": "BUY"}, {"action": None, "side": "买入"}, {"side": "buy"}, {"type": "买"}):
+        ans = _good_answer()
+        ans["orders"][0].pop("action")
+        ans["orders"][0].update(raw)
+        out = ft.validate_answer(ans, ctx)
+        assert [o["action"] for o in out["orders"]] == ["买入"], raw
+    sell = _good_answer(code="600002")
+    sell["orders"][0].pop("action")
+    sell["orders"][0]["side"] = "sell"
+    assert ft.validate_answer(sell, ctx)["orders"][0]["action"] == "卖出"
+    weird = _good_answer(action="hold")
+    d = ft.validate_answer(weird, ctx)["dropped"][0]
+    assert d["why"] == "动作不是买入/卖出" and "keys" in d                        # 丢掉时留下原始字段，查得出模型写了什么

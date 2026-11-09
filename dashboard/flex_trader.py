@@ -189,6 +189,27 @@ def _number(value):
     return v if v == v else None
 
 
+_BUY_WORDS = {"买入", "买", "buy", "long", "开仓", "加仓"}
+_SELL_WORDS = {"卖出", "卖", "sell", "平仓", "清仓", "减仓"}
+_ACTION_KEYS = ("action", "side", "type", "direction", "op", "操作", "动作")
+
+
+def _action_of(raw: dict):
+    """2026-11-09 实盘：模型的动作写成 "buy" 或放在别的字段里，校验只认「买入/卖出」，一天 14 张单全丢。这里先认出来再判。"""
+    for key in _ACTION_KEYS:
+        word = str(raw.get(key) or "").strip().lower()
+        if word in _BUY_WORDS:
+            return "买入"
+        if word in _SELL_WORDS:
+            return "卖出"
+    words = {str(v).strip().lower() for k, v in raw.items() if k not in ("reason", "invalid", "pattern") and isinstance(v, str)}
+    if words & _BUY_WORDS and not words & _SELL_WORDS:          # 字段名不认识，但值明确写着买 / 卖
+        return "买入"
+    if words & _SELL_WORDS and not words & _BUY_WORDS:
+        return "卖出"
+    return raw.get("action")
+
+
 def validate_answer(answer, ctx: dict) -> dict:
     """答案校验：编号必须对；订单只留代码在候选/持仓里的（模型编的代码丢掉）；每轮最多 MAX_ORDERS_PER_CYCLE 张。
     字段合不合规（止损位、模式…）由执行器按护栏判，这里只做类型整理。"""
@@ -201,7 +222,7 @@ def validate_answer(answer, ctx: dict) -> dict:
     orders, dropped = [], []
     raw_orders = [r for r in (answer.get("orders") or []) if isinstance(r, dict)]
     for raw in raw_orders:
-        action, code = raw.get("action"), str(raw.get("code", ""))
+        action, code = _action_of(raw), str(raw.get("code", ""))
         if action == "买入" and code not in quotes:
             dropped.append({"action": action, "code": code, "why": "不在候选里"})
         elif action == "卖出" and code not in held:
@@ -215,7 +236,8 @@ def validate_answer(answer, ctx: dict) -> dict:
                            "invalid": _text(raw.get("invalid"), 80), "mode": raw.get("mode"), "pattern": _text(raw.get("pattern"), 20),
                            "reason": _text(raw.get("reason"), 120)})
         else:
-            dropped.append({"action": str(action), "code": code, "why": "动作不是买入/卖出"})
+            dropped.append({"action": str(action), "code": code, "why": "动作不是买入/卖出",
+                            "keys": {k: str(v)[:20] for k, v in raw.items() if k not in ("reason", "invalid")}})
     a = answer.get("analysis") if isinstance(answer.get("analysis"), dict) else {}
     return {"snapshotId": ctx["snapshotId"], "analysis": {"market": _text(a.get("market"), 300), "stage": _text(a.get("stage"), 10),
                                                          "plan": _text(a.get("plan"), 300)},
