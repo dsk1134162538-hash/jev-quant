@@ -445,7 +445,8 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     if sc is not None:
         customs = [*customs, ("smallcap", sc)]
     _write_strategy_targets(today, getattr(relay, "streaks", {}) if relay is not None else {},
-                            getattr(wts, "pool", {}) if wts is not None else {}, log)
+                            getattr(wts, "pool", {}) if wts is not None else {}, log,
+                            bz=getattr(bz, "pool", {}) if bz is not None else {})
     if plan_lines:
         try:
             notifier.send(f"📋 今日各策略 {today:%m-%d}",
@@ -837,14 +838,14 @@ def _load_relay(conn, ledger: Ledger, today: date, universe: dict, notice_judge,
 
 
 def _write_strategy_targets(today: date, streaks: dict, pool: dict, log: Callable[[str], None],
-                            path: Path | None = None) -> None:
+                            path: Path | None = None, bz: dict | None = None) -> None:
     """把今天高标接力 / 弱转强的标的写给 AI 复盘推送看（dashboard/subscription_bridge._strategy_targets）。只是展示，出错只记日志。"""
     path = path or TARGETS_PATH
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {"date": today.isoformat(),
                 "relay": {c: n for c, n in streaks.items() if n >= config.RELAY_MIN_STREAK},
-                "wts": dict(pool)}
+                "wts": dict(pool), "bz": dict(bz or {})}      # bz：补涨候选 {代码: {题材, 龙头板数}}，策略交易员读
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)

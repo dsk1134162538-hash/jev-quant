@@ -182,5 +182,20 @@ def desk_payload(db_path: Path | None, runtime_dir: Path, quotes: dict, market_b
             conn.close()
     log.sort(key=lambda e: e["t"], reverse=True)
     calls = len(history) + sum(1 for t in traders for r in t["rounds"] if not r.get("skipped"))
+    strategy = _strategy_desk(rt / "desk_submissions.json", day)
     return {"now": now.isoformat(timespec="seconds"), "roles": roles, "rolesAt": reports.get("ts") if roles else None,
-            "manager": manager, "traders": traders, "log": log[:120], "params": _params(), "calls": calls}
+            "manager": manager, "traders": traders, "strategyDesk": strategy, "log": log[:120], "params": _params(), "calls": calls}
+
+
+def _strategy_desk(path: Path, day: str) -> dict | None:
+    """策略交易员 → 经理（dashboard/strategy_desk）最近一轮的提交，只认今天的；证据太长，面板不要。"""
+    try:
+        rec = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if rec.get("date") != day:
+        return None
+    slim = lambda rows: [{k: v for k, v in r.items() if k != "evidence"} for r in rows or []]      # noqa: E731
+    return {"slot": rec.get("slot"), "ts": rec.get("ts"), "final": rec.get("final"),
+            "traders": [{**{k: t.get(k) for k in ("key", "label", "candidates", "passed", "rejected", "error")},
+                         "picks": slim(t.get("picks")), "vetoed": slim(t.get("vetoed"))} for t in rec.get("traders") or []]}

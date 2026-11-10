@@ -90,3 +90,17 @@ def test_yesterdays_directive_is_not_shown_as_today(tmp_path):
     rt = _runtime(tmp_path)
     p = desk.desk_payload(_db(tmp_path), rt, {}, {}, at(10, 0) + timedelta(days=1))
     assert p["manager"] is None
+
+
+def test_desk_payload_carries_todays_strategy_desk_without_evidence_and_ignores_old_days(tmp_path):
+    rt = _runtime(tmp_path)
+    rec = {"date": "2026-11-09", "slot": "09:26", "ts": "2026-11-09T09:27:00", "final": {"read": "r", "items": [], "fallback": False},
+           "traders": [{"key": "relay", "label": "高标接力官", "candidates": 2, "passed": 1, "rejected": [], "error": None,
+                        "picks": [{"code": "002086", "name": "甲", "why": "w", "evidence": {"big": 1}}], "vetoed": []}]}
+    (rt / "desk_submissions.json").write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    db = _db(tmp_path)
+    p = desk.desk_payload(db, rt, {}, {}, at(10, 0))
+    sd = p["strategyDesk"]
+    assert sd["slot"] == "09:26" and sd["traders"][0]["picks"] == [{"code": "002086", "name": "甲", "why": "w"}]
+    (rt / "desk_submissions.json").write_text(json.dumps({**rec, "date": "2026-11-08"}), encoding="utf-8")
+    assert desk.desk_payload(db, rt, {}, {}, at(10, 0))["strategyDesk"] is None

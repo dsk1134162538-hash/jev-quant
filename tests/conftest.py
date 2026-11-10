@@ -39,6 +39,10 @@ def _isolated_targets_file(monkeypatch, tmp_path):
     monkeypatch.setattr("dashboard.manager.LOG_PATH", tmp_path / "manager_log.jsonl")
     monkeypatch.setattr("dashboard.manager.STATE_PATH", tmp_path / "manager_state.json")
     monkeypatch.setattr("dashboard.manager.REPORTS_PATH", tmp_path / "desk_reports.json")
+    monkeypatch.setattr("dashboard.strategy_desk.TARGETS_PATH", tmp_path / "strategy_targets.json")
+    monkeypatch.setattr("dashboard.strategy_desk.SUBMIT_PATH", tmp_path / "desk_submissions.json")
+    monkeypatch.setattr("dashboard.strategy_desk.LOG_PATH", tmp_path / "desk_picks.jsonl")
+    monkeypatch.setattr("dashboard.strategy_desk.STATE_PATH", tmp_path / "desk_state.json")
 
 
 @pytest.fixture(autouse=True)
