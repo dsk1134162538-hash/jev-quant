@@ -104,3 +104,27 @@ def test_desk_payload_carries_todays_strategy_desk_without_evidence_and_ignores_
     assert sd["slot"] == "09:26" and sd["traders"][0]["picks"] == [{"code": "002086", "name": "甲", "why": "w"}]
     (rt / "desk_submissions.json").write_text(json.dumps({**rec, "date": "2026-11-08"}), encoding="utf-8")
     assert desk.desk_payload(db, rt, {}, {}, at(10, 0))["strategyDesk"] is None
+
+
+def test_positions_carry_the_stop_the_trader_set_and_how_far_price_is_from_it(tmp_path):
+    import sqlite3
+    db = _db(tmp_path)
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy, trace) VALUES (?, '600002', 'stop', '止损 18.0', 'aiflex', ?)",
+                 ("2026-11-09T09:40:00", json.dumps({"code": "600002", "stop": 18.0, "invalid": "跌破平台"})))
+    conn.commit()
+    conn.close()
+    p = desk.desk_payload(db, _runtime(tmp_path), {"600002": Q(20.0, 19.0)}, {}, at(10, 0))
+    pos = {t["sid"]: t["account"]["positions"] for t in p["traders"]}["aiflex"][0]
+    assert pos["stop"] == 18.0 and pos["toStop"] == -10.0           # 现价 20，离止损 18 还有 10%
+    assert all("stop" in x for t in p["traders"] for x in t["account"]["positions"])
+
+
+def test_manager_log_line_joins_a_list_of_falsify_conditions_into_plain_text(tmp_path):
+    rt = _runtime(tmp_path)
+    (rt / "manager_log.jsonl").write_text(json.dumps(
+        {"date": "2026-11-09", "slot": "09:26", "ts": "2026-11-09T09:26:40", "regime": "趋势日", "read": "r",
+         "traders": {"aiflex": {"buy": True}}, "falsify": ["涨停数 <30", "炸板率 >40%"]}, ensure_ascii=False) + "\n", encoding="utf-8")
+    p = desk.desk_payload(_db(tmp_path), rt, {}, {}, at(10, 0))
+    line = next(e["text"] for e in p["log"] if e["who"] == "经理")
+    assert "否证：涨停数 <30；炸板率 >40%" in line and "[" not in line

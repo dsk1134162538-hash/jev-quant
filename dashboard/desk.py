@@ -57,7 +57,27 @@ def _live_breadth(report: dict, mb: dict, now: datetime) -> dict:
             "ts": f"{now:%H:%M}", "live": True}
 
 
-def _account(conn, account: str, quotes: dict, day: str) -> tuple[dict, list]:
+def _joined(v) -> str:
+    """经理的否证条件有时是一条字符串、有时是好几条的列表；日志里统一成一句话，不把方括号和引号漏出去。"""
+    if isinstance(v, (list, tuple)):
+        return "；".join(str(x) for x in v if x) or "—"
+    return str(v) if v else "—"
+
+
+def _stop(conn, sid: str | None, code: str) -> float | None:
+    """交易员买入时自己定的止损价（和 jevq/strategies/flex.py 的 _stop_row 读同一条记录）。"""
+    if not sid:
+        return None
+    try:
+        row = conn.execute("SELECT trace FROM decisions WHERE strategy=? AND verdict='stop' AND code=? "
+                           "ORDER BY ts DESC, rowid DESC LIMIT 1", (sid, code)).fetchone()
+        stop = json.loads(row[0]).get("stop") if row and row[0] else None
+        return float(stop) if stop else None
+    except (sqlite3.Error, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _account(conn, account: str, quotes: dict, day: str, sid: str | None = None) -> tuple[dict, list]:
     cash_row = conn.execute("SELECT amount FROM cash WHERE account=?", (account,)).fetchone()
     capital = config.ACCOUNT_CAPITAL.get(account, config.FLEX_CAPITAL)
     if cash_row is None:
@@ -72,7 +92,8 @@ def _account(conn, account: str, quotes: dict, day: str) -> tuple[dict, list]:
             last = conn.execute("SELECT close FROM closes WHERE code=? ORDER BY date DESC LIMIT 1", (code,)).fetchone()
             price = last[0] if last else buy_price
         mv += price * shares
-        positions.append({"code": code, "name": getattr(q, "name", None) or code, "shares": shares, "price": round(price, 2),
+        stop = _stop(conn, sid, code)
+        positions.append({"code": code, "stop": stop, "toStop": round((stop / price - 1) * 100, 1) if stop and price else None, "name": getattr(q, "name", None) or code, "shares": shares, "price": round(price, 2),
                           "pct": round((q.price / q.pre_close - 1) * 100, 2) if q is not None and q.pre_close else None,
                           "pnl": round((price / buy_price - 1) * 100, 2) if buy_price else None, "buyDate": buy_date})
     equity = cash_row[0] + mv
@@ -133,7 +154,7 @@ def desk_payload(db_path: Path | None, runtime_dir: Path, quotes: dict, market_b
     for h in history:
         on = [ft.TRADERS[s].label for s, t in (h.get("traders") or {}).items() if s in ft.TRADERS and t.get("buy")]
         log.append({"t": str(h.get("ts", ""))[11:19], "who": "经理", "tag": "经理",
-                    "text": f"{h.get('regime')}｜开：{'、'.join(on) or '无'}｜否证：{h.get('falsify') or '—'}"})
+                    "text": f"{h.get('regime')}｜开：{'、'.join(on) or '无'}｜否证：{_joined(h.get('falsify'))}"})
 
     traders = []
     conn = None
@@ -149,7 +170,7 @@ def desk_payload(db_path: Path | None, runtime_dir: Path, quotes: dict, market_b
                                      "positions": []}, [], []
             if conn is not None:
                 try:
-                    account, curve = _account(conn, t.account, quotes, day)
+                    account, curve = _account(conn, t.account, quotes, day, sid)
                     fills = _fills(conn, t.account, day)
                 except sqlite3.Error:
                     pass

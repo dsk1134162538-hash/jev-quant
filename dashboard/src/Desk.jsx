@@ -34,6 +34,8 @@ function useDesk() {
 const tone = (v) => (v == null || Number.isNaN(v) || Math.abs(v) < 0.005 ? 'flat' : v > 0 ? 'up' : 'down')
 const pct = (v, d = 2) => (v == null || Number.isNaN(v) ? '—' : `${v > 0 ? '+' : ''}${Number(v).toFixed(d)}%`)
 const money = (v) => (v == null ? '—' : v >= 10000 ? `${(v / 1000).toFixed(1)}K` : Number(v).toFixed(0))
+const listOf = (v) => (Array.isArray(v) ? v.filter(Boolean) : v ? [v] : [])
+const firstSentence = (s) => { const m = String(s || '').match(/^.*?[。；;]/); return m ? m[0] : String(s || '') }
 const REGIME_TONE = { 打板日: 'up', 趋势日: 'amber', 混沌日: 'flat', 空仓日: 'down' }
 
 function phaseOf(iso) {
@@ -97,7 +99,10 @@ function Analysis({ data }) {
     <section className="d-card d-analysis">
       <header><h2>经理判断</h2><span className="mono d-dim">{m.slot} · 今天 {m.history?.length || 1} 次</span></header>
       <div className={`d-regime ${REGIME_TONE[m.regime] || ''}`}>{m.regime}</div>
-      <p className="d-read">{m.read}</p>
+      <p className="d-read">{firstSentence(m.read)}</p>
+      {String(m.read || '').length > firstSentence(m.read).length && (
+        <details className="d-more"><summary>看经理的完整解读</summary><p className="d-read">{m.read}</p></details>
+      )}
       <ul className="d-checks">
         {(data.traders || []).map((t) => {
           const d = t.directive
@@ -110,12 +115,15 @@ function Analysis({ data }) {
           )
         })}
       </ul>
-      <div className="d-falsify"><b>否证条件</b><span>{m.falsify || '—'}</span></div>
-      {m.watch && <div className="d-falsify watch"><b>接下来盯</b><span>{m.watch}</span></div>}
+      <div className="d-falsify"><b>看错的信号</b>
+        {listOf(m.falsify).length ? <ul>{listOf(m.falsify).map((f, i) => <li key={i}>{f}</li>)}</ul> : <span>—</span>}</div>
+      {listOf(m.watch).length > 0 && (
+        <div className="d-falsify watch"><b>接下来盯</b><ul>{listOf(m.watch).map((w, i) => <li key={i}>{w}</li>)}</ul></div>
+      )}
       {m.history?.length > 1 && (
         <ol className="d-history">
           {m.history.slice(0, -1).reverse().map((h) => (
-            <li key={h.slot}><span className="mono">{h.slot}</span><b className={REGIME_TONE[h.regime] || ''}>{h.regime}</b><span className="d-why">{h.falsify}</span></li>
+            <li key={h.slot}><span className="mono">{h.slot}</span><b className={REGIME_TONE[h.regime] || ''}>{h.regime}</b><span className="d-why" title={listOf(h.falsify).join('；')}>{listOf(h.falsify)[0] || '—'}</span></li>
           ))}
         </ol>
       )}
@@ -137,19 +145,31 @@ function Params({ params }) {
 const TAG_TONE = { 经理: 'mgr', 买入: 'pass', 成交: 'pass', 卖出: 'drop', 丢弃: 'drop', 跳过: 'flat', 判断: 'flat' }
 
 function Log({ log }) {
+  const [who, setWho] = useState('')
+  const [open, setOpen] = useState(null)
+  const people = useMemo(() => [...new Set((log || []).map((e) => e.who))], [log])
+  const rows = (log || []).filter((e) => !who || e.who === who)
   return (
     <section className="d-card d-log">
-      <header><h2>日志</h2><span className="mono d-dim">{log?.length || 0} 条</span></header>
-      {!log?.length ? <p className="d-empty">今天还没有事件</p> : (
+      <header><h2>日志</h2><span className="mono d-dim">{rows.length} 条</span></header>
+      {people.length > 1 && (
+        <div className="d-filter" role="group" aria-label="按人筛选">
+          {['', ...people].map((p) => <button key={p || 'all'} className={who === p ? 'is-on' : ''} onClick={() => { setWho(p); setOpen(null) }}>{p || '全部'}</button>)}
+        </div>
+      )}
+      {!rows.length ? <p className="d-empty">今天还没有事件</p> : (
         <ol>
-          {log.map((e, i) => (
-            <li key={`${e.t}-${i}`}>
-              <span className="mono d-dim">{e.t.slice(0, 5)}</span>
-              <span className="d-who">{e.who}</span>
-              <b className={`d-tag ${TAG_TONE[e.tag] || ''}`}>{e.tag}</b>
-              <span className="d-text" title={e.text}>{e.text}</span>
-            </li>
-          ))}
+          {rows.map((e, i) => {
+            const id = `${e.t}-${e.who}-${e.tag}-${i}`
+            return (
+              <li key={id} className={open === id ? 'is-open' : ''} onClick={() => setOpen(open === id ? null : id)} title={open === id ? '再点一次收起' : '点开看全文'}>
+                <span className="mono d-dim">{e.t.slice(0, 5)}</span>
+                <span className="d-who">{e.who}</span>
+                <b className={`d-tag ${TAG_TONE[e.tag] || ''}`}>{e.tag}</b>
+                <span className="d-text">{e.text}</span>
+              </li>
+            )
+          })}
         </ol>
       )}
     </section>
@@ -208,12 +228,25 @@ function TraderCard({ t }) {
       <Curve points={t.curve} />
       {a.positions?.length ? (
         <ul className="d-pos">
+          <li className="head"><span>持仓</span><span>现价</span><span>今日</span><span>浮盈</span><span>离止损</span></li>
           {a.positions.map((p) => (
             <li key={p.code}><b>{p.name}</b><span className="mono">{p.price}</span><span className={`mono ${tone(p.pct)}`}>{pct(p.pct)}</span>
-              <span className={`mono ${tone(p.pnl)}`}>盈 {pct(p.pnl, 1)}</span></li>
+              <span className={`mono ${tone(p.pnl)}`}>{pct(p.pnl, 1)}</span>
+              <span className={`mono ${p.toStop != null && p.toStop > -2 ? 'near' : 'd-dim'}`} title={p.stop ? `止损价 ${p.stop}` : '这只没有记到止损价'}>
+                {p.toStop == null ? '—' : p.toStop >= 0 ? '已破' : `${p.toStop}%`}</span></li>
           ))}
         </ul>
       ) : <p className="d-empty small">空仓 · 现金 {money(a.cash)}</p>}
+      {t.fills?.length > 0 && (
+        <details className="d-more"><summary>今天成交 {t.fills.length} 笔</summary>
+          <ul className="d-fills">
+            {t.fills.map((f, i) => (
+              <li key={`${f.t}-${f.code}-${i}`}><span className="mono d-dim">{f.t}</span><b className={f.side === 'buy' ? 'up' : 'down'}>{f.side === 'buy' ? '买' : '卖'}</b>
+                <span>{f.name || f.code}</span><span className="mono">{f.price} × {f.shares}</span></li>
+            ))}
+          </ul>
+        </details>
+      )}
       <Funnel f={t.funnel} />
     </section>
   )
@@ -223,8 +256,8 @@ function StrategyDesk({ sd }) {
   if (!sd) {
     return (
       <section className="d-card d-sdesk">
-        <h2>策略交易员 → 经理</h2>
-        <p className="d-empty small">今天还没有汇总。09:26 / 10:30 / 13:20 各一次：规则放行候选 → 交易员否决 → 经理挑出「应该做」。</p>
+        <h2>今天该做什么</h2>
+        <p className="d-empty small">今天还没有汇总。09:26 / 10:30 / 13:20 各一次：规则放行候选 → 策略交易员否决 → 经理挑出「应该做」的票和仓位，同时推到你微信。</p>
       </section>
     )
   }
@@ -232,7 +265,8 @@ function StrategyDesk({ sd }) {
   const rest = (sd.final?.items || []).filter((i) => !i.do)
   return (
     <section className="d-card d-sdesk">
-      <h2>策略交易员 → 经理 <em className="mono">{sd.slot}</em></h2>
+      <h2>今天该做什么 <em className="mono">{sd.slot} 汇总</em></h2>
+      <div className={`d-bignum ${todo.length ? 'up' : ''}`}><b className="mono">{todo.length}</b><span>只可做{todo.length ? `，合计仓位 ${Math.round(todo.reduce((n, i) => n + (i.pct || 0), 0) * 100)}%` : ''}</span></div>
       {sd.final?.read && <p className="d-read">{sd.final.read}</p>}
       {todo.length ? (
         <ul className="d-todo">
@@ -241,7 +275,7 @@ function StrategyDesk({ sd }) {
               <b>{i.name}</b><span className="mono">{i.code}</span>
               <span className="d-gate pass">{sd.final.fallback ? '仓位未定' : `仓位 ${Math.round(i.pct * 100)}%`}</span>
               <small>{(i.strategies || []).join(' / ')}</small>
-              <p>{i.why}<br /><em>否证：{i.falsify || '—'}</em></p>
+              <p>{i.why}<br /><em>看错的信号：{i.falsify || '—'}</em></p>
             </li>
           ))}
         </ul>
@@ -282,6 +316,11 @@ export default function DeskPage({ onTerm, onDetail }) {
   const pick = (r) => setPicked(picked === r ? null : r)
   const fresh = at && Date.now() - at < 6000 && !error
   const m = data?.manager
+  // 两个账户合计的今日盈亏：用各自的净值和今日涨幅倒推昨天的净值再相加
+  const accts = (data?.traders || []).map((t) => t.account).filter((a) => a && a.today != null)
+  const eqNow = accts.reduce((n, a) => n + a.equity, 0)
+  const eqPrev = accts.reduce((n, a) => n + a.equity / (1 + a.today / 100), 0)
+  const dayAll = accts.length ? (eqNow / eqPrev - 1) * 100 : null
   return (
     <div className="desk">
       <header className="d-top">
@@ -289,6 +328,9 @@ export default function DeskPage({ onTerm, onDetail }) {
         <span className={`d-phase ${phase === '盘中' ? 'on' : ''}`}>{phase}</span>
         <span className="mono d-clock">{data?.now ? data.now.slice(11, 19) : '--:--:--'}</span>
         {m && <span className={`d-chip ${REGIME_TONE[m.regime] || ''}`}>{m.regime}</span>}
+        {dayAll != null && (
+          <span className="d-chip ghost">两个账户合计 <b className={`mono ${tone(dayAll)}`}>{pct(dayAll)}</b> <b className={`mono ${tone(dayAll)}`}>{eqNow - eqPrev > 0 ? '+' : ''}{Math.round(eqNow - eqPrev).toLocaleString('en-US')} 元</b></span>
+        )}
         <span className="d-chip ghost">今日调用 DeepSeek <b className="mono">{data?.calls ?? 0}</b> 次</span>
         <span className={`d-live ${fresh ? 'ok' : 'bad'}`}>{fresh ? '实时' : error || '连接中'}</span>
         <nav>
