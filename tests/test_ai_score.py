@@ -108,7 +108,7 @@ def test_daily_job_scores_reviews_once_and_pushes(tmp_path):
     assert out["newDays"] == ["2026-11-03"] and out["lessons"] == 1
     assert "炸板率%" in prompts[0] and "firstBoardNextOpenAvg%" in prompts[0]
     assert json.loads((tmp_path / "lessons.json").read_text(encoding="utf-8"))["lessons"][0]["id"] == "L1"
-    assert "赛马" in pushes[0][0] and "flash" in pushes[0][1]
+    assert pushes == []                                            # dj 2026-11-10：记分照记，不再推微信
     again = ai_score.daily_job(notifier=None, **kw)
     assert again["newDays"] == [] and len(prompts) == 1            # 复盘过的日子不重复复盘
 

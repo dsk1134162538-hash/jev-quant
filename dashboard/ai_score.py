@@ -338,7 +338,8 @@ def daily_job(notifier=None, today: date | None = None, runner=subprocess.run,
     tmp.write_text(json.dumps({"updated": datetime.now().isoformat(timespec="seconds"), "board": board,
                                "reviewedDays": sorted(reviewed)}, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(scores_path)
-    if notifier is not None and board:
+    from jevq import config as jevq_config
+    if notifier is not None and board and jevq_config.AI_SCORE_PUSH:
         extra = ""
         if result.get("lessons") is not None:
             extra = f"\n\n复盘：新记分 {len(new_days)} 天，经验条更新为 {result['lessons']} 条。"
