@@ -50,6 +50,7 @@ def test_period_split_uses_entry_date_without_overlap():
 
 
 def test_backtest_selects_at_most_top_k_and_keeps_cash_days():
+    pytest.importorskip("sklearn")      # 研究用的库没装（live 环境就是这样）就跳过，不判失败：否则每天收盘后的上线门会因此一直拦住新代码
     bars = make_bars(rows=150)
     benchmark = make_bars(rows=150).drop(columns="code")
     samples = km.build_samples(bars, benchmark)
@@ -82,6 +83,7 @@ def test_backtest_uses_fixed_validation_score_cutoff():
 
 
 def test_quality_uses_positional_scores_with_nonzero_frame_index():
+    pytest.importorskip("sklearn")      # 研究用的库没装（live 环境就是这样）就跳过，不判失败：否则每天收盘后的上线门会因此一直拦住新代码
     actual = np.linspace(-0.02, 0.03, 100)
     score = np.linspace(0.0, 1.0, 100)
     frame = pd.DataFrame({"target_net_return": actual}, index=np.arange(100) + 500)

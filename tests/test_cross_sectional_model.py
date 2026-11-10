@@ -87,6 +87,7 @@ def test_walk_forward_tests_do_not_overlap_and_labels_are_purged():
 
 
 def test_rank_ic_is_average_of_daily_cross_sections_not_pooled():
+    pytest.importorskip("scipy")      # 研究用的库没装（live 环境就是这样）就跳过，不判失败：否则每天收盘后的上线门会因此一直拦住新代码
     frame = pd.DataFrame({
         "signal_date": pd.to_datetime(["2026-01-05"] * 5 + ["2026-01-06"] * 5),
         "entry_date": pd.to_datetime(["2026-01-06"] * 5 + ["2026-01-07"] * 5),
