@@ -367,7 +367,7 @@ def test_validate_reads_position_size_and_reason_from_alternative_fields():
     assert ft.validate_answer(ans, ctx)["orders"][0]["reason"] == "放量突破"
     over = _good_answer(pct=0.9)
     assert ft.validate_answer(over, ctx)["orders"][0]["pct"] == ft.config.FLEX_MAX_PCT       # 超上限压到上限，不整单拒
-    assert "pct" in ft.SYSTEM_PROMPT and "0.1" in ft.SYSTEM_PROMPT
+    assert "pct" in ft.SYSTEM_PROMPT and "0.2" in ft.SYSTEM_PROMPT
 
 
 def test_schema_and_prompt_ask_for_picks():
