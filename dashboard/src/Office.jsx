@@ -2,12 +2,13 @@ import { memo } from 'react'
 
 // 像素办公室（dj 2026-11-10：「像现实中真的办公区域」）。viewBox 400×176，一个 SVG 单位就是一个像素格。
 // 后墙从左到右：茶水间 + 挂钟、窗、行情大屏、窗；地板上第一排是 7 个汇报席，第二排是 3 个策略席 + 2 个交易席 + 机柜；
-// 右边隔出经理室。小人坐在桌子后面（先画人、再画桌子、最后画桌上的东西），所以渲染顺序不能随便调。
+// 右边隔出经理室。dj 2026-11-10 第二版：小人背对我们坐，显示器在头的正前方、屏幕朝我们（亮着 = 在干活）；
+// 渲染顺序是 桌子 → 桌上的东西 → 人 → 椅背，不能随便调。谁在座位上由 sceneOf() 按北京时间排班。
 
 const W = 400
 const H = 176
-const ROW_A = 72
-const ROW_B = 126
+const ROW_A = 76
+const ROW_B = 130
 const SKINS = ['#f1c9a0', '#e6b88c', '#f7d9b8']
 
 const shade = (hex, f) => `#${[1, 3, 5].map((i) => Math.round(parseInt(hex.slice(i, i + 2), 16) * f).toString(16).padStart(2, '0')).join('')}`
@@ -28,6 +29,23 @@ const BODIES = {
   vest: ['...wcwwcw...', '..wwccccww..', '.wwdccccdww.', '.wwdccccdww.', '.wwwccccwww.'],
   suit: ['...nwrrwn...', '..nnwrrwnn..', '.nnNnrrnNnn.', '.nnNnrrnNnn.', '.nnnnnnnnnn.'],
 }
+// 背面：只看得到后脑勺、耳朵和脖子
+const BACK_HEADS = {
+  short: ['...hhhhhh...', '..hhhhhhhh..', '..hhhhhhhh..', '..hhhhhhhh..', '..shhhhhhs..', '...hhhhhh...', '....ssss....'],
+  side: ['....hhhhh...', '..hhhhhhhh..', '..hhhhhhhh..', '..hhhhhhhh..', '..shhhhhhs..', '...hhhhhh...', '....ssss....'],
+  long: ['...hhhhhh...', '..hhhhhhhh..', '.hhhhhhhhhh.', '.hhhhhhhhhh.', '.hhhhhhhhhh.', '.hhhhhhhhhh.', '.hhhhhhhhhh.'],
+  bun: ['.....hh.....', '...hhhhhh...', '..hhhhhhhh..', '..hhhhhhhh..', '..shhhhhhs..', '...hhhhhh...', '....ssss....'],
+  pony: ['...hhhhhh...', '..hhhhhhhh..', '..hhhhhhhh..', '..hhhhhhhh..', '..shhhhhhs..', '...hhhhhh...', '....shhs....'],
+  crew: ['............', '...hhhhhh...', '..hhhhhhhh..', '..shhhhhhs..', '..sshhhhss..', '...ssssss...', '....ssss....'],
+}
+const BACK_TAILS = { long: ['.hhhhhhhhhh.', '..hhhhhhhh..'], pony: ['.....hh.....', '.....hh.....'] }
+const BACK_HEADSET = ['..kkkkkkkk..', '.k........k.', '.k........k.', '.kk......kk.', '.kk......kk.']
+const BACK_BODIES = {
+  shirt: ['..cccccccc..', '.cccccccccc.', '.cccccccccc.', '.cccccccccc.'],
+  vest: ['..wccccccw..', '.wwccccccww.', '.wwccccccww.', '.wwccccccww.'],
+  suit: ['..nnnwwnnn..', '.nnnnnnnnnn.', '.nnnnnnnnnn.', '.nnnnnnnnnn.'],
+}
+const STAND_LEGS = ['...pp..pp...', '...pp..pp...', '...oo..oo...']
 const PLANT = ['....gg....', '..g.gg.g..', '.gggGggg..', '..gGgggGg.', '.gggggggg.', 'gggGgggggg', '.ggggGggg.', '..gggggg..',
   '....tt....', '....tt....', '..pppppp..', '..pqqqqp..', '...pppp...', '...pppp...']
 const PLANT_PAL = { g: '#4f8a4a', G: '#74b262', t: '#6d4a2e', p: '#efe8da', q: '#d9cfbc' }
@@ -61,11 +79,148 @@ const MGR = { x: 344, y: 94 }
 
 export const STRAT_INFO = [['relay', 'RELAY', '高标接力官'], ['wts', 'WTS', '弱转强官'], ['bz', 'BZ', '补涨官']]
 
-export function traderLine(t) {
+// ---------- 排班：谁在哪，只看北京时间（接口的 now 就是北京时间） ----------
+const PEOPLE = ['manager', ...SEATS.map((s) => s.role)]
+const LUNCH = ['sofa', 'nap', 'out', 'chat', 'out', 'nap', 'out', 'nap', 'out', 'nap', 'chat', 'nap', 'out']
+const STAGE_OF = [[525, 'empty'], [555, 'arrive'], [690, 'work'], [780, 'lunch'], [900, 'work'], [930, 'review'], [1050, 'leave']]
+
+// where(role)：seat 坐着干活｜nap 趴桌睡｜chat 过道里端着杯子聊天｜sofa 沙发上躺着｜board 站在白板前｜gone 不在
+export function sceneOf(iso) {
+  if (!iso) return { stage: 'empty', m: 0, where: () => 'gone', present: [], awake: [] }
+  const d = new Date(iso)
+  const m = d.getHours() * 60 + d.getMinutes()
+  const weekend = d.getDay() === 0 || d.getDay() === 6
+  const stage = weekend ? 'closed' : (STAGE_OF.find(([end]) => m < end) || [0, 'empty'])[1]
+  const where = (role) => {
+    const i = PEOPLE.indexOf(role)
+    if (stage === 'work') return 'seat'
+    if (stage === 'review') return role === 'manager' ? 'board' : 'seat'
+    if (stage === 'arrive') return m >= 525 + ((i * 7) % 13) * 2 ? 'seat' : 'gone'
+    if (stage === 'leave') return m >= 930 + ((i * 5) % 13) * 9 ? 'gone' : 'seat'
+    if (stage === 'lunch') {
+      if (m < 695 || m >= 777) return 'seat'                 // 11:35 才起身，12:57 都坐回来
+      const act = LUNCH[i]
+      if (act === 'sofa') return m < 770 ? 'sofa' : 'seat'
+      if (act === 'out') return m < 765 ? 'gone' : 'seat'    // 出去吃饭
+      if (act === 'chat') return m < 725 ? 'chat' : 'nap'
+      return 'nap'
+    }
+    return 'gone'
+  }
+  // present 在办公室里的人；awake 醒着、能开口汇报的人（睡着的不会自己冒气泡）
+  return { stage, m, where, present: PEOPLE.filter((r) => where(r) !== 'gone'), awake: PEOPLE.filter((r) => ['seat', 'board', 'chat'].includes(where(r))) }
+}
+
+// 天色：按月份的日出日落（上海附近，够用），返回 sky 和太阳走到哪了（0 日出 → 1 日落）
+const SUNRISE = [6.9, 6.6, 6.1, 5.5, 5.0, 4.9, 5.0, 5.3, 5.6, 5.9, 6.3, 6.7]
+const SUNSET = [17.2, 17.7, 18.0, 18.3, 18.7, 19.0, 19.0, 18.6, 18.0, 17.4, 16.9, 16.9]
+function skyOf(iso) {
+  if (!iso) return { sky: 'day', sun: 0.5 }
+  const d = new Date(iso)
+  const h = d.getHours() + d.getMinutes() / 60
+  const rise = SUNRISE[d.getMonth()]
+  const set = SUNSET[d.getMonth()]
+  const sun = Math.min(1, Math.max(0, (h - rise) / (set - rise)))
+  if (h < rise - 0.5 || h >= set + 0.5) return { sky: 'night', sun }
+  if (h < rise + 0.5) return { sky: 'dawn', sun }
+  if (h >= set - 0.75) return { sky: 'dusk', sun }
+  return { sky: 'day', sun }
+}
+
+// ---------- 说人话：气泡里的短句 + 点开后的完整汇报。只改写接口给的真数，不编内容 ----------
+const list = (v) => (Array.isArray(v) ? v : v ? [v] : [])
+const yi = (txt) => {
+  const n = +String(txt).replace(/,/g, '')
+  return n >= 10000 ? `${(n / 10000).toFixed(2)} 万亿` : `${n} 亿`
+}
+
+function reportSpeech(role, r) {
+  if (!r || r.level === 'idle') return { short: '数还没出来，开会的时候我报。', full: [] }
+  const raw = r.line || ''
+  const head = r.level === 'bad' ? '经理，有情况——' : '经理，'
+  let m
+  if (role === 'breadth' && (m = raw.match(/涨 (\d+) \/ 跌 (\d+)(?: · 成交 ([\d,]+) 亿)?/))) {
+    const share = +m[1] / (+m[1] + +m[2] || 1)
+    const mood = share >= 0.6 ? '大多数票在涨' : share <= 0.35 ? '跌的明显比涨的多' : '涨跌差不多一半一半'
+    return { short: `${head}现在涨 ${m[1]} 家、跌 ${m[2]} 家，${mood}${m[3] ? `，成交 ${yi(m[3])}` : ''}。`,
+      full: [`上涨家数占 ${(share * 100).toFixed(1)}%。`] }
+  }
+  if (role === 'ladder' && (m = raw.match(/^(.+?) (\d+) 家 · 最高 (\S+) 板 · (\S+)(?: ｜次 (.+?) (\d+) 家)?/))) {
+    return { short: `${head}最厚的题材是${m[1]}，${m[2]} 家涨停，最高 ${m[3]} 板，现在算「${m[4]}」阶段。`,
+      full: m[5] ? [`排第二的是${m[5]}，${m[6]} 家。`] : [] }
+  }
+  if (role === 'high' && (m = raw.match(/昨日≥3板 (\d+) 只 · 走弱 (\d+) · (\S+)(?: ｜(.+))?/))) {
+    return { short: `${head}昨天 3 板以上的有 ${m[1]} 只，今天走弱 ${m[2]} 只，我看是「${m[3]}」。`,
+      full: m[4] ? [`最高的那只：${m[4]}。`] : [] }
+  }
+  if (role === 'movers' && (m = raw.match(/异动 (\d+) 只(?: · (.+))?/))) {
+    return { short: `${head}盘中异动的有 ${m[1]} 只${m[2] ? `，排前面的是 ${m[2]}` : ''}。`, full: [] }
+  }
+  if (role === 'scan' && (m = raw.match(/候选 (\d+) 只 · 封板 (\d+) · 扫板池 (\d+)/))) {
+    return { short: `${head}扫板这边候选 ${m[1]} 只，已经封板 ${m[2]} 只，进扫板池的 ${m[3]} 只。`, full: [] }
+  }
+  if (role === 'book') {
+    const parts = raw.split(' · ').map((p) => p.match(/^(.+?) ([\d,]+) \/ (\d+) 只$/)).filter(Boolean)
+    if (parts.length) return { short: `${head}账我对过了：${parts.map((p) => `${p[1]}净值 ${p[2]}、拿着 ${p[3]} 只`).join('；')}。`, full: [] }
+  }
+  if (role === 'risk') {
+    return raw === '护栏正常' ? { short: `${head}护栏都正常，没有碰线的。`, full: [] } : { short: `${head}风控这边要注意：${raw}。`, full: [] }
+  }
+  return { short: `${head}${raw}。`, full: [] }
+}
+
+function stratSpeech(t) {
+  if (!t) return { short: '我 09:26 才开始看票。规则先筛一遍，我只负责把不该做的否掉，不会自己加票。', full: [] }
+  if (t.error) return { short: `经理，我这边出错了：${t.error}`, full: [] }
+  const head = `经理，规则给我放行了 ${t.passed} 只（候选 ${t.candidates} 只），我否掉 ${t.vetoed.length} 只`
+  const short = t.picks.length ? `${head}，推荐 ${t.picks.map((p) => p.name).join('、')}。` : `${head}，这个时点没有我敢推的。`
+  return { short, full: [
+    ...t.picks.map((p) => `推荐 ${p.name}（${p.code}）：${p.why}。看错的信号：${p.falsify || '—'}。把握：${p.confidence || '—'}。`),
+    ...t.vetoed.map((v) => `否掉 ${v.name}：${v.why}。`),
+    ...(t.rejected || []).map((r) => `规则没放行 ${r.name}：${r.why}。`),
+  ] }
+}
+
+function traderSpeech(t) {
+  if (!t) return { short: '今天还没轮到我。', full: [] }
+  const d = t.directive
+  const order = d ? (d.buy ? `经理让我开仓，单笔不超过 ${Math.round((d.maxPct || 0) * 100)}%。` : '经理让我今天别开新仓。') : ''
   const r = t.rounds?.[t.rounds.length - 1]
-  if (!r) return '今天还没跑'
-  if (r.skipped) return `${r.slot} ${r.skipped}`
-  return `${r.slot} ${r.stage || '—'}｜${r.plan || ''}`
+  const a = t.account || {}
+  const book = a.equity != null ? `账户净值 ${Math.round(a.equity).toLocaleString('en-US')}，今天 ${a.today > 0 ? '+' : ''}${Number(a.today || 0).toFixed(2)}%，拿着 ${(a.positions || []).length} 只。` : ''
+  if (!r) return { short: `今天还没轮到我。${order}`, full: [book].filter(Boolean) }
+  if (r.skipped) return { short: `${r.slot} 这轮我没动：${r.skipped}。${order}`, full: [book].filter(Boolean) }
+  return { short: `${r.slot} 这轮我看是「${r.stage || '—'}」。${order}`,
+    full: [r.plan, d?.why ? `经理的原话：${d.why}` : '', book,
+      ...(t.fills || []).slice(-4).map((f) => `${f.t} ${f.side === 'buy' ? '买' : '卖'} ${f.name} ${f.price} × ${f.shares}`)].filter(Boolean) }
+}
+
+function managerSpeech(m) {
+  if (!m) return { short: '09:26 开会，开完我告诉大家今天怎么做。', full: [] }
+  const watch = list(m.watch)
+  return { short: `我判断今天是「${m.regime}」。${watch[0] ? `接下来先盯：${watch[0]}。` : ''}`,
+    full: [m.read, ...watch.slice(1).map((w) => `还要盯：${w}。`), ...list(m.falsify).map((f) => `我看错的信号：${f}。`)].filter(Boolean) }
+}
+
+export function speechOf(role, data) {
+  if (role === 'manager') return managerSpeech(data?.manager)
+  if (role.startsWith('strat:')) return stratSpeech((data?.strategyDesk?.traders || []).find((t) => `strat:${t.key}` === role))
+  if (role.startsWith('trader:')) return traderSpeech((data?.traders || []).find((t) => `trader:${t.sid}` === role))
+  return reportSpeech(role, (data?.roles || []).find((r) => r.role === role))
+}
+
+// 3 分钟内有成交：那位交易员自己站出来说（真实事件，优先于轮流发言）
+export function liveEvent(data) {
+  if (!data?.now) return null
+  const now = new Date(data.now)
+  for (const e of data.log || []) {
+    if (e.tag !== '成交') continue
+    const age = (now - new Date(`${data.now.slice(0, 10)}T${e.t}`)) / 1000
+    if (age < 0 || age > 180) continue
+    const t = (data.traders || []).find((x) => x.label === e.who)
+    if (t) return { role: `trader:${t.sid}`, text: `刚成交一笔：${e.text.split('｜')[0]}。` }
+  }
+  return null
 }
 
 export function stratLine(t) {
@@ -73,6 +228,13 @@ export function stratLine(t) {
   if (t.error) return `出错：${t.error}`
   const head = `候选 ${t.candidates} · 放行 ${t.passed} · 荐 ${t.picks.length} · 否 ${t.vetoed.length}`
   return t.picks.length ? `${head}｜荐 ${t.picks.map((p) => p.name).join('、')}` : head
+}
+
+export function traderLine(t) {
+  const r = t.rounds?.[t.rounds.length - 1]
+  if (!r) return '今天还没跑'
+  if (r.skipped) return `${r.slot} ${r.skipped}`
+  return `${r.slot} ${r.stage || '—'}｜${r.plan || ''}`
 }
 
 // 一行字符 → 横向合并后的 rect，减少节点数
@@ -91,97 +253,136 @@ function Pixels({ rows, pal, x = 0, y = 0 }) {
   return out
 }
 
-function Person({ look, x, y, mode, active, i }) {
+const palOf = (look) => {
   const skin = SKINS[look.skin]
-  const pal = { h: look.hairColor, s: skin, m: shade(skin, 0.78), e: '#1d1a16', c: look.color, d: shade(look.color, 0.76), w: '#fbf8f2',
-    k: look.glasses ? '#8a6238' : '#2b2f36', n: '#2c3550', N: '#1f2740', r: '#c8322b' }
-  const head = look.glasses ? HEADS[look.hair].map((r, j) => (j === 4 ? GLASSES_ROW : r)) : HEADS[look.hair]
-  const eyes = look.glasses ? [3, 8] : [4, 7]
-  const napping = mode === 'nap' && !active
+  return { h: look.hairColor, s: skin, m: shade(skin, 0.78), e: '#1d1a16', c: look.color, d: shade(look.color, 0.76), w: '#fbf8f2',
+    k: look.glasses ? '#8a6238' : '#2b2f36', n: '#2c3550', N: '#1f2740', r: '#c8322b', p: '#3b3f46', o: '#22252b' }
+}
+
+// 背对我们坐着的人。x,y 是头顶左上角；身体下半截之后会被椅背盖住
+function Sitter({ look, x, y, state, active, typing, stretch, i }) {
+  const pal = palOf(look)
+  const cls = active ? 'is-active' : state === 'nap' ? 'nap' : 'look'
   return (
     <g transform={`translate(${x},${y})`}>
-      <g className={`d-char ${active ? 'is-active' : napping ? 'nap' : 'look'}`} style={{ animationDelay: `${-((i * 1.7) % 9)}s` }}>
-        <Pixels rows={head} pal={pal} />
-        <Pixels rows={BODIES[look.body || 'shirt']} pal={pal} y={7} />
-        {look.hair === 'long' && <Pixels rows={LONG_TAIL} pal={pal} y={7} />}
-        {look.headset && <Pixels rows={HEADSET} pal={pal} />}
-        {eyes.map((c) => (
-          <rect key={c} className={napping ? 'd-lid shut' : 'd-lid'} style={{ animationDelay: `${-((i * 0.83) % 4.6)}s` }}
-            x={c} y="4" width="1" height="1" fill={napping ? pal.m : skin} />
-        ))}
+      <g className={`d-char ${cls}`} style={{ animationDelay: `${-((i * 1.7) % 9)}s` }}>
+        <g className={typing ? 'd-typing' : undefined}>
+          <rect className="d-hand" style={{ animationDelay: `${-(i * 0.07)}s` }} x="-1" y="8" width="2" height="2" fill={pal.c} />
+          <rect className="d-hand b" style={{ animationDelay: `${-(i * 0.07 + 0.16)}s` }} x="11" y="8" width="2" height="2" fill={pal.c} />
+        </g>
+        <Pixels rows={BACK_BODIES[look.body || 'shirt']} pal={pal} y={7} />
+        <Pixels rows={BACK_HEADS[look.hair]} pal={pal} />
+        {BACK_TAILS[look.hair] && <Pixels rows={BACK_TAILS[look.hair]} pal={pal} y={7} />}
+        {look.headset && <Pixels rows={BACK_HEADSET} pal={pal} />}
+        {stretch && (
+          <g className="d-arms" style={{ animationDelay: `${-(i % 5)}s` }}>
+            <rect x="0" y="-2" width="2" height="9" fill={pal.c} /><rect x="10" y="-2" width="2" height="9" fill={pal.c} />
+            <rect x="0" y="-4" width="2" height="2" fill={pal.s} /><rect x="10" y="-4" width="2" height="2" fill={pal.s} />
+          </g>
+        )}
       </g>
     </g>
   )
 }
 
-const TONES = { ok: ['#12261d', '#8fe0b4'], warn: ['#2a2212', '#f0c36a'], bad: ['#2a1412', '#ff8076'], calm: ['#131c26', '#8fb7e0'] }
-
-function Monitor({ x, y, tone, i = 0, text }) {
-  const t = TONES[tone]
+// 站着的人：front = 面对我们（午休聊天），否则背对（经理写白板）
+function Stander({ look, x, y, front, cup, writing }) {
+  const pal = palOf(look)
+  const head = front ? (look.glasses ? HEADS[look.hair].map((r, j) => (j === 4 ? GLASSES_ROW : r)) : HEADS[look.hair]) : BACK_HEADS[look.hair]
+  const body = front ? BODIES[look.body || 'shirt'] : [...BACK_BODIES[look.body || 'shirt'], BACK_BODIES[look.body || 'shirt'][3]]
   return (
     <g transform={`translate(${x},${y})`}>
-      <rect width="14" height="10" fill="#2b2f36" />
-      <rect x="1" y="1" width="12" height="8" fill={t ? t[0] : '#3b444c'} />
-      {t && !text && [3, 6, 4].map((h, k) => (
-        <rect key={k} className="d-bar" style={{ animationDelay: `${-(i * 0.37 + k * 0.53)}s` }} x={2 + k * 3} y={9 - h} width="2" height={h} fill={t[1]} />
-      ))}
-      {t && !text && <rect x="11" y="2" width="1" height="1" fill={t[1]} />}
-      {t && text && <text x="7" y="7.4" textAnchor="middle" className="d-svg-mon" fill={t[1]}>{text}</text>}
-      {!t && <rect x="2" y="2" width="3" height="1" fill="#55606a" />}
-      <rect x="5" y="10" width="4" height="1" fill="#22252b" /><rect x="3" y="11" width="8" height="1" fill="#22252b" />
+      <rect x="1" y="15" width="10" height="1" fill="#2a241d" opacity="0.18" />
+      <Pixels rows={head} pal={pal} />
+      <Pixels rows={body} pal={pal} y={7} />
+      <Pixels rows={STAND_LEGS} pal={pal} y={12} />
+      {cup && <g><rect x="10" y="9" width="2" height="3" fill="#ffffff" /><rect className="d-steam" x="10" y="7" width="1" height="2" fill="#ffffff" /></g>}
+      {writing && <g className="d-typing"><rect className="d-hand" x="11" y="3" width="2" height="5" fill={pal.c === pal.n ? pal.n : pal.c} /><rect className="d-hand" x="11" y="1" width="2" height="2" fill={pal.s} /><rect className="d-hand" x="12" y="-1" width="1" height="2" fill="#2a241d" /></g>}
     </g>
   )
 }
 
-const LIGHT_DESK = { top: '#f6f1e7', hi: '#fffdf7', edge: '#cfc5b2', panel: '#e6ddcc', foot: '#bfb39c' }
-const WALNUT_DESK = { top: '#9a6842', hi: '#b07e55', edge: '#6d4128', panel: '#7d4d30', foot: '#55301c' }
+// 屏幕朝我们。mode：on 亮着干活｜saver 屏保｜off 关机
+const TONES = { ok: ['#12261d', '#8fe0b4'], warn: ['#2a2212', '#f0c36a'], bad: ['#2a1412', '#ff8076'], calm: ['#131c26', '#8fb7e0'],
+  up: ['#2a1412', '#ff8076'], down: ['#12261d', '#8fe0b4'] }
+const BAR_H = [4, 7, 5, 8, 6]
 
-function Bench({ x, y, w, c = LIGHT_DESK, seams = [] }) {
+function Monitor({ x, y, w = 18, mode, tone, text, i = 0 }) {
+  const t = mode === 'on' ? TONES[tone] || TONES.calm : null
+  const bars = Math.floor((w - 4) / 3)
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <rect width={w} height="12" fill="#2b2f36" />
+      <rect x="1" y="1" width={w - 2} height="10" fill={t ? t[0] : mode === 'saver' ? '#161a20' : '#23272d'} />
+      {t && !text && Array.from({ length: bars }, (_, k) => (
+        <rect key={k} className="d-bar" style={{ animationDelay: `${-(i * 0.37 + k * 0.53)}s` }} x={2 + k * 3} y={11 - BAR_H[k % 5]} width="2" height={BAR_H[k % 5]} fill={t[1]} />
+      ))}
+      {t && text && <text x={w / 2} y="8.4" textAnchor="middle" className={`d-svg-mon ${text.length > 2 ? 's' : ''}`} fill={t[1]}>{text}</text>}
+      {mode === 'saver' && <rect className="d-saver" style={{ animationDelay: `${-i * 0.7}s` }} x="2" y="5" width="2" height="2" fill="#4d6a8a" />}
+      {mode === 'off' && <rect x="2" y="2" width="3" height="1" fill="#30353c" />}
+      <rect x={w / 2 - 2} y="12" width="4" height="2" fill="#22252b" /><rect x={w / 2 - 4} y="14" width="8" height="1" fill="#22252b" />
+      {t && <rect x="1" y="15" width={w - 2} height="1" fill={t[1]} opacity="0.28" />}
+    </g>
+  )
+}
+
+const LIGHT_DESK = { top: '#f6f1e7', hi: '#fffdf7', edge: '#cfc5b2', foot: '#bfb39c' }
+const WALNUT_DESK = { top: '#9a6842', hi: '#b07e55', edge: '#6d4128', foot: '#55301c' }
+
+// 从背后看过去的桌子：只看到桌面、桌沿、桌下的阴影和桌腿。y 是这一排的基准线
+function DeskTop({ x, y, w, c = LIGHT_DESK, seams = [] }) {
   return (
     <g>
-      <rect x={x + 2} y={y + 17} width={w} height="2" fill="#2a241d" opacity="0.16" />
-      <rect x={x} y={y} width={w} height="8" fill={c.top} />
-      <rect x={x} y={y} width={w} height="1" fill={c.hi} />
-      <rect x={x} y={y + 8} width={w} height="1" fill={c.edge} />
-      <rect x={x} y={y + 9} width={w} height="8" fill={c.panel} />
-      <rect x={x} y={y + 16} width={w} height="1" fill={c.foot} />
-      {seams.map((sx) => <rect key={sx} x={sx} y={y + 1} width="1" height="15" fill={c.edge} opacity="0.7" />)}
+      <rect x={x} y={y + 12} width={w} height="4" fill="#2a241d" opacity="0.2" />
+      {[x, ...seams, x + w - 2].map((lx) => <rect key={lx} x={lx} y={y + 12} width="2" height="11" fill={c.foot} />)}
+      <rect x={x} y={y + 4} width={w} height="7" fill={c.top} />
+      <rect x={x} y={y + 4} width={w} height="1" fill={c.hi} />
+      <rect x={x} y={y + 11} width={w} height="1" fill={c.edge} />
     </g>
   )
 }
 
-function Chair({ x, y, tall }) {
-  return tall
-    ? <g><rect x={x - 3} y={y - 2} width="18" height="15" fill="#3a2f2a" /><rect x={x - 2} y={y - 3} width="16" height="1" fill="#3a2f2a" /><rect x={x - 2} y={y - 1} width="16" height="1" fill="#51423a" /></g>
-    : <g><rect x={x - 1} y={y + 5} width="14" height="8" fill="#4a4f57" /><rect x={x} y={y + 4} width="12" height="1" fill="#4a4f57" /><rect x={x} y={y + 5} width="12" height="1" fill="#5d636c" /></g>
+// 椅子画在人的后面一层（离我们最近）。没人的时候推回桌下
+function Chair({ x, y, tall, tucked }) {
+  const top = y + (tucked ? 10 : 13) - (tall ? 4 : 0)
+  const h = tall ? 12 : 8
+  const col = tall ? ['#3a2f2a', '#51423a'] : ['#4a4f57', '#5d636c']
+  return (
+    <g>
+      <rect x={x + 1} y={y + 24} width="10" height="1" fill="#2a241d" opacity="0.2" />
+      <rect x={x - 1} y={top} width="14" height={h} fill={col[0]} /><rect x={x} y={top - 1} width="12" height="1" fill={col[0]} />
+      <rect x={x} y={top} width="12" height="1" fill={col[1]} />
+      <rect x={x + 5} y={top + h} width="2" height={y + 23 - top - h} fill="#2b2f36" />
+      <rect x={x + 1} y={y + 23} width="10" height="1" fill="#2b2f36" />
+    </g>
+  )
 }
 
-// 桌上的东西：显示器、键盘、手、杯子 / 递上去的纸、名牌
-function DeskItems({ s, info, mode, i }) {
-  const skin = SKINS[s.skin]
+const personX = (s) => s.x + Math.floor((s.w - 12) / 2)
+
+// 一个工位桌上的东西：显示器、杯子 / 递上去的纸。info.mode 决定屏幕亮不亮
+function DeskItems({ s, info, i }) {
+  const px = personX(s)
   return (
-    <g className={mode === 'work' && info.tone ? 'd-typing' : undefined}>
-      <Monitor x={s.x + 3} y={s.y - 1} tone={info.tone} i={i} />
-      {s.kind === 'trader' && (
-        <Monitor x={s.x + 33} y={s.y - 1} tone={info.gate === '开' ? 'ok' : info.gate === '关' ? 'bad' : info.tone ? 'calm' : null}
-          text={info.gate || (info.tone ? '—' : null)} />
-      )}
-      {info.alert && <rect className="d-led" x={s.x + 15} y={s.y - 3} width="2" height="2" fill="#e5463c" />}
-      <rect x={s.x + 21} y={s.y + 13} width="10" height="3" fill="#d6cebf" /><rect x={s.x + 21} y={s.y + 15} width="10" height="1" fill="#bdb3a0" />
-      <rect className="d-hand" style={{ animationDelay: `${-(i * 0.07)}s` }} x={s.x + 22} y={s.y + 12} width="2" height="2" fill={skin} />
-      <rect className="d-hand b" style={{ animationDelay: `${-(i * 0.07 + 0.16)}s` }} x={s.x + 28} y={s.y + 12} width="2" height="2" fill={skin} />
-      {s.kind === 'report' && <g><rect x={s.x + 34} y={s.y + 13} width="2" height="3" fill={shade(s.color, 0.9)} /><rect x={s.x + 36} y={s.y + 14} width="1" height="1" fill={shade(s.color, 0.9)} /></g>}
+    <g>
+      {s.kind === 'trader' ? (
+        <>
+          <Monitor x={px - 11} y={s.y - 9} w={16} mode={info.mode} tone={info.pnlTone} text={info.mode === 'on' ? info.pnl : null} i={i} />
+          <Monitor x={px + 7} y={s.y - 9} w={16} mode={info.mode} tone={info.gate === '开' ? 'ok' : info.gate === '关' ? 'bad' : 'calm'} text={info.mode === 'on' ? info.gate || '—' : null} i={i + 3} />
+        </>
+      ) : <Monitor x={px - 3} y={s.y - 9} mode={info.mode} tone={info.tone} i={i} />}
+      {info.alert && info.mode === 'on' && <rect className="d-led" x={px + 16} y={s.y - 11} width="2" height="2" fill="#e5463c" />}
+      {s.kind === 'report' && <g><rect x={s.x + s.w - 8} y={s.y + 6} width="2" height="3" fill={shade(s.color, 0.9)} /><rect x={s.x + s.w - 6} y={s.y + 7} width="1" height="1" fill={shade(s.color, 0.9)} /></g>}
       {s.kind === 'strat' && Array.from({ length: Math.min(info.picks || 0, 3) }, (_, k) => (
-        <g key={k}><rect x={s.x + 33 - (k % 2)} y={s.y + 16 - k * 2} width="5" height="1" fill="#ffffff" /><rect x={s.x + 33 - (k % 2)} y={s.y + 17 - k * 2} width="5" height="1" fill="#c9c0ae" /></g>
+        <g key={k}><rect x={s.x + 3 + (k % 2)} y={s.y + 8 - k * 2} width="5" height="1" fill="#ffffff" /><rect x={s.x + 3 + (k % 2)} y={s.y + 9 - k * 2} width="5" height="1" fill="#c9c0ae" /></g>
       ))}
-      <rect x={s.x + 4} y={s.y + 22} width="2" height="5" fill={s.color} />
-      <text x={s.x + 8} y={s.y + 26.4} className="d-svg-name">{s.name}</text>
     </g>
   )
 }
 
 // ---------- 静态背景（只跟天色有关，memo 掉） ----------
 const SKY = {
+  dawn: { bands: ['#7f8fc4', '#f0b6a0', '#fbe3c0'], far: '#a895ad', near: '#6b5f80', lit: '#ffd76a' },
   day: { bands: ['#8cc6ea', '#a9d6f0', '#c9e6f5'], far: '#a9c2d2', near: '#7f9db5', lit: null },
   dusk: { bands: ['#6f7fb8', '#e89a7a', '#f6cf9a'], far: '#9a7f9c', near: '#5d4f72', lit: '#ffd76a' },
   night: { bands: ['#141b33', '#1c2644', '#27335a'], far: '#1e2540', near: '#10152a', lit: '#ffd76a' },
@@ -190,6 +391,9 @@ const TOWERS = [[0, 7, 12], [8, 5, 18], [14, 8, 9], [23, 6, 22], [30, 9, 14], [4
 
 function Window({ x, y, w, h, id, sky, seed = 0, sun }) {
   const s = SKY[sky]
+  const low = sun != null && (sun < 0.12 || sun > 0.88)
+  const sx = sun == null ? 0 : Math.round(x + 2 + sun * (w - 9))
+  const sy = sun == null ? 0 : Math.round(y + 4 + (1 - Math.sin(sun * Math.PI)) * h * 0.5)
   const band = Math.ceil(h / 3)
   const towers = TOWERS.filter(([dx]) => dx < w)
   return (
@@ -199,9 +403,8 @@ function Window({ x, y, w, h, id, sky, seed = 0, sun }) {
       <rect x={x - 2} y={y - 2} width={w + 4} height={h + 4} fill="#fbf8f2" />
       <g clipPath={`url(#${id})`}>
         {s.bands.map((c, k) => <rect key={c} x={x} y={y + k * band} width={w} height={band} fill={c} />)}
-        {sun && sky === 'day' && <rect x={x + w - 11} y={y + 7} width="5" height="5" fill="#fff6c0" />}
-        {sun && sky === 'dusk' && <rect x={x + w - 13} y={y + h - 19} width="6" height="6" fill="#ffb347" />}
-        {sun && sky === 'night' && <g><rect x={x + w - 11} y={y + 7} width="4" height="4" fill="#f4f0d8" /><rect x={x + w - 8} y={y + 7} width="1" height="1" fill={s.bands[0]} /></g>}
+        {sun != null && sky !== 'night' && <rect x={sx} y={sy} width={low ? 6 : 5} height={low ? 6 : 5} fill={low ? '#ffb347' : '#fff6c0'} />}
+        {sun != null && sky === 'night' && <g><rect x={x + w - 11} y={y + 7} width="4" height="4" fill="#f4f0d8" /><rect x={x + w - 8} y={y + 7} width="1" height="1" fill={s.bands[0]} /></g>}
         {sky === 'night'
           ? [[5, 8], [14, 5], [22, 11], [31, 7], [9, 14]].filter(([dx]) => dx < w - 2).map(([dx, dy], k) => (
             <rect key={dx} className={k % 2 ? 'd-led' : undefined} style={{ animationDelay: `${-k * 0.4}s` }} x={x + dx} y={y + dy} width="1" height="1" fill="#ffffff" />
@@ -235,8 +438,8 @@ function Window({ x, y, w, h, id, sky, seed = 0, sun }) {
   )
 }
 
-const Backdrop = memo(function Backdrop({ sky }) {
-  const pool = sky === 'day' ? ['#fff6d0', 0.3] : sky === 'dusk' ? ['#ffb870', 0.22] : null
+const Backdrop = memo(function Backdrop({ sky, sunStep, lights }) {
+  const pool = sky === 'day' ? ['#fff6d0', 0.3] : sky === 'dusk' || sky === 'dawn' ? ['#ffb870', 0.22] : null
   return (
     <g>
       <defs>
@@ -255,7 +458,7 @@ const Backdrop = memo(function Backdrop({ sky }) {
       <rect width={W} height="64" fill="#ece3d2" />
       <rect x="295" y="0" width="105" height="64" fill="#e2d6bf" />
       <rect width={W} height="3" fill="#d7cbb5" />
-      {[74, 164, 254, 336].map((x) => <rect key={x} x={x} y="1" width="24" height="2" fill={sky === 'day' ? '#f6efdc' : '#fff8de'} />)}
+      {[74, 164, 254, 336].map((x) => <rect key={x} x={x} y="1" width="24" height="2" fill={lights ? '#fff8de' : '#8f8672'} />)}
       <rect y="54" width={W} height="10" fill="#e0d5c0" /><rect y="54" width={W} height="1" fill="#cfc2aa" /><rect y="62" width={W} height="2" fill="#b9a98c" />
       {/* 地板 + 经理室地毯 */}
       <rect y="64" width="292" height={H - 64} fill="url(#d-wood)" />
@@ -265,9 +468,9 @@ const Backdrop = memo(function Backdrop({ sky }) {
         <polygon key={x} points={`${x + 4},66 ${x + w + 4},66 ${x + w + 24},124 ${x + 24},124`} fill={pool[0]} opacity={pool[1]} />
       ))}
       {pool && <polygon points="366,66 396,66 400,110 378,110" fill={pool[0]} opacity={pool[1] * 0.7} />}
-      <text x="20" y="113" className="d-svg-zone">汇报席 · 代码算数，不做判断</text>
-      <text x="20" y="169" className="d-svg-zone">策略席 · 规则放行，AI 只能否决</text>
-      <text x="146" y="169" className="d-svg-zone">交易席 · AI 模拟盘</text>
+      <text x="20" y="114" className="d-svg-zone">汇报席 · 代码算数，不做判断</text>
+      <text x="20" y="174" className="d-svg-zone">策略席 · 规则放行，AI 只能否决</text>
+      <text x="146" y="174" className="d-svg-zone">交易席 · AI 模拟盘</text>
       {/* 茶水间 */}
       <circle cx="28" cy="13" r="8" fill="#2a241d" /><circle cx="28" cy="13" r="6.6" fill="#fbf8f2" />
       {[[28, 7.4], [28, 17.6], [22.4, 12.5], [32.6, 12.5]].map(([x, y]) => <rect key={`${x}-${y}`} x={x - 0.5} y={y} width="1" height="1" fill="#8a7f70" />)}
@@ -283,7 +486,7 @@ const Backdrop = memo(function Backdrop({ sky }) {
       <rect className="d-steam late" x="45" y="29" width="1" height="1" fill="#e6f5fc" />
       <rect x="41" y="34" width="10" height="30" fill="#f8f4ea" /><rect x="49" y="34" width="2" height="30" fill="#e0d8c8" />
       <rect x="43" y="40" width="2" height="2" fill="#c8322b" /><rect x="46" y="40" width="2" height="2" fill="#3b78b5" /><rect x="42" y="45" width="8" height="1" fill="#b9a98c" />
-      <Window x={60} y={12} w={52} h={36} id="d-win-1" sky={sky} seed={1} sun />
+      <Window x={60} y={12} w={52} h={36} id="d-win-1" sky={sky} seed={1} sun={sunStep / 24} />
       <Window x={240} y={12} w={44} h={36} id="d-win-2" sky={sky} seed={2} />
       <Window x={364} y={12} w={30} h={36} id="d-win-3" sky={sky} seed={3} />
       {/* 行情大屏 */}
@@ -336,38 +539,78 @@ function tickerOf(data) {
   return { text, width: Math.ceil(width / 20) * 20 }
 }
 
-export function Office({ data, active, phase, onPick }) {
+const REGIME_TONE = { 打板日: 'up', 趋势日: 'amber', 混沌日: 'flat', 空仓日: 'down' }
+const CHAT_PAIRS = [[0, 1], [2, 3], [4, 5], [7, 8], [10, 11], [5, 6]]
+const SEAT_NAME = Object.fromEntries(SEATS.map((s) => [s.role, s.name]))
+const minutesOf = (hhmm) => (hhmm ? +hhmm.slice(0, 2) * 60 + +hhmm.slice(3, 5) : -999)
+
+function footOf(sc, phase, n) {
+  if (sc.stage === 'closed') return '周末休市 · 办公室没人'
+  if (sc.stage === 'empty') return sc.m < 525 ? '还没上班 · 08:45 开始到岗' : '下班了 · 办公室没人，程序还在机柜里跑'
+  if (sc.stage === 'arrive') return `盘前 · 陆续到岗 ${n}/13`
+  if (sc.stage === 'lunch') return '午休 · 13:00 开工'
+  if (sc.stage === 'review') return '收盘 · 经理在白板前复盘'
+  if (sc.stage === 'leave') return `收盘 · 陆续下班，还剩 ${n} 人`
+  return `${phase} · 全员在岗`
+}
+
+export function Office({ data, active, picked, event, phase, onPick }) {
   const roles = Object.fromEntries((data?.roles || []).map((r) => [r.role, r]))
   const traders = Object.fromEntries((data?.traders || []).map((t) => [`trader:${t.sid}`, t]))
   const sd = data?.strategyDesk
   const strats = Object.fromEntries((sd?.traders || []).map((t) => [`strat:${t.key}`, t]))
   const m = data?.manager
-  const mode = phase === '盘中' || phase === '盘前' ? 'work' : phase === '午休' ? 'nap' : 'idle'
+  const sc = sceneOf(data?.now)
+  const { sky, sun } = skyOf(data?.now)
   const hh = data?.now ? +data.now.slice(11, 13) : 12
   const mm = data?.now ? +data.now.slice(14, 16) : 0
-  const sky = hh >= 6 && hh < 17 ? 'day' : hh >= 17 && hh < 19 ? 'dusk' : 'night'
   const todo = (sd?.final?.items || []).filter((i) => i.do)
+  const working = sc.stage === 'work' || sc.stage === 'arrive' || sc.stage === 'review' || sc.stage === 'leave'
+  const lightsOn = working || sc.stage === 'lunch'
+  const dark = lightsOn ? (sc.stage === 'lunch' ? 0.16 : 0) : sky === 'night' ? 0.56 : sky === 'day' ? 0.16 : 0.38
+
+  // 真实事件：经理刚判断完的 8 分钟站到白板前；策略席刚汇总完的 12 分钟，跑腿手里才有票
+  const mgrFresh = m?.ts && data?.now ? (new Date(data.now) - new Date(m.ts)) / 60000 : 999
+  const where = (role) => (role === 'manager' && sc.stage === 'work' && mgrFresh >= 0 && mgrFresh < 8 ? 'board' : sc.where(role))
+  const sinceDesk = sc.m - minutesOf(sd?.slot)
+  const carrying = sinceDesk >= 0 && sinceDesk < 12 && (sd?.traders || []).some((t) => t.picks.length)
 
   const infoOf = (s) => {
+    const st = where(s.role)
+    const at = st === 'seat'
+    const idle = st === 'nap' || st === 'chat' || (sc.stage === 'lunch' && st !== 'seat')
     if (s.kind === 'report') {
       const r = roles[s.role]
-      return { tone: r && r.level !== 'idle' ? r.level : null, alert: r?.level === 'bad', tip: r?.line || '经理开会时汇报' }
+      const tone = r && r.level !== 'idle' ? r.level : null
+      return { st, tone, mode: at && tone ? 'on' : at || idle ? 'saver' : 'off', alert: r?.level === 'bad' }
     }
     if (s.kind === 'strat') {
       const t = strats[s.role]
-      return { tone: !t ? null : t.error ? 'bad' : t.picks.length ? 'ok' : 'calm', alert: !!t?.error, picks: t?.picks.length || 0, tip: stratLine(t) }
+      const tone = !t ? null : t.error ? 'bad' : t.picks.length ? 'ok' : 'calm'
+      return { st, tone, mode: at && tone ? 'on' : at || idle ? 'saver' : 'off', alert: !!t?.error, picks: t?.picks.length || 0 }
     }
     const t = traders[s.role]
     const d = t?.directive
-    return { tone: t ? (t.rounds?.length ? 'ok' : 'calm') : null, gate: d ? (d.buy ? '开' : '关') : null, tip: t ? traderLine(t) : '今天还没跑' }
+    const today = t?.account?.today
+    return { st, tone: t ? 'calm' : null, mode: at && t ? 'on' : at || idle ? 'saver' : 'off', gate: d ? (d.buy ? '开' : '关') : null,
+      pnl: today == null ? '—' : `${today > 0 ? '+' : ''}${Number(today).toFixed(1)}`, pnlTone: today > 0 ? 'up' : today < 0 ? 'down' : 'calm' }
   }
   const infos = Object.fromEntries(SEATS.map((s) => [s.role, infoOf(s)]))
-  const managerTip = m ? `${m.regime}｜${m.watch || m.read}` : '等 09:26 开会'
+  const mgrAt = where('manager')
+
+  // 日常小动作（纯装饰，按分钟换人）：邻座聊两句、伸个懒腰
+  const chat = sc.stage === 'work' ? CHAT_PAIRS[Math.floor(sc.m / 3) % (CHAT_PAIRS.length + 2)] : null
+  const chatOn = chat && chat.every((k) => infos[SEATS[k].role].st === 'seat' && SEATS[k].role !== active)
+  const stretcher = sc.stage === 'work' || sc.stage === 'lunch' ? (Math.floor(sc.m / 2) * 5 + 3) % SEATS.length : -1
 
   const seat = SEATS.find((s) => s.role === active)
-  const bubble = active === 'manager' ? managerTip : seat ? infos[seat.role].tip : ''
-  const ax = active === 'manager' ? MGR.x + 6 : seat ? seat.x + 26 : 0
-  const ay = active === 'manager' ? MGR.y - 4 : seat ? seat.y - 3 : 0
+  const speech = active ? speechOf(active, data) : null
+  const anchor = !active ? null : active === 'manager'
+    ? (mgrAt === 'board' ? [342, 49] : mgrAt === 'sofa' ? [330, 143] : [MGR.x + 6, MGR.y - 12])
+    : [seat.x + seat.w / 2, seat.y - 12]
+  const away = active && (active === 'manager' ? mgrAt : infos[active].st) === 'gone'
+  const who = active === 'manager' ? '经理' : SEAT_NAME[active]
+  const bubbleText = !speech ? '' : event && event.role === active ? event.text : away ? `（人不在）走之前说的：${speech.short}` : speech.short
 
   const breadth = roles.breadth
   const nums = (breadth?.line || '').match(/涨 (\d+) \/ 跌 (\d+)/)
@@ -376,29 +619,34 @@ export function Office({ data, active, phase, onPick }) {
   const share = up + down ? up / (up + down) : 0.5
   const ticker = tickerOf(data)
   const hand = (deg, len) => ({ x2: 28 + Math.sin((deg * Math.PI) / 180) * len, y2: 13 - Math.cos((deg * Math.PI) / 180) * len })
-  const walking = mode === 'work'
-  const carrying = (sd?.traders || []).some((t) => t.picks.length)   // 有策略交易员递了票，跑单的手里才有纸
+  const runner = sc.stage === 'work' || sc.stage === 'arrive' ? 'walk' : sc.stage === 'lunch' || sc.stage === 'review' || (sc.stage === 'leave' && sc.m < 990) ? 'stand' : 'gone'
+  const chatters = SEATS.filter((s) => infos[s.role].st === 'chat')
 
   const rowA = SEATS.filter((s) => s.y === ROW_A)
   const rowB = SEATS.filter((s) => s.y === ROW_B)
-  const people = (list) => list.map((s) => {
+  const items = (rows) => rows.map((s) => <DeskItems key={s.role} s={s} info={infos[s.role]} i={SEATS.indexOf(s)} />)
+  const people = (rows) => rows.map((s) => {
     const i = SEATS.indexOf(s)
+    const info = infos[s.role]
+    const here = info.st === 'seat' || info.st === 'nap'
+    const lean = chatOn && chat.includes(i) ? (i === chat[0] ? 1 : -1) : 0
+    const px = personX(s)
     return (
       <g key={s.role}>
-        <Chair x={s.x + 20} y={s.y} />
-        <Person look={s} x={s.x + 20} y={s.y} mode={mode} active={active === s.role} i={i} />
-        {mode === 'nap' && active !== s.role && i % 2 === 0 && (
-          <text className="d-zz" style={{ animationDelay: `${-i * 0.45}s` }} x={s.x + 33} y={s.y + 1}>z</text>
-        )}
+        {here && <Sitter look={s} x={px + lean} y={s.y + 4} state={info.st} active={active === s.role && info.st === 'seat'} typing={info.mode === 'on'}
+          stretch={i === stretcher && info.st === 'seat'} i={i} />}
+        <Chair x={px} y={s.y} tucked={!here} />
+        {info.st === 'nap' && <text className="d-zz" style={{ animationDelay: `${-i * 0.45}s` }} x={px + 12} y={s.y + 3}>z</text>}
+        <rect x={px - 4} y={s.y + 26} width="2" height="5" fill={s.color} />
+        <text x={px} y={s.y + 30.4} className="d-svg-name">{s.name}</text>
       </g>
     )
   })
-  const items = (list) => list.map((s) => <DeskItems key={s.role} s={s} info={infos[s.role]} mode={mode} i={SEATS.indexOf(s)} />)
 
   return (
     <div className="d-office">
-      <svg viewBox={`0 0 ${W} ${H}`} shapeRendering="crispEdges" role="img" aria-label="交易台办公室：汇报席、策略席、交易席和经理室，正在说话的岗位头顶有气泡">
-        <Backdrop sky={sky} />
+      <svg viewBox={`0 0 ${W} ${H}`} shapeRendering="crispEdges" role="img" aria-label="交易台办公室：汇报席、策略席、交易席和经理室，按北京时间上下班">
+        <Backdrop sky={sky} sunStep={Math.round(sun * 24)} lights={lightsOn} />
         {/* 挂钟指针 */}
         <line x1="28" y1="13" {...hand(((hh % 12) + mm / 60) * 30, 3.2)} stroke="#2a241d" strokeWidth="1.2" />
         <line x1="28" y1="13" {...hand(mm * 6, 5)} stroke="#2a241d" strokeWidth="0.7" />
@@ -421,81 +669,118 @@ export function Office({ data, active, phase, onPick }) {
             style={{ '--tw': `${ticker.width}px`, animationDuration: `${Math.round((110 + ticker.width) / 11)}s` }}>{ticker.text}</text>
         </g>
         {/* 白板 */}
-        <text x="307" y="19" className="d-svg-board">{data?.now ? data.now.slice(5, 10).replace('-', '/') : '—'} 晨会</text>
+        <text x="307" y="19" className="d-svg-board">{data?.now ? data.now.slice(5, 10).replace('-', '/') : '—'} {sc.stage === 'review' ? '复盘' : '晨会'}</text>
         <text x="307" y="32" className={`d-svg-board big ${REGIME_TONE[m?.regime] || ''}`}>{m ? m.regime : '未开会'}</text>
         <text x="307" y="42" className="d-svg-board">{m ? `${m.slot} · 可做 ${sd ? todo.length : '—'} 只` : '09:26 开会'}</text>
         <text x="261" y="163" textAnchor="middle" className="d-svg-zone">DeepSeek ×{data?.calls ?? 0}</text>
 
-        {/* 第一排：汇报席 */}
-        {people(rowA)}
-        <Bench x={6} y={ROW_A + 11} w={275} seams={rowA.slice(1).map((s) => s.x - 1)} />
+        {/* 第一排：汇报席（桌子 → 桌上 → 人 → 椅背） */}
+        <DeskTop x={6} y={ROW_A} w={275} seams={rowA.slice(1).map((s) => s.x - 1)} />
         {items(rowA)}
+        {people(rowA)}
 
-        {/* 经理 */}
-        <Chair x={MGR.x} y={MGR.y} tall />
-        <Person look={MANAGER} x={MGR.x} y={MGR.y} mode={mode} active={active === 'manager'} i={13} />
-        <Bench x={320} y={MGR.y + 11} w={60} c={WALNUT_DESK} />
-        <Monitor x={324} y={MGR.y - 1} tone={m ? 'calm' : null} i={5} />
-        <rect x="345" y={MGR.y + 13} width="10" height="3" fill="#2b2f36" /><rect x="340" y={MGR.y + 13} width="3" height="3" fill="#22252b" />
-        <rect x="366" y={MGR.y + 4} width="9" height="3" fill="#2f8a6c" /><rect x="367" y={MGR.y + 4} width="7" height="1" fill="#57b592" />
-        <rect x="370" y={MGR.y + 7} width="1" height="5" fill="#c9a13b" /><rect x="367" y={MGR.y + 12} width="7" height="1" fill="#c9a13b" />
+        {/* 经理室 */}
+        <DeskTop x={320} y={MGR.y} w={60} c={WALNUT_DESK} />
+        <Monitor x={MGR.x - 3} y={MGR.y - 9} mode={mgrAt === 'seat' && m ? 'on' : mgrAt === 'gone' ? 'off' : 'saver'} tone="calm" i={5} />
+        <rect x="368" y={MGR.y - 3} width="8" height="3" fill="#2f8a6c" /><rect x="369" y={MGR.y - 3} width="6" height="1" fill="#57b592" />
+        <rect x="371" y={MGR.y} width="1" height="5" fill="#c9a13b" /><rect x="369" y={MGR.y + 5} width="6" height="1" fill="#c9a13b" />
         {Array.from({ length: Math.min(todo.length, 3) }, (_, k) => (
-          <g key={k}><rect x={357 + (k % 2)} y={MGR.y + 16 - k * 2} width="6" height="1" fill="#ffffff" /><rect x={357 + (k % 2)} y={MGR.y + 17 - k * 2} width="6" height="1" fill="#c9c0ae" /></g>
+          <g key={k}><rect x={324 + (k % 2)} y={MGR.y + 8 - k * 2} width="6" height="1" fill="#ffffff" /><rect x={324 + (k % 2)} y={MGR.y + 9 - k * 2} width="6" height="1" fill="#c9c0ae" /></g>
         ))}
-        <rect x="343" y={MGR.y + 22} width="14" height="6" fill="#c9a13b" /><text x="350" y={MGR.y + 26.8} textAnchor="middle" className="d-svg-name dark">经理</text>
+        {mgrAt === 'seat' && <Sitter look={MANAGER} x={MGR.x} y={MGR.y + 4} state="seat" active={active === 'manager'} typing={!!m} i={13} />}
+        <Chair x={MGR.x} y={MGR.y} tall tucked={mgrAt !== 'seat'} />
+        <rect x="343" y={MGR.y + 26} width="14" height="6" fill="#c9a13b" /><text x="350" y={MGR.y + 30.8} textAnchor="middle" className="d-svg-name dark">经理</text>
+        {mgrAt === 'board' && <Stander look={MANAGER} x={336} y={50} writing />}
+        {mgrAt === 'sofa' && (
+          <g>
+            <rect x="322" y="148" width="26" height="5" fill="#2c3550" /><rect x="348" y="149" width="10" height="4" fill="#3b3f46" /><rect x="358" y="149" width="3" height="4" fill="#22252b" />
+            <rect x="316" y="147" width="6" height="6" fill={SKINS[MANAGER.skin]} /><rect x="315" y="146" width="5" height="4" fill={MANAGER.hairColor} />
+            <text className="d-zz" x="322" y="145">z</text><text className="d-zz" style={{ animationDelay: '-1.3s' }} x="326" y="142">z</text>
+          </g>
+        )}
 
-        {/* 跑单的：盘中拿着票在策略席和经理室之间来回，其余时间端着咖啡站着 */}
-        <g transform="translate(128,103)">
-          <g className={walking ? 'd-runner' : undefined}>
-            <g className={walking ? 'd-runner-in' : undefined}>
-              <Pixels rows={RUNNER} pal={RUNNER_PAL} />
-              {walking ? (
-                <>
-                  <g className="d-leg a"><Pixels rows={LEGS_A} pal={RUNNER_PAL} y={13} /></g>
-                  <g className="d-leg b"><Pixels rows={LEGS_B} pal={RUNNER_PAL} y={13} /></g>
-                  {carrying && <g className="d-carry"><rect x="8" y="6" width="3" height="4" fill="#ffffff" /><rect x="8" y="10" width="3" height="1" fill="#c9c0ae" /></g>}
-                </>
-              ) : (
-                <>
-                  <Pixels rows={LEGS_B} pal={RUNNER_PAL} y={13} />
-                  <rect x="8" y="7" width="2" height="3" fill="#ffffff" /><rect className="d-steam" x="8" y="5" width="1" height="2" fill="#ffffff" />
-                </>
-              )}
+        {/* 过道：跑腿（盘中来回走，刚汇总完手里有票），午休时和两个同事端着杯子聊天 */}
+        {runner !== 'gone' && (
+          <g transform="translate(128,105)">
+            <g className={runner === 'walk' ? 'd-runner' : undefined}>
+              <g className={runner === 'walk' ? 'd-runner-in' : undefined}>
+                <Pixels rows={RUNNER} pal={RUNNER_PAL} />
+                {runner === 'walk' ? (
+                  <>
+                    <g className="d-leg a"><Pixels rows={LEGS_A} pal={RUNNER_PAL} y={13} /></g>
+                    <g className="d-leg b"><Pixels rows={LEGS_B} pal={RUNNER_PAL} y={13} /></g>
+                    {carrying && <g className="d-carry"><rect x="8" y="6" width="3" height="4" fill="#ffffff" /><rect x="8" y="10" width="3" height="1" fill="#c9c0ae" /></g>}
+                  </>
+                ) : (
+                  <>
+                    <Pixels rows={LEGS_B} pal={RUNNER_PAL} y={13} />
+                    <rect x="8" y="7" width="2" height="3" fill="#ffffff" /><rect className="d-steam" x="8" y="5" width="1" height="2" fill="#ffffff" />
+                  </>
+                )}
+              </g>
             </g>
           </g>
-        </g>
+        )}
+        {chatters.map((s, k) => <Stander key={s.role} look={s} x={143 + k * 15} y={105} front cup />)}
+        {chatters.length > 0 && (
+          <g className="d-dots"><rect x="138" y="99" width="11" height="5" fill="#ffffff" /><rect x="140" y="104" width="2" height="1" fill="#ffffff" />
+            {[0, 1, 2].map((k) => <rect key={k} className="d-led" style={{ animationDelay: `${-k * 0.4}s` }} x={140 + k * 3} y="101" width="1" height="1" fill="#2a241d" />)}</g>
+        )}
 
         {/* 第二排：策略席 + 交易席 */}
-        {people(rowB)}
-        <Bench x={6} y={ROW_B + 11} w={118} seams={[46, 85]} />
-        <Bench x={144} y={ROW_B + 11} w={98} seams={[193]} />
+        <DeskTop x={6} y={ROW_B} w={118} seams={[46, 85]} />
+        <DeskTop x={144} y={ROW_B} w={98} seams={[193]} />
         {items(rowB)}
-        <Pixels rows={PLANT} pal={PLANT_PAL} x={4} y={158} />
-        {sky === 'night' && <rect width={W} height={H} fill="#141b33" opacity="0.14" pointerEvents="none" />}
+        {people(rowB)}
+        {chatOn && (() => {
+          const [a, b] = chat.map((k) => SEATS[k])
+          const cx = Math.round((personX(a) + personX(b)) / 2) + 1
+          return (
+            <g><rect x={cx} y={a.y - 14} width="11" height="5" fill="#ffffff" /><rect x={cx + 2} y={a.y - 9} width="2" height="1" fill="#ffffff" />
+              {[0, 1, 2].map((k) => <rect key={k} className="d-led" style={{ animationDelay: `${-k * 0.4}s` }} x={cx + 2 + k * 3} y={a.y - 12} width="1" height="1" fill="#2a241d" />)}</g>
+          )
+        })()}
+        <Pixels rows={PLANT} pal={PLANT_PAL} x={128} y={158} />
+
+        {/* 关灯：整间屋子压暗，只有机柜的灯还在闪（程序确实还在跑） */}
+        {dark > 0 && <rect width={W} height={H} fill={sc.stage === 'lunch' ? '#2a241d' : '#0b1020'} opacity={dark} pointerEvents="none" />}
+        {!lightsOn && [0, 1, 2, 3].map((i) => (
+          <g key={i}>
+            <rect className="d-led" style={{ animationDelay: `${-i * 0.31}s` }} x="255" y={128 + i * 7} width="1" height="1" fill="#7fd1a5" />
+            <rect className="d-led fast" style={{ animationDelay: `${-i * 0.47}s` }} x="257" y={128 + i * 7} width="1" height="1" fill={i === 2 ? '#f0c36a' : '#7fd1a5'} />
+          </g>
+        ))}
 
         {/* 点击区：整块工位都能点 */}
         {SEATS.map((s) => (
-          <rect key={s.role} className={`d-hit ${active === s.role ? 'is-on' : ''}`} x={s.x} y={s.y - 3} width={s.w - 1} height="33" onClick={() => onPick(s.role)}>
-            <title>{`${s.name}：${infos[s.role].tip}`}</title>
+          <rect key={s.role} className={`d-hit ${active === s.role ? 'is-on' : ''}`} x={s.x} y={s.y - 10} width={s.w - 1} height="42" onClick={() => onPick(s.role)}>
+            <title>{`${s.name}：点开看完整汇报`}</title>
           </rect>
         ))}
-        <rect className={`d-hit ${active === 'manager' ? 'is-on' : ''}`} x="320" y={MGR.y - 4} width="60" height="34" onClick={() => onPick('manager')}>
-          <title>{`经理：${managerTip}`}</title>
+        <rect className={`d-hit ${active === 'manager' ? 'is-on' : ''}`} x="320" y={MGR.y - 10} width="60" height="43" onClick={() => onPick('manager')}>
+          <title>经理：点开看完整判断</title>
         </rect>
       </svg>
-      {bubble && (
+      {picked && speech ? (
+        <div className={`d-sheet ${anchor[0] < W / 2 ? 'right' : 'left'}`} role="dialog" aria-label={`${who}的汇报`}>
+          <header><b>{who}</b><span>{away ? '人不在 · 这是走之前说的' : '当面汇报'}</span><button onClick={() => onPick(active)} aria-label="关闭">×</button></header>
+          <div className="d-sheet-body">
+            <p className="lead">{event && event.role === active ? event.text : speech.short}</p>
+            {speech.full.map((line, k) => <p key={k}>{line}</p>)}
+            {!speech.full.length && <p className="dim">就这些，没有更多要报的。</p>}
+          </div>
+        </div>
+      ) : bubbleText && (
         <>
-          <div className="d-bubble" style={{ left: `${Math.min(79, Math.max(21, (ax / W) * 100))}%`, top: `${(ay / H) * 100}%` }}>{bubble}</div>
-          <div className="d-tail" style={{ left: `${(ax / W) * 100}%`, top: `${(ay / H) * 100}%` }} />
+          <div className="d-bubble" style={{ left: `${Math.min(79, Math.max(21, (anchor[0] / W) * 100))}%`, top: `${(anchor[1] / H) * 100}%` }}>{bubbleText}</div>
+          <div className="d-tail" style={{ left: `${(anchor[0] / W) * 100}%`, top: `${(anchor[1] / H) * 100}%` }} />
         </>
       )}
       <div className="d-office-foot">
-        <span className={`d-dot ${mode}`} />
-        <span>{mode === 'work' ? `${phase} · 全员在岗` : mode === 'nap' ? '午休 · 13:00 开工' : `${phase} · 值守`}</span>
-        <span className="d-office-hint">点任意工位，看 TA 在说什么；再点一次取消</span>
+        <span className={`d-dot ${working ? 'work' : sc.stage === 'lunch' ? 'nap' : ''}`} />
+        <span>{footOf(sc, phase, sc.present.length)}</span>
+        <span className="d-office-hint">点小人看完整汇报，滚轮往下翻；再点一次收起</span>
       </div>
     </div>
   )
 }
-
-const REGIME_TONE = { 打板日: 'up', 趋势日: 'amber', 混沌日: 'flat', 空仓日: 'down' }

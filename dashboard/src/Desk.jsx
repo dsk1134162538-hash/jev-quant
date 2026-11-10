@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Office, SEATS, STRAT_INFO, stratLine, traderLine } from './Office.jsx'
+import { Office, SEATS, STRAT_INFO, liveEvent, sceneOf, stratLine, traderLine } from './Office.jsx'
 
 // 交易台（dj 2026-11-09，仿「横行 SIDEWAYS」）：经理 + 代码汇报员 + 策略交易员 + DeepSeek 交易员，一屏看清谁在干什么、卡在哪一层。
 // 像素办公室在 Office.jsx，这里是页面骨架、岗位卡和右栏。
@@ -270,8 +270,14 @@ export default function DeskPage({ onTerm, onDetail }) {
     const t = setInterval(() => setBeat((b) => b + 1), 3200)
     return () => clearInterval(t)
   }, [])
-  const order = useMemo(() => ['manager', ...SEATS.map((s) => s.role)], [])
-  const active = picked || order[beat % order.length]
+  // 轮流发言只在场的人里轮；有人刚成交就让他先说；办公室没人时不自动冒气泡
+  const minute = data?.now ? data.now.slice(0, 16) : ''
+  const order = useMemo(() => {
+    const here = sceneOf(minute ? `${minute}:00` : null).awake
+    return ['manager', ...SEATS.map((s) => s.role)].filter((r) => here.includes(r))
+  }, [minute])
+  const event = liveEvent(data)
+  const active = picked || event?.role || order[beat % (order.length || 1)] || null
   const phase = phaseOf(data?.now)
   const pick = (r) => setPicked(picked === r ? null : r)
   const fresh = at && Date.now() - at < 6000 && !error
@@ -292,7 +298,7 @@ export default function DeskPage({ onTerm, onDetail }) {
       </header>
       <main className="d-grid">
         <div className="d-left">
-          <div className="d-office-wrap"><Office data={data} active={active} phase={phase} onPick={pick} /></div>
+          <div className="d-office-wrap"><Office data={data} active={active} picked={!!picked} event={event} phase={phase} onPick={pick} /></div>
           <RoleCards data={data} active={active} onPick={pick} />
           <div className="d-traders">
             {(data?.traders || []).map((t) => <TraderCard key={t.sid} t={t} />)}

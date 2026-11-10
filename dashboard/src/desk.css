@@ -86,14 +86,14 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
 .d-svg-name { font: 700 4.8px "Microsoft YaHei", sans-serif; fill: #5d554a; } .d-svg-name.dark { fill: #2a241d; }
 .d-svg-zone { font: 600 4px "Microsoft YaHei", sans-serif; fill: #7a5c38; opacity: 0.62; letter-spacing: 0.3px; }
 .d-svg-plate { font: 700 4px "Microsoft YaHei", sans-serif; fill: #f6efdc; }
-.d-svg-mon { font: 800 6px "Microsoft YaHei", sans-serif; }
+.d-svg-mon { font: 800 6px "Microsoft YaHei", sans-serif; } .d-svg-mon.s { font-size: 4.6px; }
 
 .d-char.is-active { animation: d-hop 0.56s steps(1) infinite; }
 .d-char.look { animation: d-look 9s steps(1) infinite; }
-.d-char.nap { transform: translateY(1px); animation: d-nap 4.2s steps(1) infinite; }
+.d-char.nap { transform: translate(1px, 3px); animation: d-nap 4.2s steps(1) infinite; }
 @keyframes d-hop { 0% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
 @keyframes d-look { 0%, 100% { transform: none; } 86% { transform: translateX(1px); } 93% { transform: none; } }
-@keyframes d-nap { 0% { transform: translateY(1px); } 50% { transform: translateY(2px); } }
+@keyframes d-nap { 0% { transform: translate(1px, 3px); } 50% { transform: translate(1px, 4px); } }
 .d-lid { opacity: 0; animation: d-blink-eye 4.6s steps(1) infinite; } .d-lid.shut { opacity: 1; animation: none; }
 @keyframes d-blink-eye { 0% { opacity: 0; } 95% { opacity: 1; } }
 .d-bar { transform-box: fill-box; transform-origin: 50% 100%; animation: d-bar 1.9s steps(1) infinite; }
@@ -117,6 +117,10 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
 @keyframes d-flick { 0% { opacity: 1; } 50% { opacity: 0; } }
 .d-carry { animation: d-carry 16s steps(1) infinite; }
 @keyframes d-carry { 0% { opacity: 1; } 50% { opacity: 0; } }
+.d-arms { opacity: 0; animation: d-arms 9s steps(1) infinite; }
+@keyframes d-arms { 0% { opacity: 0; } 74% { opacity: 1; } 90% { opacity: 0; } }
+.d-saver { animation: d-saver 7s steps(1) infinite; }
+@keyframes d-saver { 0% { transform: translate(0, 0); } 25% { transform: translate(8px, 2px); } 50% { transform: translate(11px, -2px); } 75% { transform: translate(4px, -3px); } }
 .d-hit { fill: transparent; pointer-events: all; cursor: pointer; } .d-hit:hover, .d-hit.is-on { fill: rgba(255, 255, 255, 0.16); }
 
 .d-bubble { position: absolute; z-index: 2; transform: translate(-50%, calc(-100% - 8px)); width: max-content; max-width: min(40%, 380px); background: #fff;
@@ -124,6 +128,17 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
   pointer-events: none; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .d-tail { position: absolute; z-index: 3; box-sizing: border-box; width: 12px; height: 12px; margin: -14px 0 0 -6px; background: #fff;
   border: solid var(--d-ink); border-width: 0 2px 2px 0; transform: rotate(45deg); pointer-events: none; }
+/* 点小人弹出的汇报单：停在对面半边，不挡住说话的人；内容多就用滚轮往下翻 */
+.d-sheet { position: absolute; z-index: 4; top: 5%; width: min(44%, 440px); max-height: 78%; display: flex; flex-direction: column; background: #fffdf7;
+  border: 2px solid var(--d-ink); box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.3); }
+.d-sheet.right { right: 3%; } .d-sheet.left { left: 3%; }
+.d-sheet header { display: flex; align-items: baseline; gap: 8px; padding: 7px 10px; border-bottom: 2px solid var(--d-ink); background: #f3ecdc; }
+.d-sheet header b { font-size: 14px; } .d-sheet header span { font-size: 11.5px; color: #8a7f70; }
+.d-sheet header button { margin-left: auto; border: 0; background: none; font-size: 18px; line-height: 1; cursor: pointer; color: var(--d-ink); padding: 0 4px; }
+.d-sheet-body { overflow-y: auto; overscroll-behavior: contain; padding: 10px 12px 12px; }
+.d-sheet-body p { margin: 0 0 10px; font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.d-sheet-body p.lead { font-size: 14px; font-weight: 700; }
+.d-sheet-body p.dim { color: #8a7f70; } .d-sheet-body p:last-child { margin-bottom: 0; }
 .d-office-foot { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; color: #d8cfbe; border-top: 2px solid var(--d-ink); }
 .d-dot { width: 7px; height: 7px; flex: none; background: #8a7f70; } .d-dot.work { background: #5fd08a; animation: d-blink 1.2s steps(1) infinite; } .d-dot.nap { background: #f0c36a; }
 .d-office-hint { margin-left: auto; color: #8a7f70; }
