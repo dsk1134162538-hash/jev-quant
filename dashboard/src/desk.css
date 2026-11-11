@@ -82,6 +82,9 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
 /* 办公室：像素场景铺满左栏，所有动效用 steps() 保持像素感 */
 .d-office-wrap { background: #1d1a16; border: 2px solid var(--d-ink); box-shadow: 4px 4px 0 rgba(42, 36, 29, 0.18); }
 .d-office { position: relative; }
+/* 整屏：宽度取「页面宽」和「一屏高度能放下的宽」里小的那个，画面不变形、气泡的百分比定位也不会偏 */
+.d-office { width: min(100%, calc((100vh - 118px) * 1.7778)); margin: 0 auto; }
+.d-office-wrap { margin-top: 10px; }
 .d-office svg { display: block; width: 100%; height: auto; }
 .d-office svg text { user-select: none; pointer-events: none; }
 .d-svg-screen { font: 700 6.5px "Microsoft YaHei", sans-serif; fill: #9fe3bd; }
@@ -93,8 +96,8 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
 .d-svg-board { font: 600 5px "Microsoft YaHei", sans-serif; fill: #5d554a; }
 .d-svg-board.big { font-size: 10px; font-weight: 900; fill: #2a241d; }
 .d-svg-board.up { fill: #c8322b; } .d-svg-board.down { fill: #2f8a4c; } .d-svg-board.amber { fill: #b7791b; } .d-svg-board.flat { fill: #8a7f70; }
-.d-svg-name { font: 700 4.8px "Microsoft YaHei", sans-serif; fill: #5d554a; } .d-svg-name.dark { fill: #2a241d; }
-.d-svg-zone { font: 600 4px "Microsoft YaHei", sans-serif; fill: #7a5c38; opacity: 0.62; letter-spacing: 0.3px; }
+.d-svg-name { font: 700 4.8px "Microsoft YaHei", sans-serif; fill: #5d554a; } .d-svg-name.dark { fill: #2a241d; } .d-svg-name.light { fill: #f6efdc; }
+.d-svg-zone { font: 600 4px "Microsoft YaHei", sans-serif; fill: #7a5c38; opacity: 0.62; letter-spacing: 0.3px; } .d-svg-zone.light { fill: #f6efdc; opacity: 0.75; }
 .d-svg-plate { font: 700 4px "Microsoft YaHei", sans-serif; fill: #f6efdc; }
 .d-svg-mon { font: 800 6px "Microsoft YaHei", sans-serif; } .d-svg-mon.s { font-size: 4.6px; }
 
@@ -257,3 +260,7 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
 .d-rules { margin: 0 0 8px; padding: 0 0 0 18px; font-size: 12.5px; line-height: 1.6; display: grid; gap: 2px; }
 .d-said { margin: 8px 0 0; font-size: 12.5px; } .d-said ul { margin: 2px 0 0; padding: 0 0 0 16px; line-height: 1.6; }
 .d-said li.ask { color: var(--d-blue); }
+.d-week { width: 100%; border-collapse: collapse; font-size: 12px; margin: 4px 0 8px; }
+.d-week th { text-align: right; font-weight: 500; color: var(--d-muted); padding: 2px 4px; border-bottom: 1px solid var(--d-line); }
+.d-week td { text-align: right; padding: 3px 4px; border-bottom: 1px dotted var(--d-line); white-space: nowrap; }
+.d-week th:first-child, .d-week td:first-child { text-align: left; }

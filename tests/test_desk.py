@@ -172,4 +172,21 @@ def test_payload_shows_the_managers_risk_stance_and_the_latest_weekly_review(tmp
          "statements": {"aiflex": {"label": "AI灵活交易", "good": "g", "bad": "b", "next": "n"}}, "stats": {"big": 1}}]) + "\n", encoding="utf-8")
     p = desk.desk_payload(db, rt, {}, {}, at(10, 0))
     assert p["stance"]["level"] == "高" and p["weekly"]["summary"] == "赚在 PCB" and p["weekly"]["statements"]["aiflex"]["good"] == "g"
-    assert "stats" not in p["weekly"]
+    assert "big" not in p["weekly"]["stats"]                         # 原始统计不整块端出来，只留面板用得上的
+
+
+def test_weekly_review_on_the_panel_carries_the_weeks_numbers_and_past_risk_levels(tmp_path):
+    # dj 2026-11-11：「复盘要写在面板上」——不只是结论，这一周每个人的成绩和历次档位也要在
+    rt, db = _runtime(tmp_path), _db(tmp_path)
+    stats = {"traders": {"aiflex": {"label": "AI灵活交易", "weekPct": 1.2, "closed": 3, "wins": 2, "pnlYuan": 900.0, "best": {"code": "600001", "pct": 9.8},
+                                    "worst": {"code": "600002", "pct": -5.2}, "equity": 121440, "buys": 4}},
+             "mgr": {"weekPct": 2.1, "closed": 1, "wins": 1, "pnlYuan": 210.0, "best": None, "worst": None, "equity": 10210, "buys": 1},
+             "company": {"equity": 241000, "items": [{"key": "week", "label": "本周", "target": 5.0, "actual": 0.4, "hit": False}]}, "regimes": [{"date": "2026-11-09", "regime": "打板日"}]}
+    (rt / "weekly_review.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
+        {"week": "2026-W44", "level": "中", "summary": "旧的"},
+        {"week": "2026-W45", "level": "高", "summary": "赚在 PCB", "stats": stats}]) + "\n", encoding="utf-8")
+    w = desk.desk_payload(db, rt, {}, {}, at(10, 0))["weekly"]
+    assert w["history"] == [{"week": "2026-W44", "level": "中"}, {"week": "2026-W45", "level": "高"}]
+    assert w["stats"]["traders"]["aiflex"] == {"label": "AI灵活交易", "weekPct": 1.2, "closed": 3, "wins": 2, "pnlYuan": 900.0,
+                                               "best": {"code": "600001", "pct": 9.8}, "worst": {"code": "600002", "pct": -5.2}}
+    assert w["stats"]["mgr"]["weekPct"] == 2.1 and w["stats"]["companyWeek"] == 0.4 and w["stats"]["regimes"][0]["regime"] == "打板日"

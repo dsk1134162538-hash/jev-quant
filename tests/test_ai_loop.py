@@ -269,4 +269,25 @@ def test_weekly_review_hangs_off_the_after_close_job_only_on_friday_and_its_fail
     def boom(now, **kw):
         raise TimeoutError("经理超时")
     monkeypatch.setattr(weekly_review, "run", boom)
-    assert "TimeoutError" in ai_loop._weekly(datetime(2026, 11, 13, 15, 41))["error"]
+    assert "TimeoutError" in ai_loop._weekly(datetime(2026, 11, 13, 15, 41), sleep=lambda s: None)["error"]
+
+
+def test_weekly_review_is_retried_a_few_times_because_it_only_gets_one_slot_a_week(monkeypatch):
+    # 周会挂在每天只跑一次的收盘后任务上：一次超时就等于这周没开，所以当场重试
+    from datetime import datetime
+    from dashboard import weekly_review
+    calls, naps = [], []
+    monkeypatch.setattr("jevq.notify.notifier_from_env", lambda: object())
+
+    def flaky(now, **kw):
+        calls.append(1)
+        if len(calls) < 3:
+            raise TimeoutError("经理超时")
+        return {"week": "2026-W46", "level": "中高"}
+    monkeypatch.setattr(weekly_review, "run", flaky)
+    out = ai_loop._weekly(datetime(2026, 11, 13, 15, 41), sleep=naps.append)
+    assert out == {"week": "2026-W46", "level": "中高", "attempts": 3} and len(naps) == 2
+    calls.clear()
+    monkeypatch.setattr(weekly_review, "run", lambda now, **kw: (_ for _ in ()).throw(TimeoutError("一直超时")))
+    out = ai_loop._weekly(datetime(2026, 11, 13, 15, 41), sleep=naps.append)
+    assert "TimeoutError" in out["error"] and out["attempts"] == ai_loop.WEEKLY_ATTEMPTS

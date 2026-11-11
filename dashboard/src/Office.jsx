@@ -5,10 +5,10 @@ import { memo } from 'react'
 // 右边隔出经理室。dj 2026-11-10 第二版：小人背对我们坐，显示器在头的正前方、屏幕朝我们（亮着 = 在干活）；
 // 渲染顺序是 桌子 → 桌上的东西 → 人 → 椅背，不能随便调。谁在座位上由 sceneOf() 按北京时间排班。
 
-const W = 400
-const H = 176
-const ROW_A = 76
-const ROW_B = 130
+const W = 480
+const H = 270
+const ROW_A = 86
+const ROW_B = 196
 const SKINS = ['#f1c9a0', '#e6b88c', '#f7d9b8']
 
 const shade = (hex, f) => `#${[1, 3, 5].map((i) => Math.round(parseInt(hex.slice(i, i + 2), 16) * f).toString(16).padStart(2, '0')).join('')}`
@@ -63,24 +63,25 @@ const REPORT_SEATS = [
   ['scan', '扫板', '#d0662a', 'short', '#5a3a22', 1],
   ['book', '持仓', '#5b7f3a', 'pony', '#2a2420', 2],
   ['risk', '风控', '#a33a52', 'crew', '#8a8580', 0, true],
-].map(([role, name, color, hair, hairColor, skin, glasses], i) => ({ role, name, color, hair, hairColor, skin, glasses, kind: 'report', x: 8 + i * 39, y: ROW_A, w: 39 }))
+].map(([role, name, color, hair, hairColor, skin, glasses], i) => ({ role, name, color, hair, hairColor, skin, glasses, kind: 'report', x: 16 + i * 52, y: ROW_A, w: 52 }))
 const STRAT_SEATS = [
   ['strat:relay', '接力', '#e0574a', 'side', '#2a2420', 1],
   ['strat:wts', '弱转强', '#4a8fd1', 'long', '#3a2a1e', 2],
   ['strat:bz', '补涨', '#6aa84f', 'short', '#4a3424', 0],
-].map(([role, name, color, hair, hairColor, skin], i) => ({ role, name, color, hair, hairColor, skin, body: 'vest', kind: 'strat', x: 8 + i * 39, y: ROW_B, w: 39 }))
+].map(([role, name, color, hair, hairColor, skin], i) => ({ role, name, color, hair, hairColor, skin, body: 'vest', kind: 'strat', x: 10 + i * 55, y: ROW_B, w: 55 }))
 const TRADER_SEATS = [
   ['trader:aiflex', '交易员1', '#d9a21b', 'short', '#1d1a16', 1],
   ['trader:aiflex2', '交易员2', '#2f8a6c', 'long', '#5a3a22', 0],
-].map(([role, name, color, hair, hairColor, skin], i) => ({ role, name, color, hair, hairColor, skin, headset: true, kind: 'trader', x: 146 + i * 48, y: ROW_B, w: 48 }))
+].map(([role, name, color, hair, hairColor, skin], i) => ({ role, name, color, hair, hairColor, skin, headset: true, kind: 'trader', x: 192 + i * 62, y: ROW_B, w: 62 }))
 export const SEATS = [...REPORT_SEATS, ...STRAT_SEATS, ...TRADER_SEATS]
 const MANAGER = { color: '#2c3550', hair: 'side', hairColor: '#3a3632', skin: 1, glasses: true, body: 'suit' }
-const MGR = { x: 344, y: 94 }
+const MGR = { x: 430, y: 96 }
 
 export const STRAT_INFO = [['relay', 'RELAY', '高标接力官'], ['wts', 'WTS', '弱转强官'], ['bz', 'BZ', '补涨官']]
 
 // ---------- 排班：谁在哪，只看北京时间（接口的 now 就是北京时间） ----------
 const PEOPLE = ['manager', ...SEATS.map((s) => s.role)]
+const MEETING = ['manager', 'trader:aiflex', 'trader:aiflex2']       // 周复盘会（dashboard/weekly_review.py）到场的人
 const LUNCH = ['sofa', 'nap', 'out', 'chat', 'out', 'nap', 'out', 'nap', 'out', 'nap', 'chat', 'nap', 'out']
 const STAGE_OF = [[525, 'empty'], [555, 'arrive'], [690, 'work'], [780, 'lunch'], [900, 'work'], [930, 'review'], [1050, 'leave']]
 
@@ -91,8 +92,10 @@ export function sceneOf(iso) {
   const m = d.getHours() * 60 + d.getMinutes()
   const weekend = d.getDay() === 0 || d.getDay() === 6
   const stage = weekend ? 'closed' : (STAGE_OF.find(([end]) => m < end) || [0, 'empty'])[1]
+  const meeting = !weekend && d.getDay() === 5 && m >= 930 && m < 960
   const where = (role) => {
     const i = PEOPLE.indexOf(role)
+    if (meeting && MEETING.includes(role)) return 'meeting'
     if (stage === 'work') return 'seat'
     if (stage === 'review') return role === 'manager' ? 'board' : 'seat'
     if (stage === 'arrive') return m >= 525 + ((i * 7) % 13) * 2 ? 'seat' : 'gone'
@@ -108,7 +111,8 @@ export function sceneOf(iso) {
     return 'gone'
   }
   // present 在办公室里的人；awake 醒着、能开口汇报的人（睡着的不会自己冒气泡）
-  return { stage, m, where, present: PEOPLE.filter((r) => where(r) !== 'gone'), awake: PEOPLE.filter((r) => ['seat', 'board', 'chat'].includes(where(r))) }
+  return { stage, m, where, meeting, present: PEOPLE.filter((r) => where(r) !== 'gone'),
+    awake: PEOPLE.filter((r) => ['seat', 'board', 'chat', 'meeting'].includes(where(r))) }
 }
 
 // 天色：按月份的日出日落（上海附近，够用），返回 sky 和太阳走到哪了（0 日出 → 1 日落）
@@ -438,8 +442,10 @@ function Window({ x, y, w, h, id, sky, seed = 0, sun }) {
   )
 }
 
+// 第三版布局（dj 2026-11-11：「太挤了，座位分开一点或者加几个办公室」）：画布 480×270。
+// 上半层是汇报大厅（7 个汇报席一排）和右边的经理室；下半层隔成三间：策略室、交易室、会议室（周五复盘、午休的沙发也在这）。
 const Backdrop = memo(function Backdrop({ sky, sunStep, lights }) {
-  const pool = sky === 'day' ? ['#fff6d0', 0.3] : sky === 'dusk' || sky === 'dawn' ? ['#ffb870', 0.22] : null
+  const lamp = lights ? '#fff8de' : '#8f8672'
   return (
     <g>
       <defs>
@@ -452,26 +458,34 @@ const Backdrop = memo(function Backdrop({ sky, sunStep, lights }) {
         <pattern id="d-carpet" width="8" height="8" patternUnits="userSpaceOnUse">
           <rect width="8" height="8" fill="#7f9189" /><rect width="4" height="4" fill="#869890" /><rect x="4" y="4" width="4" height="4" fill="#869890" />
         </pattern>
-        <clipPath id="d-screen-clip"><rect x="122" y="7" width="108" height="46" /></clipPath>
+        <pattern id="d-carpet-blue" width="8" height="8" patternUnits="userSpaceOnUse">
+          <rect width="8" height="8" fill="#7d8ea3" /><rect width="4" height="4" fill="#8696ab" /><rect x="4" y="4" width="4" height="4" fill="#8696ab" />
+        </pattern>
+        <pattern id="d-carpet-dark" width="8" height="8" patternUnits="userSpaceOnUse">
+          <rect width="8" height="8" fill="#4d5560" /><rect width="4" height="4" fill="#545c68" /><rect x="4" y="4" width="4" height="4" fill="#545c68" />
+        </pattern>
+        <pattern id="d-carpet-warm" width="8" height="8" patternUnits="userSpaceOnUse">
+          <rect width="8" height="8" fill="#b08a6a" /><rect width="4" height="4" fill="#b89272" /><rect x="4" y="4" width="4" height="4" fill="#b89272" />
+        </pattern>
+        <clipPath id="d-screen-clip"><rect x="142" y="7" width="108" height="46" /></clipPath>
       </defs>
-      {/* 墙 */}
+
+      {/* 后墙 */}
       <rect width={W} height="64" fill="#ece3d2" />
-      <rect x="295" y="0" width="105" height="64" fill="#e2d6bf" />
+      <rect x="396" y="0" width="84" height="64" fill="#e2d6bf" />
       <rect width={W} height="3" fill="#d7cbb5" />
-      {[74, 164, 254, 336].map((x) => <rect key={x} x={x} y="1" width="24" height="2" fill={lights ? '#fff8de' : '#8f8672'} />)}
+      {[80, 184, 290, 424].map((x) => <rect key={x} x={x} y="1" width="24" height="2" fill={lamp} />)}
       <rect y="54" width={W} height="10" fill="#e0d5c0" /><rect y="54" width={W} height="1" fill="#cfc2aa" /><rect y="62" width={W} height="2" fill="#b9a98c" />
-      {/* 地板 + 经理室地毯 */}
-      <rect y="64" width="292" height={H - 64} fill="url(#d-wood)" />
-      <rect x="295" y="64" width="105" height={H - 64} fill="url(#d-carpet)" />
+
+      {/* 地面：大厅木地板，经理室地毯，下半层三间各一种地毯 */}
+      <rect y="64" width="393" height="88" fill="url(#d-wood)" />
+      <rect x="396" y="64" width="84" height="88" fill="url(#d-carpet)" />
+      <rect y="156" width="180" height={H - 156} fill="url(#d-carpet-blue)" />
+      <rect x="184" y="156" width="160" height={H - 156} fill="url(#d-carpet-dark)" />
+      <rect x="348" y="156" width="132" height={H - 156} fill="url(#d-carpet-warm)" />
       <rect y="64" width={W} height="2" fill="#2a241d" opacity="0.1" />
-      {pool && [[60, 52], [240, 44]].map(([x, w]) => (
-        <polygon key={x} points={`${x + 4},66 ${x + w + 4},66 ${x + w + 24},124 ${x + 24},124`} fill={pool[0]} opacity={pool[1]} />
-      ))}
-      {pool && <polygon points="366,66 396,66 400,110 378,110" fill={pool[0]} opacity={pool[1] * 0.7} />}
-      <text x="20" y="114" className="d-svg-zone">汇报席 · 代码算数，不做判断</text>
-      <text x="20" y="174" className="d-svg-zone">策略席 · 规则放行，AI 只能否决</text>
-      <text x="146" y="174" className="d-svg-zone">交易席 · AI 模拟盘</text>
-      {/* 茶水间 */}
+
+      {/* 大厅后墙：挂钟、茶水台、窗、行情大屏、窗 */}
       <circle cx="28" cy="13" r="8" fill="#2a241d" /><circle cx="28" cy="13" r="6.6" fill="#fbf8f2" />
       {[[28, 7.4], [28, 17.6], [22.4, 12.5], [32.6, 12.5]].map(([x, y]) => <rect key={`${x}-${y}`} x={x - 0.5} y={y} width="1" height="1" fill="#8a7f70" />)}
       <rect x="6" y="46" width="32" height="18" fill="#f3ede0" /><rect x="21.5" y="47" width="1" height="15" fill="#d2c5ad" />
@@ -486,42 +500,73 @@ const Backdrop = memo(function Backdrop({ sky, sunStep, lights }) {
       <rect className="d-steam late" x="45" y="29" width="1" height="1" fill="#e6f5fc" />
       <rect x="41" y="34" width="10" height="30" fill="#f8f4ea" /><rect x="49" y="34" width="2" height="30" fill="#e0d8c8" />
       <rect x="43" y="40" width="2" height="2" fill="#c8322b" /><rect x="46" y="40" width="2" height="2" fill="#3b78b5" /><rect x="42" y="45" width="8" height="1" fill="#b9a98c" />
-      <Window x={60} y={12} w={52} h={36} id="d-win-1" sky={sky} seed={1} sun={sunStep / 24} />
-      <Window x={240} y={12} w={44} h={36} id="d-win-2" sky={sky} seed={2} />
-      <Window x={364} y={12} w={30} h={36} id="d-win-3" sky={sky} seed={3} />
-      {/* 行情大屏 */}
-      <rect x="119" y="4" width="114" height="52" fill="#3a3632" /><rect x="120" y="5" width="112" height="50" fill="#1d1a16" />
-      <rect x="122" y="7" width="108" height="46" fill="#0f1a16" /><rect x="122" y="45" width="108" height="8" fill="#18291f" />
-      <rect x="174" y="54" width="4" height="1" fill="#c8322b" />
-      {/* 经理室：白板、门牌、沙发、绿植 */}
-      <rect x="302" y="9" width="52" height="40" fill="#b9b4aa" /><rect x="304" y="11" width="48" height="36" fill="#fbfaf5" />
-      <rect x="310" y="49" width="36" height="2" fill="#b9b4aa" />
-      <rect x="314" y="48" width="4" height="1" fill="#c8322b" /><rect x="320" y="48" width="4" height="1" fill="#3b78b5" /><rect x="326" y="48" width="4" height="1" fill="#2a241d" />
-      <rect x="312" y="152" width="54" height="14" fill="#7a4a3a" /><rect x="313" y="152" width="52" height="2" fill="#93604c" />
-      <rect x="338" y="154" width="1" height="11" fill="#653a2d" /><rect x="309" y="156" width="4" height="13" fill="#653a2d" /><rect x="365" y="156" width="4" height="13" fill="#653a2d" />
-      <rect x="312" y="166" width="54" height="3" fill="#55301f" /><rect x="311" y="169" width="58" height="2" fill="#2a241d" opacity="0.18" />
-      <Pixels rows={PLANT} pal={PLANT_PAL} x={384} y={150} />
-      {/* 玻璃隔断，中间留门 */}
-      <rect x="291" y="56" width="4" height="44" fill="#8a7f70" /><rect x="292" y="58" width="2" height="40" fill="#cfe4ea" />
-      <rect x="291" y="124" width="4" height={H - 124} fill="#8a7f70" /><rect x="292" y="126" width="2" height={H - 128} fill="#cfe4ea" />
-      <rect x="290" y="98" width="6" height="2" fill="#5d554a" /><rect x="290" y="124" width="6" height="2" fill="#5d554a" /><rect x="291" y="100" width="4" height="24" fill="#c7b596" />
-      <rect x="297" y="51" width="20" height="7" fill="#2a241d" /><text x="307" y="56.4" textAnchor="middle" className="d-svg-plate">经理室</text>
-      {/* 机柜、复印机、墙角绿植 */}
-      <rect x="254" y="156" width="18" height="2" fill="#2a241d" opacity="0.16" />
-      <rect x="252" y="122" width="18" height="34" fill="#2b2f36" /><rect x="252" y="122" width="18" height="2" fill="#434851" />
+      <Window x={66} y={12} w={56} h={36} id="d-win-1" sky={sky} seed={1} sun={sunStep / 24} />
+      <rect x="139" y="4" width="114" height="52" fill="#3a3632" /><rect x="140" y="5" width="112" height="50" fill="#1d1a16" />
+      <rect x="142" y="7" width="108" height="46" fill="#0f1a16" /><rect x="142" y="45" width="108" height="8" fill="#18291f" />
+      <rect x="194" y="54" width="4" height="1" fill="#c8322b" />
+      <Window x={270} y={12} w={48} h={36} id="d-win-2" sky={sky} seed={2} />
+      <Window x={336} y={12} w={40} h={36} id="d-win-3" sky={sky} seed={3} />
+      <Pixels rows={PLANT} pal={PLANT_PAL} x={380} y={52} />
+      <text x="16" y="146" className="d-svg-zone">汇报大厅 · 代码算数，不做判断</text>
+
+      {/* 经理室：白板、门牌，竖隔断中间留门 */}
+      <rect x="404" y="9" width="56" height="40" fill="#b9b4aa" /><rect x="406" y="11" width="52" height="36" fill="#fbfaf5" />
+      <rect x="412" y="49" width="40" height="2" fill="#b9b4aa" />
+      <rect x="416" y="48" width="4" height="1" fill="#c8322b" /><rect x="422" y="48" width="4" height="1" fill="#3b78b5" /><rect x="428" y="48" width="4" height="1" fill="#2a241d" />
+      <Window x={464} y={14} w={12} h={32} id="d-win-4" sky={sky} seed={4} />
+      <rect x="393" y="56" width="4" height="44" fill="#8a7f70" /><rect x="394" y="58" width="2" height="40" fill="#cfe4ea" />
+      <rect x="393" y="126" width="4" height="26" fill="#8a7f70" /><rect x="394" y="128" width="2" height="22" fill="#cfe4ea" />
+      <rect x="392" y="98" width="6" height="2" fill="#5d554a" /><rect x="392" y="126" width="6" height="2" fill="#5d554a" /><rect x="393" y="100" width="4" height="26" fill="#c7b596" />
+      <rect x="399" y="51" width="20" height="7" fill="#2a241d" /><text x="409" y="56.4" textAnchor="middle" className="d-svg-plate">经理室</text>
+      <Pixels rows={PLANT} pal={PLANT_PAL} x={468} y={136} />
+
+      {/* 上下两层之间的矮墙，三扇门 */}
+      <rect y="152" width={W} height="4" fill="#8a7f70" /><rect y="152" width={W} height="1" fill="#a39884" />
+      {[[84, 26], [252, 26], [404, 26]].map(([x, w]) => <rect key={x} x={x} y="152" width={w} height="4" fill="#c7b596" />)}
+      {/* 下半层的两道竖玻璃隔断 */}
+      {[180, 344].map((x) => (
+        <g key={x}><rect x={x} y="156" width="4" height={H - 156} fill="#8a7f70" /><rect x={x + 1} y="158" width="2" height={H - 160} fill="#cfe4ea" /></g>
+      ))}
+      {[[10, '策略室'], [194, '交易室'], [358, '会议室']].map(([x, name]) => (
+        <g key={name}><rect x={x} y="158" width="20" height="7" fill="#2a241d" /><text x={x + 10} y="163.4" textAnchor="middle" className="d-svg-plate">{name}</text></g>
+      ))}
+      <text x="34" y="164" className="d-svg-zone light">规则放行，AI 只能否决</text>
+      <text x="218" y="164" className="d-svg-zone light">AI 模拟盘</text>
+      <text x="382" y="164" className="d-svg-zone">周五复盘 · 午休</text>
+
+      {/* 策略室：书架和绿植 */}
+      <rect x="150" y="232" width="24" height="30" fill="#8f6a42" /><rect x="152" y="234" width="20" height="8" fill="#6d4a2e" /><rect x="152" y="244" width="20" height="8" fill="#6d4a2e" /><rect x="152" y="254" width="20" height="6" fill="#6d4a2e" />
+      {[[153, 235, '#c8322b'], [156, 235, '#3b78b5'], [159, 236, '#efe8da'], [163, 235, '#5b7f3a'], [154, 245, '#d9a21b'], [158, 246, '#efe8da'], [162, 245, '#7a4fa0'], [166, 245, '#c8322b']].map(([x, y, c]) => (
+        <rect key={`${x}-${y}`} x={x} y={y} width="2" height={y % 2 ? 7 : 6} fill={c} />
+      ))}
+      <Pixels rows={PLANT} pal={PLANT_PAL} x={6} y={250} />
+
+      {/* 交易室：机柜 */}
+      <rect x="324" y="238" width="18" height="2" fill="#2a241d" opacity="0.2" />
+      <rect x="322" y="200" width="18" height="38" fill="#2b2f36" /><rect x="322" y="200" width="18" height="2" fill="#434851" />
       {[0, 1, 2, 3].map((i) => (
         <g key={i}>
-          <rect x="254" y={126 + i * 7} width="14" height="5" fill="#181b20" />
-          <rect className="d-led" style={{ animationDelay: `${-i * 0.31}s` }} x="255" y={128 + i * 7} width="1" height="1" fill="#7fd1a5" />
-          <rect className="d-led fast" style={{ animationDelay: `${-i * 0.47}s` }} x="257" y={128 + i * 7} width="1" height="1" fill={i === 2 ? '#f0c36a' : '#7fd1a5'} />
-          <rect x="260" y={128 + i * 7} width="7" height="1" fill="#2f353d" />
+          <rect x="324" y={204 + i * 8} width="14" height="6" fill="#181b20" />
+          <rect className="d-led" style={{ animationDelay: `${-i * 0.31}s` }} x="325" y={206 + i * 8} width="1" height="1" fill="#7fd1a5" />
+          <rect className="d-led fast" style={{ animationDelay: `${-i * 0.47}s` }} x="327" y={206 + i * 8} width="1" height="1" fill={i === 2 ? '#f0c36a' : '#7fd1a5'} />
+          <rect x="330" y={206 + i * 8} width="7" height="1" fill="#2f353d" />
         </g>
       ))}
-      <rect x="276" y="156" width="15" height="2" fill="#2a241d" opacity="0.16" />
-      <rect x="274" y="136" width="15" height="20" fill="#ebe5d8" /><rect x="274" y="132" width="15" height="4" fill="#cfc8ba" /><rect x="274" y="132" width="15" height="1" fill="#ded7c9" />
-      <rect x="276" y="140" width="11" height="1" fill="#a79d8b" /><rect x="278" y="139" width="7" height="2" fill="#ffffff" />
-      <rect x="276" y="146" width="11" height="4" fill="#d6cfc1" /><rect className="d-led" x="286" y="137" width="1" height="1" fill="#7fd1a5" />
-      <Pixels rows={PLANT} pal={PLANT_PAL} x={279} y={52} />
+
+      {/* 会议室：会议桌、沙发、复印机、绿植 */}
+      <rect x="374" y="214" width="70" height="3" fill="#2a241d" opacity="0.18" />
+      <rect x="372" y="192" width="70" height="20" fill="#9a6842" /><rect x="372" y="192" width="70" height="1" fill="#b07e55" /><rect x="372" y="211" width="70" height="2" fill="#6d4128" />
+      <rect x="402" y="198" width="10" height="6" fill="#fbf8f2" /><rect x="418" y="200" width="3" height="3" fill="#ffffff" /><rect x="384" y="199" width="8" height="5" fill="#2b2f36" />
+      {[382, 402, 422].map((x) => <g key={x}><rect x={x} y="181" width="12" height="9" fill="#4a4f57" /><rect x={x + 1} y="180" width="10" height="1" fill="#5d636c" /></g>)}
+      <g transform="translate(42,92)">
+        <rect x="312" y="152" width="54" height="14" fill="#7a4a3a" /><rect x="313" y="152" width="52" height="2" fill="#93604c" />
+        <rect x="338" y="154" width="1" height="11" fill="#653a2d" /><rect x="309" y="156" width="4" height="13" fill="#653a2d" /><rect x="365" y="156" width="4" height="13" fill="#653a2d" />
+        <rect x="312" y="166" width="54" height="3" fill="#55301f" /><rect x="311" y="169" width="58" height="2" fill="#2a241d" opacity="0.18" />
+      </g>
+      <rect x="456" y="206" width="15" height="20" fill="#ebe5d8" /><rect x="456" y="202" width="15" height="4" fill="#cfc8ba" /><rect x="456" y="202" width="15" height="1" fill="#ded7c9" />
+      <rect x="458" y="210" width="11" height="1" fill="#a79d8b" /><rect x="460" y="209" width="7" height="2" fill="#ffffff" />
+      <rect x="458" y="216" width="11" height="4" fill="#d6cfc1" /><rect className="d-led" x="468" y="207" width="1" height="1" fill="#7fd1a5" />
+      <Pixels rows={PLANT} pal={PLANT_PAL} x={466} y={250} />
     </g>
   )
 })
@@ -533,6 +578,8 @@ function tickerOf(data) {
     const a = t.account || {}
     if (a.today != null) parts.push(`${t.label} 今日 ${a.today > 0 ? '+' : ''}${Number(a.today).toFixed(2)}%`)
   })
+  const ma = data?.mgr?.account
+  if (ma?.today != null) parts.push(`经理账户 今日 ${ma.today > 0 ? '+' : ''}${Number(ma.today).toFixed(2)}%`)
   ;(data?.roles || []).filter((r) => r.level === 'bad' || r.level === 'warn').forEach((r) => parts.push(`${r.name}：${r.line}`))
   const text = parts.join('   ◆   ')
   const width = [...text].reduce((n, c) => n + (c.charCodeAt(0) > 255 ? 5 : 2.8), 0)
@@ -542,6 +589,8 @@ function tickerOf(data) {
 const REGIME_TONE = { 打板日: 'up', 趋势日: 'amber', 混沌日: 'flat', 空仓日: 'down' }
 const CHAT_PAIRS = [[0, 1], [2, 3], [4, 5], [7, 8], [10, 11], [5, 6]]
 const SEAT_NAME = Object.fromEntries(SEATS.map((s) => [s.role, s.name]))
+const MEET_X = { manager: 382, 'trader:aiflex': 402, 'trader:aiflex2': 422 }      // 会议桌近侧的三个位子
+const MEET_Y = 216
 const minutesOf = (hhmm) => (hhmm ? +hhmm.slice(0, 2) * 60 + +hhmm.slice(3, 5) : -999)
 
 function footOf(sc, phase, n) {
@@ -550,7 +599,7 @@ function footOf(sc, phase, n) {
   if (sc.stage === 'arrive') return `盘前 · 陆续到岗 ${n}/13`
   if (sc.stage === 'lunch') return '午休 · 13:00 开工'
   if (sc.stage === 'review') return '收盘 · 经理在白板前复盘'
-  if (sc.stage === 'leave') return `收盘 · 陆续下班，还剩 ${n} 人`
+  if (sc.stage === 'leave') return sc.meeting ? `周五 · 经理和两位交易员在会议室开周复盘会，其他人陆续下班` : `收盘 · 陆续下班，还剩 ${n} 人`
   return `${phase} · 全员在岗`
 }
 
@@ -569,7 +618,7 @@ export function Office({ data, active, picked, event, phase, onPick }) {
   const lightsOn = working || sc.stage === 'lunch'
   const dark = lightsOn ? (sc.stage === 'lunch' ? 0.16 : 0) : sky === 'night' ? 0.56 : sky === 'day' ? 0.16 : 0.38
 
-  // 真实事件：经理刚判断完的 8 分钟站到白板前；策略席刚汇总完的 12 分钟，跑腿手里才有票
+  // 真实事件：经理刚判断完的 8 分钟站到白板前；策略室刚汇总完的 12 分钟，跑腿手里才有票
   const mgrFresh = m?.ts && data?.now ? (new Date(data.now) - new Date(m.ts)) / 60000 : 999
   const where = (role) => (role === 'manager' && sc.stage === 'work' && mgrFresh >= 0 && mgrFresh < 8 ? 'board' : sc.where(role))
   const sinceDesk = sc.m - minutesOf(sd?.slot)
@@ -578,7 +627,7 @@ export function Office({ data, active, picked, event, phase, onPick }) {
   const infoOf = (s) => {
     const st = where(s.role)
     const at = st === 'seat'
-    const idle = st === 'nap' || st === 'chat' || (sc.stage === 'lunch' && st !== 'seat')
+    const idle = st === 'nap' || st === 'chat' || st === 'meeting' || (sc.stage === 'lunch' && st !== 'seat')
     if (s.kind === 'report') {
       const r = roles[s.role]
       const tone = r && r.level !== 'idle' ? r.level : null
@@ -605,10 +654,12 @@ export function Office({ data, active, picked, event, phase, onPick }) {
 
   const seat = SEATS.find((s) => s.role === active)
   const speech = active ? speechOf(active, data) : null
-  const anchor = !active ? null : active === 'manager'
-    ? (mgrAt === 'board' ? [342, 49] : mgrAt === 'sofa' ? [330, 143] : [MGR.x + 6, MGR.y - 12])
-    : [seat.x + seat.w / 2, seat.y - 12]
-  const away = active && (active === 'manager' ? mgrAt : infos[active].st) === 'gone'
+  const activeAt = !active ? null : active === 'manager' ? mgrAt : infos[active].st
+  const anchor = !active ? null
+    : activeAt === 'meeting' ? [MEET_X[active] + 6, MEET_Y - 8]
+      : active === 'manager' ? (mgrAt === 'board' ? [446, 49] : mgrAt === 'sofa' ? [372, 240] : [MGR.x + 6, MGR.y - 12])
+        : [seat.x + seat.w / 2, seat.y - 12]
+  const away = activeAt === 'gone'
   const who = active === 'manager' ? '经理' : SEAT_NAME[active]
   const bubbleText = !speech ? '' : event && event.role === active ? event.text : away ? `（人不在）走之前说的：${speech.short}` : speech.short
 
@@ -621,6 +672,8 @@ export function Office({ data, active, picked, event, phase, onPick }) {
   const hand = (deg, len) => ({ x2: 28 + Math.sin((deg * Math.PI) / 180) * len, y2: 13 - Math.cos((deg * Math.PI) / 180) * len })
   const runner = sc.stage === 'work' || sc.stage === 'arrive' ? 'walk' : sc.stage === 'lunch' || sc.stage === 'review' || (sc.stage === 'leave' && sc.m < 990) ? 'stand' : 'gone'
   const chatters = SEATS.filter((s) => infos[s.role].st === 'chat')
+  const meeting = ['manager', 'trader:aiflex', 'trader:aiflex2'].filter((r) => where(r) === 'meeting')
+  const lookOf = (role) => (role === 'manager' ? MANAGER : SEATS.find((s) => s.role === role))
 
   const rowA = SEATS.filter((s) => s.y === ROW_A)
   const rowB = SEATS.filter((s) => s.y === ROW_B)
@@ -638,14 +691,14 @@ export function Office({ data, active, picked, event, phase, onPick }) {
         <Chair x={px} y={s.y} tucked={!here} />
         {info.st === 'nap' && <text className="d-zz" style={{ animationDelay: `${-i * 0.45}s` }} x={px + 12} y={s.y + 3}>z</text>}
         <rect x={px - 4} y={s.y + 26} width="2" height="5" fill={s.color} />
-        <text x={px} y={s.y + 30.4} className="d-svg-name">{s.name}</text>
+        <text x={px} y={s.y + 30.4} className={`d-svg-name ${s.y === ROW_B ? 'light' : ''}`}>{s.name}</text>
       </g>
     )
   })
 
   return (
     <div className="d-office">
-      <svg viewBox={`0 0 ${W} ${H}`} shapeRendering="crispEdges" role="img" aria-label="交易台办公室：汇报席、策略席、交易席和经理室，按北京时间上下班">
+      <svg viewBox={`0 0 ${W} ${H}`} shapeRendering="crispEdges" role="img" aria-label="交易台办公室：汇报大厅、经理室、策略室、交易室和会议室，按北京时间上下班">
         <Backdrop sky={sky} sunStep={Math.round(sun * 24)} lights={lightsOn} />
         {/* 挂钟指针 */}
         <line x1="28" y1="13" {...hand(((hh % 12) + mm / 60) * 30, 3.2)} stroke="#2a241d" strokeWidth="1.2" />
@@ -654,54 +707,47 @@ export function Office({ data, active, picked, event, phase, onPick }) {
         {/* 大屏上的字 */}
         <g clipPath="url(#d-screen-clip)">
           {nums ? (
-            <text x="126" y="17" className="d-svg-screen">
+            <text x="146" y="17" className="d-svg-screen">
               <tspan className="up">涨 {up}</tspan><tspan dx="4" className="down">跌 {down}</tspan>
               <tspan dx="4" className="dim">{breadth.line.split('·').slice(1, 2).join('').trim()}</tspan>
             </text>
-          ) : <text x="126" y="17" className="d-svg-screen dim">{breadth?.line || '宽度 · 等开盘'}</text>}
-          <rect x="126" y="21" width="100" height="4" fill="#2f8a4c" />
-          <rect x="126" y="21" width={Math.round(100 * share)} height="4" fill="#d8443b" />
-          <text x="126" y="33" className="d-svg-screen small">{roles.ladder ? roles.ladder.line.split('｜')[0] : '梯队 · 等开盘'}</text>
-          <text x="126" y="41" className="d-svg-screen small amber">
+          ) : <text x="146" y="17" className="d-svg-screen dim">{breadth?.line || '宽度 · 等开盘'}</text>}
+          <rect x="146" y="21" width="100" height="4" fill="#2f8a4c" />
+          <rect x="146" y="21" width={Math.round(100 * share)} height="4" fill="#d8443b" />
+          <text x="146" y="33" className="d-svg-screen small">{roles.ladder ? roles.ladder.line.split('｜')[0] : '梯队 · 等开盘'}</text>
+          <text x="146" y="41" className="d-svg-screen small amber">
             {sd ? (todo.length ? `今日可做 ${todo.length} 只：${todo.map((i) => i.name).join('、')}` : `${sd.slot} 没有应该做的票`) : '今日可做 · 09:26 汇总'}
           </text>
-          <text key={ticker.width} x="122" y="50.6" className="d-svg-screen small d-ticker"
+          <text key={ticker.width} x="142" y="50.6" className="d-svg-screen small d-ticker"
             style={{ '--tw': `${ticker.width}px`, animationDuration: `${Math.round((110 + ticker.width) / 11)}s` }}>{ticker.text}</text>
         </g>
-        {/* 白板 */}
-        <text x="307" y="19" className="d-svg-board">{data?.now ? data.now.slice(5, 10).replace('-', '/') : '—'} {sc.stage === 'review' ? '复盘' : '晨会'}</text>
-        <text x="307" y="32" className={`d-svg-board big ${REGIME_TONE[m?.regime] || ''}`}>{m ? m.regime : '未开会'}</text>
-        <text x="307" y="42" className="d-svg-board">{m ? `${m.slot} · 可做 ${sd ? todo.length : '—'} 只` : '09:26 开会'}</text>
-        <text x="261" y="163" textAnchor="middle" className="d-svg-zone">DeepSeek ×{data?.calls ?? 0}</text>
+        {/* 经理室的白板 */}
+        <text x="409" y="19" className="d-svg-board">{data?.now ? data.now.slice(5, 10).replace('-', '/') : '—'} {sc.stage === 'review' ? '复盘' : '晨会'}</text>
+        <text x="409" y="32" className={`d-svg-board big ${REGIME_TONE[m?.regime] || ''}`}>{m ? m.regime : '未开会'}</text>
+        <text x="409" y="42" className="d-svg-board">{data?.stance ? `档位 ${data.stance.level}` : ''}{m ? ` · 可做 ${sd ? todo.length : '—'}` : ' 09:26 开会'}</text>
+        <text x="331" y="246" textAnchor="middle" className="d-svg-zone light">DeepSeek ×{data?.calls ?? 0}</text>
 
-        {/* 第一排：汇报席（桌子 → 桌上 → 人 → 椅背） */}
-        <DeskTop x={6} y={ROW_A} w={275} seams={rowA.slice(1).map((s) => s.x - 1)} />
+        {/* 汇报大厅：一排 7 个汇报席（桌子 → 桌上 → 人 → 椅背） */}
+        <DeskTop x={14} y={ROW_A} w={368} seams={rowA.slice(1).map((s) => s.x - 1)} />
         {items(rowA)}
         {people(rowA)}
 
         {/* 经理室 */}
-        <DeskTop x={320} y={MGR.y} w={60} c={WALNUT_DESK} />
+        <DeskTop x={406} y={MGR.y} w={60} c={WALNUT_DESK} />
         <Monitor x={MGR.x - 3} y={MGR.y - 9} mode={mgrAt === 'seat' && m ? 'on' : mgrAt === 'gone' ? 'off' : 'saver'} tone="calm" i={5} />
-        <rect x="368" y={MGR.y - 3} width="8" height="3" fill="#2f8a6c" /><rect x="369" y={MGR.y - 3} width="6" height="1" fill="#57b592" />
-        <rect x="371" y={MGR.y} width="1" height="5" fill="#c9a13b" /><rect x="369" y={MGR.y + 5} width="6" height="1" fill="#c9a13b" />
+        <rect x="454" y={MGR.y - 3} width="8" height="3" fill="#2f8a6c" /><rect x="455" y={MGR.y - 3} width="6" height="1" fill="#57b592" />
+        <rect x="457" y={MGR.y} width="1" height="5" fill="#c9a13b" /><rect x="455" y={MGR.y + 5} width="6" height="1" fill="#c9a13b" />
         {Array.from({ length: Math.min(todo.length, 3) }, (_, k) => (
-          <g key={k}><rect x={324 + (k % 2)} y={MGR.y + 8 - k * 2} width="6" height="1" fill="#ffffff" /><rect x={324 + (k % 2)} y={MGR.y + 9 - k * 2} width="6" height="1" fill="#c9c0ae" /></g>
+          <g key={k}><rect x={410 + (k % 2)} y={MGR.y + 8 - k * 2} width="6" height="1" fill="#ffffff" /><rect x={410 + (k % 2)} y={MGR.y + 9 - k * 2} width="6" height="1" fill="#c9c0ae" /></g>
         ))}
         {mgrAt === 'seat' && <Sitter look={MANAGER} x={MGR.x} y={MGR.y + 4} state="seat" active={active === 'manager'} typing={!!m} i={13} />}
         <Chair x={MGR.x} y={MGR.y} tall tucked={mgrAt !== 'seat'} />
-        <rect x="343" y={MGR.y + 26} width="14" height="6" fill="#c9a13b" /><text x="350" y={MGR.y + 30.8} textAnchor="middle" className="d-svg-name dark">经理</text>
-        {mgrAt === 'board' && <Stander look={MANAGER} x={336} y={50} writing />}
-        {mgrAt === 'sofa' && (
-          <g>
-            <rect x="322" y="148" width="26" height="5" fill="#2c3550" /><rect x="348" y="149" width="10" height="4" fill="#3b3f46" /><rect x="358" y="149" width="3" height="4" fill="#22252b" />
-            <rect x="316" y="147" width="6" height="6" fill={SKINS[MANAGER.skin]} /><rect x="315" y="146" width="5" height="4" fill={MANAGER.hairColor} />
-            <text className="d-zz" x="322" y="145">z</text><text className="d-zz" style={{ animationDelay: '-1.3s' }} x="326" y="142">z</text>
-          </g>
-        )}
+        <rect x={MGR.x - 1} y={MGR.y + 26} width="14" height="6" fill="#c9a13b" /><text x={MGR.x + 6} y={MGR.y + 30.8} textAnchor="middle" className="d-svg-name dark">经理</text>
+        {mgrAt === 'board' && <Stander look={MANAGER} x={442} y={50} writing />}
 
-        {/* 过道：跑腿（盘中来回走，刚汇总完手里有票），午休时和两个同事端着杯子聊天 */}
+        {/* 过道：跑腿（盘中来回走，刚汇总完手里有票）；午休时两个同事在茶水台边端着杯子聊天 */}
         {runner !== 'gone' && (
-          <g transform="translate(128,105)">
+          <g transform="translate(140,124)">
             <g className={runner === 'walk' ? 'd-runner' : undefined}>
               <g className={runner === 'walk' ? 'd-runner-in' : undefined}>
                 <Pixels rows={RUNNER} pal={RUNNER_PAL} />
@@ -721,15 +767,15 @@ export function Office({ data, active, picked, event, phase, onPick }) {
             </g>
           </g>
         )}
-        {chatters.map((s, k) => <Stander key={s.role} look={s} x={143 + k * 15} y={105} front cup />)}
+        {chatters.map((s, k) => <Stander key={s.role} look={s} x={60 + k * 16} y={122} front cup />)}
         {chatters.length > 0 && (
-          <g className="d-dots"><rect x="138" y="99" width="11" height="5" fill="#ffffff" /><rect x="140" y="104" width="2" height="1" fill="#ffffff" />
-            {[0, 1, 2].map((k) => <rect key={k} className="d-led" style={{ animationDelay: `${-k * 0.4}s` }} x={140 + k * 3} y="101" width="1" height="1" fill="#2a241d" />)}</g>
+          <g><rect x="56" y="114" width="11" height="5" fill="#ffffff" /><rect x="58" y="119" width="2" height="1" fill="#ffffff" />
+            {[0, 1, 2].map((k) => <rect key={k} className="d-led" style={{ animationDelay: `${-k * 0.4}s` }} x={58 + k * 3} y="116" width="1" height="1" fill="#2a241d" />)}</g>
         )}
 
-        {/* 第二排：策略席 + 交易席 */}
-        <DeskTop x={6} y={ROW_B} w={118} seams={[46, 85]} />
-        <DeskTop x={144} y={ROW_B} w={98} seams={[193]} />
+        {/* 策略室、交易室 */}
+        <DeskTop x={8} y={ROW_B} w={167} seams={rowB.filter((s) => s.kind === 'strat').slice(1).map((s) => s.x - 1)} />
+        <DeskTop x={190} y={ROW_B} w={126} seams={[253]} />
         {items(rowB)}
         {people(rowB)}
         {chatOn && (() => {
@@ -740,14 +786,32 @@ export function Office({ data, active, picked, event, phase, onPick }) {
               {[0, 1, 2].map((k) => <rect key={k} className="d-led" style={{ animationDelay: `${-k * 0.4}s` }} x={cx + 2 + k * 3} y={a.y - 12} width="1" height="1" fill="#2a241d" />)}</g>
           )
         })()}
-        <Pixels rows={PLANT} pal={PLANT_PAL} x={128} y={158} />
+
+        {/* 会议室：周五收盘后的复盘会；午休时经理躺沙发 */}
+        {meeting.map((role, k) => (
+          <g key={role}>
+            <Sitter look={lookOf(role)} x={MEET_X[role]} y={MEET_Y} state="seat" active={active === role} typing={false} i={k} />
+            <Chair x={MEET_X[role]} y={MEET_Y - 4} tall={role === 'manager'} />
+          </g>
+        ))}
+        {meeting.length > 0 && (
+          <g><rect x="396" y="184" width="11" height="5" fill="#ffffff" /><rect x="398" y="189" width="2" height="1" fill="#ffffff" />
+            {[0, 1, 2].map((k) => <rect key={k} className="d-led" style={{ animationDelay: `${-k * 0.4}s` }} x={398 + k * 3} y="186" width="1" height="1" fill="#2a241d" />)}</g>
+        )}
+        {mgrAt === 'sofa' && (
+          <g transform="translate(40,97)">
+            <rect x="322" y="148" width="26" height="5" fill="#2c3550" /><rect x="348" y="149" width="10" height="4" fill="#3b3f46" /><rect x="358" y="149" width="3" height="4" fill="#22252b" />
+            <rect x="316" y="147" width="6" height="6" fill={SKINS[MANAGER.skin]} /><rect x="315" y="146" width="5" height="4" fill={MANAGER.hairColor} />
+            <text className="d-zz" x="322" y="145">z</text><text className="d-zz" style={{ animationDelay: '-1.3s' }} x="326" y="142">z</text>
+          </g>
+        )}
 
         {/* 关灯：整间屋子压暗，只有机柜的灯还在闪（程序确实还在跑） */}
         {dark > 0 && <rect width={W} height={H} fill={sc.stage === 'lunch' ? '#2a241d' : '#0b1020'} opacity={dark} pointerEvents="none" />}
         {!lightsOn && [0, 1, 2, 3].map((i) => (
           <g key={i}>
-            <rect className="d-led" style={{ animationDelay: `${-i * 0.31}s` }} x="255" y={128 + i * 7} width="1" height="1" fill="#7fd1a5" />
-            <rect className="d-led fast" style={{ animationDelay: `${-i * 0.47}s` }} x="257" y={128 + i * 7} width="1" height="1" fill={i === 2 ? '#f0c36a' : '#7fd1a5'} />
+            <rect className="d-led" style={{ animationDelay: `${-i * 0.31}s` }} x="325" y={206 + i * 8} width="1" height="1" fill="#7fd1a5" />
+            <rect className="d-led fast" style={{ animationDelay: `${-i * 0.47}s` }} x="327" y={206 + i * 8} width="1" height="1" fill={i === 2 ? '#f0c36a' : '#7fd1a5'} />
           </g>
         ))}
 
@@ -757,7 +821,7 @@ export function Office({ data, active, picked, event, phase, onPick }) {
             <title>{`${s.name}：点开看完整汇报`}</title>
           </rect>
         ))}
-        <rect className={`d-hit ${active === 'manager' ? 'is-on' : ''}`} x="320" y={MGR.y - 10} width="60" height="43" onClick={() => onPick('manager')}>
+        <rect className={`d-hit ${active === 'manager' ? 'is-on' : ''}`} x="406" y={MGR.y - 10} width="60" height="43" onClick={() => onPick('manager')}>
           <title>经理：点开看完整判断</title>
         </rect>
       </svg>
@@ -772,7 +836,7 @@ export function Office({ data, active, picked, event, phase, onPick }) {
         </div>
       ) : bubbleText && (
         <>
-          <div className="d-bubble" style={{ left: `${Math.min(79, Math.max(21, (anchor[0] / W) * 100))}%`, top: `${(anchor[1] / H) * 100}%` }}>{bubbleText}</div>
+          <div className="d-bubble" style={{ left: `${Math.min(84, Math.max(16, (anchor[0] / W) * 100))}%`, top: `${(anchor[1] / H) * 100}%` }}>{bubbleText}</div>
           <div className="d-tail" style={{ left: `${(anchor[0] / W) * 100}%`, top: `${(anchor[1] / H) * 100}%` }} />
         </>
       )}

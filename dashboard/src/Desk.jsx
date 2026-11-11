@@ -328,9 +328,25 @@ function Weekly({ stance, weekly }) {
       <div className={`d-risk lv-${stance.level}`}><b>{stance.level}</b><span>{stance.why || '—'}</span></div>
       {stance.market && <p className="d-sub">对这一周市场的看法：{stance.market}</p>}
       {stance.rules?.length > 0 && <ol className="d-rules">{stance.rules.map((r, i) => <li key={i}>{r}</li>)}</ol>}
+      {weekly?.history?.length > 1 && (
+        <p className="d-sub">历次档位：{weekly.history.map((h) => `${(h.week || '').slice(5)} ${h.level}`).join(' → ')}</p>
+      )}
       {weekly ? (
-        <details className="d-more"><summary>看上次会议记录</summary>
+        <details className="d-more" open><summary>{weekly.week} 会议记录</summary>
           <p className="d-read">{weekly.summary}</p>
+          {(weekly.stats?.mgr || Object.keys(weekly.stats?.traders || {}).length > 0) && (
+            <table className="d-week">
+              <thead><tr><th>这一周</th><th>涨跌</th><th>了结</th><th>赚</th><th>盈亏</th><th>最好</th><th>最差</th></tr></thead>
+              <tbody>
+                {[...Object.entries(weekly.stats.traders || {}), ...(weekly.stats.mgr ? [['mgr', { label: '经理账户', ...weekly.stats.mgr }]] : [])].map(([sid, t]) => (
+                  <tr key={sid}><td>{t.label}</td><td className={`mono ${tone(t.weekPct)}`}>{pct(t.weekPct)}</td><td className="mono">{t.closed ?? '—'}</td>
+                    <td className="mono">{t.wins ?? '—'}</td><td className={`mono ${tone(t.pnlYuan)}`}>{t.pnlYuan == null ? '—' : Math.round(t.pnlYuan).toLocaleString('en-US')}</td>
+                    <td className="mono up">{t.best ? `${t.best.code} ${pct(t.best.pct, 1)}` : '—'}</td><td className="mono down">{t.worst ? `${t.worst.code} ${pct(t.worst.pct, 1)}` : '—'}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {weekly.stats?.companyWeek != null && <p className="d-sub">公司本周 {pct(weekly.stats.companyWeek)}（目标 +5%）{weekly.stats.regimes?.length > 0 && ` · 每天的定性：${weekly.stats.regimes.map((r) => `${(r.date || '').slice(5)} ${r.regime}`).join('、')}`}</p>}
           {Object.entries(weekly.statements || {}).map(([sid, s]) => (
             <div key={sid} className="d-said">
               <b>{s.label}</b>
@@ -429,15 +445,17 @@ export default function DeskPage({ onTerm, onDetail }) {
         <span className="d-chip ghost">今日调用 DeepSeek <b className="mono">{data?.calls ?? 0}</b> 次</span>
         <span className={`d-live ${fresh ? 'ok' : 'bad'}`}>{fresh ? '实时' : error || '连接中'}</span>
         <nav>
+          <button onClick={() => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.())}>全屏</button>
           <button onClick={onTerm}>盘面</button>
           <button onClick={onDetail}>详细记录</button>
         </nav>
       </header>
+      {/* 打开就是一整屏办公室（dj 2026-11-11），数据往下滚 */}
+      <div className="d-office-wrap"><Office data={data} active={active} picked={!!picked} event={event} phase={phase} onPick={pick} /></div>
       <Company c={data?.company} />
       <Company c={data?.mgr?.score} title="经理账户目标" sub="经理自己操作 · 一万元单票全仓" />
       <main className="d-grid">
         <div className="d-left">
-          <div className="d-office-wrap"><Office data={data} active={active} picked={!!picked} event={event} phase={phase} onPick={pick} /></div>
           <RoleCards data={data} active={active} onPick={pick} />
           <div className="d-traders">
             {(data?.traders || []).map((t) => <TraderCard key={t.sid} t={t} />)}

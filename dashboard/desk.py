@@ -252,12 +252,20 @@ def desk_payload(db_path: Path | None, runtime_dir: Path, quotes: dict, market_b
 
 
 def _weekly(path: Path) -> dict | None:
-    """最近一次周复盘会的记录（不带那一周的原始统计，面板用不上）。"""
+    """最近一次周复盘会的记录，加上那一周每个人的成绩（只留面板用得上的几项）和历次的风险档位。"""
     try:
-        last = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()][-1]
-        return {k: v for k, v in json.loads(last).items() if k != "stats"}
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        last = rows[-1]
     except (OSError, ValueError, IndexError):
         return None
+    raw = last.get("stats") if isinstance(last.get("stats"), dict) else {}
+    keep = ("label", "weekPct", "closed", "wins", "pnlYuan", "best", "worst")
+    week = next((i.get("actual") for i in ((raw.get("company") or {}).get("items") or []) if i.get("key") == "week"), None)
+    stats = {"traders": {sid: {k: t.get(k) for k in keep if k in t} for sid, t in (raw.get("traders") or {}).items() if isinstance(t, dict)},
+             "mgr": {k: raw["mgr"].get(k) for k in keep if k in raw["mgr"]} if isinstance(raw.get("mgr"), dict) else None,
+             "companyWeek": week, "regimes": [{"date": r.get("date"), "regime": r.get("regime")} for r in raw.get("regimes") or []]}
+    return {**{k: v for k, v in last.items() if k != "stats"}, "stats": stats,
+            "history": [{"week": r.get("week"), "level": r.get("level")} for r in rows[-8:]]}
 
 
 def _strategy_desk(path: Path, day: str) -> dict | None:
