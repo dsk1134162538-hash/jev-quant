@@ -417,3 +417,12 @@ def test_manager_and_strategy_desk_still_see_movers_when_they_borrow_the_first_t
     except Exception:                                              # noqa: BLE001  后面还要取别的数据，这里只看它怎么取现场
         pass
     assert len(seen) == 2 and all(kw.get("skip_src") == () for kw in seen)
+
+
+def test_account_state_uses_each_accounts_own_capital_so_the_managers_ten_thousand_is_not_read_as_a_huge_loss(tmp_path):
+    # 经理账户（dj 2026-11-11）本金一万：第一天没有净值记录时，不能拿 12 万当基数算成「当日 -91.7%」
+    from datetime import date
+    state = ft._account_state(_flex_db(tmp_path), {}, date(2026, 11, 3), "mgr")
+    assert state["equity"] == 10000 and state["cash"] == 10000 and "当日 +0.0%" in state["guards"]
+    missing = ft._account_state(tmp_path / "none.sqlite", {}, date(2026, 11, 3), "mgr")
+    assert missing["equity"] == 10000 and ft._account_state(tmp_path / "none.sqlite", {}, date(2026, 11, 3), "aiflex")["equity"] == 120000

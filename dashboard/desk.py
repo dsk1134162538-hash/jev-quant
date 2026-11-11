@@ -61,6 +61,41 @@ def _company(conn, accounts: list[tuple[str, float]], now: datetime) -> dict:
     return mg.company_score(conn, accounts, now)
 
 
+def _manager_account(conn, rt: Path, quotes: dict, day: str, now: datetime, log: list) -> dict:
+    """经理自己的一万元账户（dashboard/manager_trade.py）：账户、净值线、今天的成交和每一轮的想法、对着 MGR_TARGETS 的记分。
+    今天的想法、订单、没做成的单顺手记进日志。"""
+    name = config.STRATEGIES["mgr"]["accounts"][0]
+    account, curve, fills = {"equity": config.MGR_CAPITAL, "cash": config.MGR_CAPITAL, "today": None, "total": 0.0, "positions": []}, [], []
+    if conn is not None:
+        try:
+            account, curve = _account(conn, name, quotes, day, "mgr")
+            fills = _fills(conn, name, day)
+        except sqlite3.Error:
+            pass
+    names = {p["code"]: p["name"] for p in account["positions"]}
+    rounds = []
+    for r in _today_rows(rt / "manager_trade_log.jsonl", day):
+        ts = str(r.get("ts", ""))[11:19]
+        rounds.append({"slot": r.get("slot"), "t": ts[:5], "think": r.get("think"), "plan": r.get("plan"), "orders": r.get("orders") or [],
+                       "dropped": r.get("dropped") or [], "skipped": r.get("skipped"), "pool": len(r.get("pool") or {})})
+        if r.get("skipped"):
+            log.append({"t": ts, "who": "经理账户", "tag": "跳过", "text": r["skipped"]})
+            continue
+        log.append({"t": ts, "who": "经理账户", "tag": "判断", "text": f"{r.get('slot')} {r.get('think') or ''}｜{r.get('plan') or ''}"})
+        for o in r.get("orders") or []:
+            log.append({"t": ts, "who": "经理账户", "tag": o.get("action", "订单"), "text": f"{o.get('code')} 全仓｜{o.get('reason') or ''}"
+                        if o.get("action") == "买入" else f"{o.get('code')}｜{o.get('reason') or ''}"})
+        for d in r.get("dropped") or []:
+            log.append({"t": ts, "who": "经理账户", "tag": "丢弃", "text": f"{d.get('action') or ''}{d.get('code')}｜{d.get('why')}"})
+    for f in fills:
+        q = quotes.get(f["code"])
+        f["name"] = getattr(q, "name", None) or names.get(f["code"], f["code"])
+        log.append({"t": f["t"] + ":00", "who": "经理账户", "tag": "成交",
+                    "text": f"{'买' if f['side'] == 'buy' else '卖'} {f['name']} {f['price']} × {f['shares']}｜{f['reason']}"})
+    return {"label": "经理账户", "account": account, "curve": curve, "fills": fills, "rounds": rounds,
+            "score": mg.company_score(conn, [(name, account["equity"])], now, targets=config.MGR_TARGETS)}
+
+
 def _joined(v) -> str:
     """经理的否证条件有时是一条字符串、有时是好几条的列表；日志里统一成一句话，不把方括号和引号漏出去。"""
     if isinstance(v, (list, tuple)):
@@ -203,6 +238,7 @@ def desk_payload(db_path: Path | None, runtime_dir: Path, quotes: dict, market_b
                                        for r in rounds],
                             "directive": ((manager or {}).get("traders") or {}).get(sid), "funnel": _funnel(rounds, fills)})
         company = _company(conn, [(ft.TRADERS[t["sid"]].account, t["account"]["equity"]) for t in traders], now)
+        mgr = _manager_account(conn, rt, quotes, day, now, log)
     finally:
         if conn is not None:
             conn.close()
@@ -210,7 +246,7 @@ def desk_payload(db_path: Path | None, runtime_dir: Path, quotes: dict, market_b
     calls = len(history) + sum(1 for t in traders for r in t["rounds"] if not r.get("skipped"))
     strategy = _strategy_desk(rt / "desk_submissions.json", day)
     return {"now": now.isoformat(timespec="seconds"), "roles": roles, "rolesAt": reports.get("ts") if roles else None,
-            "manager": manager, "traders": traders, "strategyDesk": strategy, "company": company, "log": log[:120], "params": _params(), "calls": calls}
+            "manager": manager, "traders": traders, "strategyDesk": strategy, "company": company, "mgr": mgr, "log": log[:120], "params": _params(), "calls": calls}
 
 
 def _strategy_desk(path: Path, day: str) -> dict | None:

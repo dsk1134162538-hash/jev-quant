@@ -243,3 +243,9 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
   .d-params dl { grid-template-columns: 1fr; }
   .d-step b { font-size: 15px; }
 }
+
+/* 经理自己的一万元账户 */
+.d-mgr { border: 2px solid var(--d-ink); }
+.d-hold { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 13px; margin: 0 0 8px; padding: 6px 8px; background: rgba(42, 36, 29, 0.04); }
+.d-hold b { font-size: 15px; } .d-hold .near { color: var(--d-red); font-weight: 700; }
+.d-company + .d-company { margin-top: 6px; border-width: 1px; }

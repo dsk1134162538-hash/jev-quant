@@ -168,6 +168,8 @@ def test_flex_hook_runs_every_trader_and_one_traders_failure_does_not_skip_the_o
     monkeypatch.setattr(flex_trader, "run_cycle", fake_run_cycle)
     monkeypatch.setattr(flex_trader, "due_slot", lambda now, state_path: "10:00")
     monkeypatch.setattr("jevq.notify.notifier_from_env", lambda: object())
+    from dashboard import manager_trade
+    monkeypatch.setattr(manager_trade, "due_slot", lambda now, state_path=None: None)
     out = ai_loop._flex(at(2, 10, 1))
     assert ran == ["aiflex", "aiflex2"]
     assert "TimeoutError" in out["aiflex"]["error"] and out["aiflex2"]["slot"] == "10:00"
@@ -190,6 +192,8 @@ def test_flex_hook_runs_the_manager_first_so_traders_see_todays_directive(monkey
     monkeypatch.setattr("jevq.notify.notifier_from_env", lambda: object())
     from dashboard import strategy_desk
     monkeypatch.setattr(strategy_desk, "due_slot", lambda now, state_path=None: None)
+    from dashboard import manager_trade
+    monkeypatch.setattr(manager_trade, "due_slot", lambda now, state_path=None: None)
     out = ai_loop._flex(at(2, 9, 27))
     assert ran == ["manager", "aiflex", "aiflex2"]
     assert "TimeoutError" in out["manager"]["error"] and out["aiflex"]["slot"] == "09:26"
@@ -209,8 +213,31 @@ def test_flex_hook_runs_strategy_desk_after_traders_and_its_failure_is_isolated(
         ran.append("desk")
         raise TimeoutError("汇总超时")
     monkeypatch.setattr(strategy_desk, "run_desk", fake_desk)
+    from dashboard import manager_trade
+    monkeypatch.setattr(manager_trade, "due_slot", lambda now, state_path=None: None)
     out = ai_loop._flex(at(2, 9, 27))
     assert ran == ["aiflex", "aiflex2", "desk"] and "TimeoutError" in out["desk"]["error"] and out["aiflex"]["slot"] == "09:26"
+
+
+def test_flex_hook_lets_the_manager_trade_his_own_account_last_and_isolates_his_failure(monkeypatch):
+    # 经理的一万元账户（dj 2026-11-11）：交易员和策略席这一轮给的票都出来了他才挑；他失败不影响别人
+    from dashboard import flex_trader, manager, manager_trade, strategy_desk
+    ran = []
+    monkeypatch.setattr(manager, "due_slot", lambda now, state_path=None: None)
+    monkeypatch.setattr(flex_trader, "due_slot", lambda now, state_path: "09:26")
+    monkeypatch.setattr(flex_trader, "run_cycle", lambda now, slot, *, trader, **kw: ran.append(trader.sid) or {"slot": slot})
+    monkeypatch.setattr("jevq.notify.notifier_from_env", lambda: object())
+    monkeypatch.setattr(strategy_desk, "due_slot", lambda now, state_path=None: "09:26")
+    monkeypatch.setattr(strategy_desk, "run_desk", lambda now, slot, **kw: ran.append("desk") or {"slot": slot})
+    monkeypatch.setattr(manager_trade, "due_slot", lambda now, state_path=None: "09:26")
+
+    def fake_trade(now, slot, **kw):
+        ran.append("mgrTrade")
+        assert kw["gather"] is manager_trade.gather_scene and kw["clock"] is not None
+        raise TimeoutError("经理下单超时")
+    monkeypatch.setattr(manager_trade, "run", fake_trade)
+    out = ai_loop._flex(at(2, 9, 27))
+    assert ran == ["aiflex", "aiflex2", "desk", "mgrTrade"] and "TimeoutError" in out["mgrTrade"]["error"] and out["desk"]["slot"] == "09:26"
 
 
 def test_flex_runs_at_key_times_and_its_failures_never_count_as_main_loop_failures():

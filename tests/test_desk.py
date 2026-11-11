@@ -140,3 +140,21 @@ def test_company_scoreboard_compares_today_week_and_month_with_the_targets(tmp_p
     assert (day["target"], week["target"], month["target"]) == (1.0, 5.0, 20.0)
     assert day["actual"] == week["actual"] == round((now / (119000 + 120000) - 1) * 100, 2)   # 上周五有净值的用净值，没有的用本金
     assert month["actual"] == round((now / 240000 - 1) * 100, 2) and day["hit"] is (day["actual"] >= 1.0)
+
+
+def test_payload_carries_the_managers_own_account_with_its_lower_target_and_todays_thinking(tmp_path):
+    # dj 2026-11-11：经理自己操作一万元账户（单票全仓），目标比公司低；它的盈亏就是对经理的考核
+    rt = _runtime(tmp_path)
+    (rt / "manager_trade_log.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
+        {"date": "2026-11-06", "ts": "2026-11-06T10:31:00", "slot": "10:30", "think": "旧的", "plan": "", "orders": []},
+        {"date": "2026-11-09", "ts": "2026-11-09T09:31:00", "slot": "09:26", "think": "接力最强", "plan": "明天冲高走",
+         "orders": [{"action": "买入", "code": "600002", "reason": "两家都推", "stop": 18.0}],
+         "dropped": [{"action": "买入", "code": "600888", "why": "一万块买不起一手（现价 150）"}]}]) + "\n", encoding="utf-8")
+    p = desk.desk_payload(_db(tmp_path), rt, {}, {}, at(10, 0))
+    m = p["mgr"]
+    assert m["account"]["equity"] == 10000 and m["account"]["positions"] == [] and m["label"] == "经理账户"
+    assert [i["target"] for i in m["score"]["items"]] == [0.5, 2.5, 10.0] and m["score"]["items"][0]["actual"] == 0.0
+    assert len(m["rounds"]) == 1 and m["rounds"][0]["think"] == "接力最强" and m["rounds"][0]["orders"][0]["code"] == "600002"
+    mine = [e for e in p["log"] if e["who"] == "经理账户"]
+    assert {e["tag"] for e in mine} == {"判断", "买入", "丢弃"} and any("买不起一手" in e["text"] for e in mine)
+    assert desk.desk_payload(tmp_path / "none.sqlite", tmp_path / "rt2", {}, {}, at(10, 0))["mgr"]["account"]["equity"] == 10000

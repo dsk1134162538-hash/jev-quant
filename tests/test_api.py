@@ -60,7 +60,7 @@ def test_retired_lowbuy_accounts_stay_off_panel_but_old_fills_keep_their_name(pa
     assert [a["id"] for a in api.status()["accounts"]] == ["board_main", "board_shadow", "rebound_main",
                                                           "rebound_shadow", "lowbuy_main", "lowbuy_shadow",
                                                           "regime_main", "aiboard_main", "aiboard_shadow",
-                                                          "relay_main", "relay_shadow", "wts_main", "wts_shadow", "ice_main", "sc_main", "bz_main", "bz_shadow", "aiflex_main", "aiflex2_main"]
+                                                          "relay_main", "relay_shadow", "wts_main", "wts_shadow", "ice_main", "sc_main", "bz_main", "bz_shadow", "aiflex_main", "aiflex2_main", "mgr_main"]
     curve = api.equity_curve()
     assert "main" not in curve and "shadow" not in curve
     assert curve["rebound_main"] == [["2026-09-21", 30100.0]]
@@ -119,7 +119,7 @@ def test_fills_decisions_curve(paths):
     assert api.equity_curve() == {"board_main": [], "board_shadow": [],
                                   "rebound_main": [["2026-09-23", 30100.0]], "rebound_shadow": [],
                                   "lowbuy_main": [], "lowbuy_shadow": [], "regime_main": [],
-                                  "aiboard_main": [], "aiboard_shadow": [], "relay_main": [], "relay_shadow": [], "wts_main": [], "wts_shadow": [], "ice_main": [], "sc_main": [], "bz_main": [], "bz_shadow": [], "aiflex_main": [], "aiflex2_main": []}
+                                  "aiboard_main": [], "aiboard_shadow": [], "relay_main": [], "relay_shadow": [], "wts_main": [], "wts_shadow": [], "ice_main": [], "sc_main": [], "bz_main": [], "bz_shadow": [], "aiflex_main": [], "aiflex2_main": [], "mgr_main": []}
 
 
 def test_decisions_filtered_by_strategy(paths):
@@ -250,13 +250,13 @@ def test_query_methods_never_open_write_connection(paths, monkeypatch):
     assert api.decision(rows[0]["id"])["code"] == "600002"
     assert api.equity_curve() == {"board_main": [], "board_shadow": [], "rebound_main": [], "rebound_shadow": [],
                                   "lowbuy_main": [], "lowbuy_shadow": [], "regime_main": [],
-                                  "aiboard_main": [], "aiboard_shadow": [], "relay_main": [], "relay_shadow": [], "wts_main": [], "wts_shadow": [], "ice_main": [], "sc_main": [], "bz_main": [], "bz_shadow": [], "aiflex_main": [], "aiflex2_main": []}
+                                  "aiboard_main": [], "aiboard_shadow": [], "relay_main": [], "relay_shadow": [], "wts_main": [], "wts_shadow": [], "ice_main": [], "sc_main": [], "bz_main": [], "bz_shadow": [], "aiflex_main": [], "aiflex2_main": [], "mgr_main": []}
 
 
 def test_api_init_creates_fresh_db(paths):
     api = make_api(paths)
     s = api.status()
-    assert [a["equity"] for a in s["accounts"]] == [30000] * 9 + [120000] * 10
+    assert [a["equity"] for a in s["accounts"]] == [30000] * 9 + [120000] * 10 + [10000]
 
 
 def test_status_includes_active_custom_strategy_accounts(paths):

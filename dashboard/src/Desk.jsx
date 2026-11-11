@@ -85,11 +85,11 @@ function RoleCards({ data, active, onPick }) {
 }
 
 // ---------- 公司目标：两位 AI 交易员合计，对着每天 / 每周 / 每月的目标记分 ----------
-function Company({ c }) {
+function Company({ c, title = '公司目标', sub = '两位 AI 交易员合计' }) {
   if (!c?.items?.length) return null
   return (
-    <section className="d-company" aria-label="公司目标">
-      <h2>公司目标<em>两位 AI 交易员合计 · 净值 {Math.round(c.equity).toLocaleString('en-US')}</em></h2>
+    <section className="d-company" aria-label={title}>
+      <h2>{title}<em>{sub} · 净值 {Math.round(c.equity).toLocaleString('en-US')}</em></h2>
       {c.items.map((i) => {
         const fill = i.actual == null ? 0 : Math.max(0, Math.min(1, i.actual / i.target))
         return (
@@ -274,6 +274,51 @@ function TraderCard({ t }) {
   )
 }
 
+// 经理自己的一万元账户：和 dj 的实盘一样大、单票全仓。它的盈亏就是对经理的考核
+function ManagerAccount({ m }) {
+  if (!m) return null
+  const a = m.account
+  const p = a.positions?.[0]
+  const last = [...(m.rounds || [])].reverse().find((r) => !r.skipped)
+  const skipped = m.rounds?.length && !last ? m.rounds[m.rounds.length - 1].skipped : ''
+  return (
+    <section className="d-card d-mgr">
+      <header><h2>经理账户</h2><span className="d-dim">一万元 · 单票全仓 · 经理自己操作</span></header>
+      <div className="d-equity">
+        <b className="mono">{Math.round(a.equity).toLocaleString('en-US')}</b>
+        <span className={`mono ${tone(a.today)}`}>今日 {pct(a.today)}</span>
+        <span className={`mono ${tone(a.total)}`}>累计 {pct(a.total, 1)}</span>
+      </div>
+      {p ? (
+        <div className="d-hold">
+          <b>{p.name}</b><span className="mono">{p.code}</span>
+          <span className="mono">{p.shares} 股 @ {p.price}</span>
+          <span className={`mono ${tone(p.pnl)}`}>浮盈 {pct(p.pnl, 1)}</span>
+          <span className={`mono ${p.toStop != null && p.toStop > -2 ? 'near' : 'd-dim'}`}>
+            {p.stop ? `止损 ${p.stop}（${p.toStop >= 0 ? '已破' : `还有 ${Math.abs(p.toStop)}%`}）` : '没有止损价'}</span>
+          {p.buyDate === (m.today || '') && <span className="d-gate flat">今天买的，明天才能卖</span>}
+        </div>
+      ) : <p className="d-empty small">空仓 · 现金 {Math.round(a.cash).toLocaleString('en-US')} 元</p>}
+      {last ? (
+        <>
+          <p className="d-read"><b className="mono">{last.slot}</b> {last.think || '—'}</p>
+          {last.plan && <p className="d-sub">接下来：{last.plan}</p>}
+          {last.dropped?.length > 0 && <p className="d-sub">没做成：{last.dropped.map((d) => `${d.action || ''}${d.code}（${d.why}）`).join('；')}</p>}
+        </>
+      ) : <p className="d-empty small">{skipped || '今天还没轮到他。09:26 / 10:30 / 13:20 / 14:35 各看一次，只从交易员给的票里挑。'}</p>}
+      <Curve points={m.curve} />
+      {m.fills?.length > 0 && (
+        <ul className="d-fills">
+          {m.fills.map((f, i) => (
+            <li key={`${f.t}-${f.code}-${i}`}><span className="mono d-dim">{f.t}</span><b className={f.side === 'buy' ? 'up' : 'down'}>{f.side === 'buy' ? '买' : '卖'}</b>
+              <span>{f.name || f.code}</span><span className="mono">{f.price} × {f.shares}</span></li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 function StrategyDesk({ sd }) {
   if (!sd) {
     return (
@@ -361,6 +406,7 @@ export default function DeskPage({ onTerm, onDetail }) {
         </nav>
       </header>
       <Company c={data?.company} />
+      <Company c={data?.mgr?.score} title="经理账户目标" sub="经理自己操作 · 一万元单票全仓" />
       <main className="d-grid">
         <div className="d-left">
           <div className="d-office-wrap"><Office data={data} active={active} picked={!!picked} event={event} phase={phase} onPick={pick} /></div>
@@ -370,6 +416,7 @@ export default function DeskPage({ onTerm, onDetail }) {
           </div>
         </div>
         <aside className="d-right">
+          <ManagerAccount m={data?.mgr && { ...data.mgr, today: data.now?.slice(0, 10) }} />
           <StrategyDesk sd={data?.strategyDesk} />
           <Analysis data={data} />
           <Log log={data?.log} />

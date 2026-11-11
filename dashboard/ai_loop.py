@@ -203,7 +203,7 @@ def _daily() -> dict:
 def _flex(now: datetime) -> dict | None:
     """到了灵活交易的关键时点就让每位交易员各跑一轮（想：调 DeepSeek，写订单文件，推送）；都没到返回 None。
     一位失败（超时、格式错）只记在自己名下，不影响另一位。"""
-    from dashboard import flex_trader, manager, strategy_desk
+    from dashboard import flex_trader, manager, manager_trade, strategy_desk
     from jevq.notify import notifier_from_env
     out = {}
     mslot = manager.due_slot(now)
@@ -230,6 +230,13 @@ def _flex(now: datetime) -> dict | None:
                                                  notifier=notifier_from_env(), directive=manager.directive_for("aiflex", now))
         except Exception as e:                                   # noqa: BLE001
             out["desk"] = {"slot": dslot, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+    tslot = manager_trade.due_slot(now)
+    if tslot is not None:                # 经理的一万元账户（dj 2026-11-11）排在最后：交易员和策略席这一轮给的票都出来了他才挑
+        try:
+            out["mgrTrade"] = manager_trade.run(now, tslot, gather=manager_trade.gather_scene, ask=flex_trader.ask_workbuddy,
+                                                notifier=notifier_from_env(), clock=datetime.now)
+        except Exception as e:                                   # noqa: BLE001
+            out["mgrTrade"] = {"slot": tslot, "error": f"{type(e).__name__}: {str(e)[:200]}"}
     return out or None
 
 

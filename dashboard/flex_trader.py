@@ -425,7 +425,8 @@ def _account_state(db_path: Path, quotes: dict, day, sid: str = "aiflex") -> dic
     import sqlite3
     from jevq.ledger import Ledger
     from jevq.strategies.flex import AiflexStrategy
-    empty = {"equity": config.FLEX_CAPITAL, "cash": config.FLEX_CAPITAL, "positions": [], "guards": "护栏正常（空仓）"}
+    capital = config.STRATEGY_CAPITAL.get(sid, config.FLEX_CAPITAL)          # 经理账户是一万，不是交易员的 12 万
+    empty = {"equity": capital, "cash": capital, "positions": [], "guards": "护栏正常（空仓）"}
     if not Path(db_path).exists():
         return empty
     try:
@@ -446,7 +447,7 @@ def _account_state(db_path: Path, quotes: dict, day, sid: str = "aiflex") -> dic
                               "canSellToday": p.buy_date < day})
         row = conn.execute("SELECT value FROM equity WHERE account=? AND date<? ORDER BY date DESC LIMIT 1",
                            (account, day.isoformat())).fetchone()
-        prev = row[0] if row else config.FLEX_CAPITAL
+        prev = row[0] if row else capital
         losses = 0
         for _, pnl in reversed(strat._results()):
             if pnl >= 0:

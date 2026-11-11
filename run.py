@@ -441,6 +441,9 @@ def _run_day(conn, once: bool, stop: threading.Event, log: Callable[[str], None]
     flex2 = _load_flex(conn, ledger, days, new_can_buy, slog, sid="aiflex2")
     if flex2 is not None:
         customs = [*customs, ("aiflex2", flex2)]
+    mgr = _load_flex(conn, ledger, days, new_can_buy, slog, sid="mgr")      # 经理的一万元账户（dj 2026-11-11）
+    if mgr is not None:
+        customs = [*customs, ("mgr", mgr)]
     sc = _load_smallcap(conn, ledger, today, universe, days, new_can_buy, slog)
     if sc is not None:
         customs = [*customs, ("smallcap", sc)]
@@ -904,10 +907,12 @@ def _load_bz(conn, ledger: Ledger, today: date, prev_day: date, universe: dict, 
 def _load_flex(conn, ledger: Ledger, trade_days, can_buy: bool, log: Callable[[str], None],
                sid: str = "aiflex") -> AiflexStrategy | None:
     """AI 灵活交易的执行器：读 ai_loop 写的订单文件，按实时行情成交，实时盯 AI 自己设的止损。sid 选哪位交易员（一号/二号）。"""
-    name = {"aiflex": "AI 灵活交易", "aiflex2": "AI 趋势交易员"}[sid]
-    path =flex_strategy.ORDERS2_PATH if sid == "aiflex2" else flex_strategy.ORDERS_PATH
+    name = {"aiflex": "AI 灵活交易", "aiflex2": "AI 趋势交易员", "mgr": "经理账户"}[sid]
+    path = {"aiflex2": flex_strategy.ORDERS2_PATH, "mgr": flex_strategy.MGR_ORDERS_PATH}.get(sid, flex_strategy.ORDERS_PATH)
     try:
-        if can_buy:
+        if can_buy and sid == "mgr":
+            log(f"{name}：执行器已加载（一万元、单票全仓、只拿一只；票由经理从交易员给的数据里挑；买入必带止损、T+1）")
+        elif can_buy:
             log(f"{name}：执行器已加载（订单来自 ai_loop 的关键时点；护栏：单票≤30%、持仓≤5、买入必带止损、日亏3%/连亏3笔停开仓）")
         return AiflexStrategy(conn, ledger, trade_days, orders_path=path, can_buy=can_buy, sid=sid)
     except Exception as e:

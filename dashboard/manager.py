@@ -116,8 +116,8 @@ def desk_reports(ctx: dict, accounts: dict, logs: dict, now: datetime) -> list[d
 
 
 # ---------- 公司记分 ----------
-def company_score(conn, accounts: list[tuple[str, float]], now: datetime) -> dict:
-    """公司记分牌：两位 AI 交易员合计的今日 / 本周 / 本月收益率，对着 config.DESK_TARGETS。
+def company_score(conn, accounts: list[tuple[str, float]], now: datetime, targets: dict | None = None) -> dict:
+    """记分牌：这几个账户合计的今日 / 本周 / 本月收益率，对着目标（默认 config.DESK_TARGETS，经理账户传 MGR_TARGETS）。
     基数取「这段时间开始前最后一天的净值」，那之前还没有净值记录的账户用本金。"""
     day = now.date()
     starts = {"day": day, "week": day - timedelta(days=day.weekday()), "month": day.replace(day=1)}
@@ -135,7 +135,7 @@ def company_score(conn, accounts: list[tuple[str, float]], now: datetime) -> dic
                     row = None
             base += row[0] if row and row[0] else config.ACCOUNT_CAPITAL.get(account, config.FLEX_CAPITAL)
         actual = round((total / base - 1) * 100, 2) if base else None
-        target = float(config.DESK_TARGETS[key])
+        target = float((targets or config.DESK_TARGETS)[key])
         items.append({"key": key, "label": label, "target": target, "actual": actual, "hit": actual is not None and actual >= target,
                       "gapYuan": round(base * (1 + target / 100) - total) if base else None})
     return {"equity": round(total, 2), "items": items}

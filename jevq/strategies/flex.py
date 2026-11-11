@@ -24,7 +24,7 @@ SID = "aiflex"
 ROOT = Path(__file__).resolve().parents[2]
 ORDERS_PATH = ROOT / "dashboard" / "runtime" / "flex_orders.json"
 ORDERS2_PATH = ROOT / "dashboard" / "runtime" / "flex2_orders.json"      # 二号交易员（趋势风格）
-ORDERS2_PATH = ROOT / "dashboard" / "runtime" / "flex2_orders.json"      # 二号交易员（趋势风格）
+MGR_ORDERS_PATH = ROOT / "dashboard" / "runtime" / "manager_orders.json"  # 经理的一万元账户（dashboard/manager_trade.py 写）
 ORDER_TTL_SECONDS = 600
 MAX_STOP_DISTANCE = 0.12          # 止损位最多低于现价 12%
 MAX_REF_DEVIATION = 0.02          # 成交价相对 AI 看到的参考价最多偏离 2%
@@ -50,6 +50,11 @@ class AiflexStrategy:
         self.can_buy = can_buy
         self.account = config.STRATEGIES[sid]["accounts"][0]
         self.accounts = (self.account,)
+        limits = config.FLEX_LIMITS.get(sid, {})                   # 经理账户：单票可以全仓、只拿一只
+        self.max_pct = limits.get("max_pct", config.FLEX_MAX_PCT)
+        self.max_positions = limits.get("max_positions", config.FLEX_MAX_POSITIONS)
+        self.label = limits.get("label", "AI灵活")
+        self.capital = config.ACCOUNT_CAPITAL.get(self.account, config.FLEX_CAPITAL)
 
     # ---------- 读订单 ----------
     def _load(self) -> tuple[datetime | None, list[dict]]:
@@ -99,7 +104,7 @@ class AiflexStrategy:
     def _blocked(self, equity: float, day: date) -> str:
         row = self.conn.execute("SELECT value FROM equity WHERE account=? AND date<? ORDER BY date DESC LIMIT 1",
                                 (self.account, day.isoformat())).fetchone()
-        prev = row[0] if row else config.FLEX_CAPITAL
+        prev = row[0] if row else self.capital
         if prev and equity / prev - 1 <= -config.FLEX_DAY_LOSS:
             return f"当日亏损 {abs(equity / prev - 1) * 100:.1f}%（线 {config.FLEX_DAY_LOSS:.0%}），今天不再开新仓"
         last = self._results()[-config.FLEX_LOSS_STREAK:]
@@ -153,14 +158,14 @@ class AiflexStrategy:
         held = {p.code: p for p in self.ledger.positions(self.account)}
         if code in held and q.price < held[code].buy_price:
             return self._reject(now, order, "亏损持仓不加仓")
-        if code not in held and len(held) >= config.FLEX_MAX_POSITIONS:
-            return self._reject(now, order, f"持仓已满（{config.FLEX_MAX_POSITIONS} 只）")
+        if code not in held and len(held) >= self.max_positions:
+            return self._reject(now, order, f"持仓已满（{self.max_positions} 只）")
         equity = self._equity(quotes)
         why = self._blocked(equity, now.date())
         if why:
             return self._reject(now, order, why)
-        budget = min(min(pct, config.FLEX_MAX_PCT) * equity, self.ledger.cash(self.account))
-        reason = f"AI灵活｜{order.get('pattern', '')}｜{order['mode']}｜{order.get('reason', '')}"[:120]
+        budget = min(min(pct, self.max_pct) * equity, self.ledger.cash(self.account))
+        reason = f"{self.label}｜{order.get('pattern', '')}｜{order['mode']}｜{order.get('reason', '')}"[:120]
         fill = self.ledger.buy(self.account, q, now, reason, budget=budget)
         if fill is None:
             return self._reject(now, order, "资金不足一手或持仓限制，没有成交")
@@ -203,7 +208,7 @@ class AiflexStrategy:
             return self._reject(now, order, "T+1：今天买入的明天才能卖")
         if q is None or q.ts.date() != now.date():
             return self._reject(now, order, "行情缺失或过期")
-        fill = self.ledger.sell(self.account, pos, q, now, f"AI灵活｜卖出｜{order.get('reason', '')}"[:120])
+        fill = self.ledger.sell(self.account, pos, q, now, f"{self.label}｜卖出｜{order.get('reason', '')}"[:120])
         if fill is None:
             return self._reject(now, order, "跌停或停牌，卖不出去")
         self._log(now, "order_ok", code, f"卖出 {fill.shares} 股 @{fill.price:.2f}", {**order, "id": order["id"]})

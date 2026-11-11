@@ -173,3 +173,33 @@ def test_missing_or_broken_orders_file_is_harmless(tmp_path):
     (tmp_path / "bad.json").write_text("{not json", encoding="utf-8")
     s2 = AiflexStrategy(conn, Ledger(conn), CAL, orders_path=tmp_path / "bad.json")
     assert s2.buy_step({"600001": _q("600001")}, NOW) == []
+
+
+# ---------- 经理的一万元账户（dj 2026-11-11：实盘只有一万块、单票全仓，让经理自己操作，也是对经理的考核） ----------
+def _mgr(tmp_path, orders, ts=NOW):
+    path = tmp_path / "manager_orders.json"
+    path.write_text(json.dumps({"ts": ts.isoformat(timespec="seconds"), "orders": orders}, ensure_ascii=False), encoding="utf-8")
+    conn = db.connect(":memory:")
+    ledger = Ledger(conn)
+    return AiflexStrategy(conn, ledger, CAL, orders_path=path, sid="mgr"), ledger, conn
+
+
+def test_manager_account_is_ten_thousand_all_in_on_one_stock(tmp_path):
+    s, ledger, conn = _mgr(tmp_path, [_order(id="MGR-1", pct=1.0), _order(id="MGR-2", code="600002", pct=1.0)])
+    assert s.account == "mgr_main" and ledger.cash("mgr_main") == 10000
+    fills = s.buy_step({"600001": _q("600001"), "600002": _q("600002")}, NOW)
+    assert [(f.code, f.shares) for f in fills] == [("600001", 900)]                # 一万 ÷ 10 元：1000 股加手续费超预算，整手向下取 900
+    assert fills[0].reason.startswith("经理｜")
+    why = [d for v, c, d, t in conn.execute("SELECT verdict, code, detail, trace FROM decisions WHERE strategy='mgr'") if v == "order_reject"]
+    assert len(why) == 1 and "持仓已满（1 只）" in why[0]
+
+
+def test_manager_account_cannot_afford_a_lot_of_a_stock_above_a_hundred_yuan(tmp_path):
+    s, ledger, conn = _mgr(tmp_path, [_order(id="MGR-1", pct=1.0, stop=140.0, ref_price=150.0)])
+    assert s.buy_step({"600001": _q("600001", price=150.0, pre=150.0)}, NOW) == []
+    assert "资金不足一手" in conn.execute("SELECT detail FROM decisions WHERE strategy='mgr' AND verdict='order_reject'").fetchone()[0]
+
+
+def test_trader_accounts_keep_their_own_limits(tmp_path):
+    s, _, _ = _setup(tmp_path, [_order(pct=0.9)])
+    assert (s.max_pct, s.max_positions) == (config.FLEX_MAX_PCT, config.FLEX_MAX_POSITIONS)

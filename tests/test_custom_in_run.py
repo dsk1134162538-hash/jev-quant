@@ -33,14 +33,14 @@ def test_close_summary_includes_custom_accounts_with_names_and_own_baseline():
     ledger.ensure_account("c1_shadow", 50000)
     content = close_summary_content(ledger, date(2026, 9, 24), {}, conn)
     lines = content.splitlines()
-    assert len(lines) == 21                                    # 内置 19 个 + c1 主/影子
+    assert len(lines) == 22                                    # 内置 20 个 + c1 主/影子
     assert "测试策略·主(Jev) 净值 50,000.00（+0.00%）今日成交 0 笔" in lines
     assert "测试策略·影子 净值 50,000.00（+0.00%）今日成交 0 笔" in lines
 
 
 def test_close_summary_without_conn_keeps_builtin_only():
     conn = _conn_with_c1()
-    assert len(close_summary_content(Ledger(conn), date(2026, 9, 24), {}).splitlines()) == 19
+    assert len(close_summary_content(Ledger(conn), date(2026, 9, 24), {}).splitlines()) == 20
 
 
 def test_buy_push_for_custom_main_includes_hits_and_jev():
