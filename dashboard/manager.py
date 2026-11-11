@@ -8,7 +8,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -114,8 +115,36 @@ def desk_reports(ctx: dict, accounts: dict, logs: dict, now: datetime) -> list[d
     return out
 
 
+# ---------- 公司记分 ----------
+def company_score(conn, accounts: list[tuple[str, float]], now: datetime) -> dict:
+    """公司记分牌：两位 AI 交易员合计的今日 / 本周 / 本月收益率，对着 config.DESK_TARGETS。
+    基数取「这段时间开始前最后一天的净值」，那之前还没有净值记录的账户用本金。"""
+    day = now.date()
+    starts = {"day": day, "week": day - timedelta(days=day.weekday()), "month": day.replace(day=1)}
+    total = sum(eq for _, eq in accounts)
+    items = []
+    for key, label in (("day", "今日"), ("week", "本周"), ("month", "本月")):
+        base = 0.0
+        for account, _ in accounts:
+            row = None
+            if conn is not None:
+                try:
+                    row = conn.execute("SELECT value FROM equity WHERE account=? AND date < ? ORDER BY date DESC LIMIT 1",
+                                       (account, starts[key].isoformat())).fetchone()
+                except sqlite3.Error:
+                    row = None
+            base += row[0] if row and row[0] else config.ACCOUNT_CAPITAL.get(account, config.FLEX_CAPITAL)
+        actual = round((total / base - 1) * 100, 2) if base else None
+        target = float(config.DESK_TARGETS[key])
+        items.append({"key": key, "label": label, "target": target, "actual": actual, "hit": actual is not None and actual >= target,
+                      "gapYuan": round(base * (1 + target / 100) - total) if base else None})
+    return {"equity": round(total, 2), "items": items}
+
+
+
 # ---------- 给经理的现场 ----------
-def manager_context(now: datetime, slot: str, ctx: dict, reports: list, accounts: dict, logs: dict, earlier: list | None = None) -> dict:
+def manager_context(now: datetime, slot: str, ctx: dict, reports: list, accounts: dict, logs: dict, earlier: list | None = None,
+                    company: dict | None = None) -> dict:
     """经理看汇报、市场概况、题材梯队（不带成员）、每位交易员的账户和今天的想法、今天之前的指令；不看整张行情表。"""
     ctx = ctx or {}
     traders = {}
@@ -127,7 +156,8 @@ def manager_context(now: datetime, slot: str, ctx: dict, reports: list, accounts
                         "today": [{"slot": r.get("slot"), "stage": (r.get("analysis") or {}).get("stage"),
                                    "plan": (r.get("analysis") or {}).get("plan"), "orders": [f"{o.get('action')}{o.get('code')}" for o in r.get("orders") or []],
                                    "skipped": r.get("skipped")} for r in (logs or {}).get(sid, [])][-4:]}
-    return {"time": f"{now:%H:%M}", "slot": slot, "snapshotId": f"MGR-{now:%Y%m%d}-{slot.replace(':', '')}",
+    return {**({"company": company} if company else {}),
+            "time": f"{now:%H:%M}", "slot": slot, "snapshotId": f"MGR-{now:%Y%m%d}-{slot.replace(':', '')}",
             "reports": [{"name": r["name"], "line": r["line"], "level": r["level"]} for r in reports],
             "market": ctx.get("market") or {}, "highBoards": ctx.get("highBoards") or {},
             "themeLadder": [{k: v for k, v in t.items() if k != "members"} for t in (ctx.get("themeLadder") or [])[:6]],
@@ -148,6 +178,10 @@ SYSTEM_PROMPT = (
     "earlier 是你今天之前的指令和否证条件——先检查之前的否证条件有没有被触发，触发了就说明之前判断错了，要改。\n"
     "每个判断都是一个假设：必须写 falsify（否证条件）——到下一次判断前，出现什么具体、可观察的情况就说明你判断错了"
     "（例如「10:30 前先进封装涨停数掉到 3 家以下」「上涨家数跌破 2000」），不写模糊的话。\n\n"
+    "【公司目标——你的所有决定都为它服务】company 是两位交易员合计的记分：今日 / 本周 / 本月的实际收益率 actual、目标 target"
+    "（每天 1%、每周 5%、每月 20%）、还差多少元 gapYuan。目标很高，靠的是把仓位放在今天最可能赚钱的那位交易员身上、"
+    "少在不该出手的日子亏钱，不是靠赌：落后时不许用放大亏损的办法去追（护栏一条不放宽，单笔上限仍在 0.03~0.30），"
+    "行情配合就把该开的交易员开足，行情不配合就少亏；已经达标的日子优先守住。read 里用一句话说清今天打算怎么向目标靠。\n\n"
     "输出：snapshotId 原样返回；regime（打板日/趋势日/混沌日/空仓日）；read（行情判断两三句，引用汇报里的数字）；"
     "traders：每位交易员 {buy: 开不开新仓, maxPct: 单笔上限（0.03~0.30，占账户净值）, why: 一句话}；falsify；watch（接下来盯什么）。"
 )
@@ -240,7 +274,7 @@ def run_manager(now: datetime, slot: str, *, gather, ask, notifier=None, directi
     earlier = [{"slot": r.get("slot"), "regime": r.get("regime"), "falsify": r.get("falsify"),
                 "traders": {k: v.get("buy") for k, v in (r.get("traders") or {}).items()}}
                for r in _today_rows(log_path, now.date().isoformat())]
-    mctx = manager_context(now, slot, scene.get("ctx"), reports, scene.get("accounts"), scene.get("logs"), earlier)
+    mctx = manager_context(now, slot, scene.get("ctx"), reports, scene.get("accounts"), scene.get("logs"), earlier, scene.get("company"))
     system, prompt = build_prompt(mctx)
     sids = list(ft.TRADERS)
     d = validate_directive(ask(system, prompt, answer_schema(mctx["snapshotId"], sids)), mctx["snapshotId"], sids)
@@ -269,7 +303,16 @@ def gather_scene(now: datetime, slot: str) -> dict:
     quotes = {c: SimpleNamespace(price=q["price"]) for c, q in (ctx.get("quotes") or {}).items()}
     accounts = {sid: ft._account_state(ft.DB_PATH, quotes, now.date(), sid) for sid in ft.TRADERS}
     logs = {sid: _today_rows(t.log_path, now.date().isoformat()) for sid, t in ft.TRADERS.items()}
-    return {"ctx": ctx, "accounts": accounts, "logs": logs}
+    company = None
+    try:
+        conn = sqlite3.connect(f"{Path(ft.DB_PATH).as_uri()}?mode=ro", uri=True, timeout=3)
+        try:
+            company = company_score(conn, [(t.account, accounts[sid]["equity"]) for sid, t in ft.TRADERS.items()], now)
+        finally:
+            conn.close()
+    except (sqlite3.Error, KeyError, TypeError, OSError):          # 记分算不出来只是经理少一块信息，不挡住开会
+        company = None
+    return {"ctx": ctx, "accounts": accounts, "logs": logs, "company": company}
 
 
 # ---------- 交易员这一侧 ----------

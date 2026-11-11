@@ -216,3 +216,36 @@ def test_without_a_directive_the_trader_works_as_before(tmp_path):
                        orders_path=tmp_path / "o.json", log_path=tmp_path / "l.jsonl", state_path=tmp_path / "s.json")
     assert out["orders"] == 1
     assert json.loads((tmp_path / "l.jsonl").read_text(encoding="utf-8").splitlines()[-1])["manager"] is None
+
+
+def test_manager_is_told_the_company_target_and_how_far_it_is_and_that_guards_stay(tmp_path):
+    # dj 2026-11-11：「经理肯定要知道这个目标，所有动作都是为了这个目标」
+    company = {"equity": 239000, "items": [{"key": "day", "label": "今日", "target": 1.0, "actual": -0.2, "hit": False, "gapYuan": 2870}]}
+    reports = mg.desk_reports(_ctx(), _accounts(), _logs(), at(9, 27))
+    mctx = mg.manager_context(at(9, 27), "09:26", _ctx(), reports, _accounts(), _logs(), company=company)
+    assert mctx["company"] == company
+    system, prompt = mg.build_prompt(mctx)
+    assert "公司目标" in system and "company" in system and "护栏" in system and "2870" in prompt
+    assert "company" not in mg.manager_context(at(9, 27), "09:26", _ctx(), reports, _accounts(), _logs())   # 算不出来就不给，不编
+
+    seen = {}
+
+    def gather(now, slot):
+        return {**_gather(now, slot), "company": company}
+
+    def ask(system, prompt, schema):
+        seen["prompt"] = prompt
+        return _answer()
+    mg.run_manager(at(9, 26, 40), "09:26", gather=gather, ask=ask, **_paths(tmp_path))
+    assert "gapYuan" in seen["prompt"]
+
+
+def test_company_score_uses_last_equity_before_each_period_or_capital():
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE equity(date TEXT, account TEXT, value REAL)")
+    conn.execute("INSERT INTO equity VALUES ('2026-11-06', 'aiflex_main', 119000)")
+    c = mg.company_score(conn, [("aiflex_main", 120190.0), ("aiflex2_main", 120000.0)], at(10, 0))
+    day, week, month = c["items"]
+    assert day["actual"] == week["actual"] == round((240190 / 239000 - 1) * 100, 2) and month["actual"] == round((240190 / 240000 - 1) * 100, 2)
+    assert day["gapYuan"] == round(239000 * 1.01 - 240190) and not day["hit"]
