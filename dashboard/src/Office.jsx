@@ -129,7 +129,7 @@ export function sceneOf(iso) {
 // 天色：按月份的日出日落（上海附近，够用），返回 sky 和太阳走到哪了（0 日出 → 1 日落）
 const SUNRISE = [6.9, 6.6, 6.1, 5.5, 5.0, 4.9, 5.0, 5.3, 5.6, 5.9, 6.3, 6.7]
 const SUNSET = [17.2, 17.7, 18.0, 18.3, 18.7, 19.0, 19.0, 18.6, 18.0, 17.4, 16.9, 16.9]
-function skyOf(iso) {
+export function skyOf(iso) {
   if (!iso) return { sky: 'day', sun: 0.5 }
   const d = new Date(iso)
   const h = d.getHours() + d.getMinutes() / 60
