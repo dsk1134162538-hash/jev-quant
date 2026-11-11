@@ -164,3 +164,18 @@ def test_daemon_writes_bz_pool_so_the_bz_trader_can_read_it(tmp_path):
                                 bz={"600111": {"theme": "机器人", "leader": 6}})
     got = sd.read_candidates(NOW, p)
     assert got["relay"] == {"002086": {"n": 4}} and got["wts"] == {"002388": {"n": 3}} and got["bz"]["600111"]["leader"] == 6
+
+
+def test_prompts_actually_contain_the_snapshot_id_the_answer_must_echo():
+    # 2026-11-11 实盘第一天：高标接力官、补涨官三个时点全部报「回答与快照编号不一致」——提示词只说「原样返回」，却没把编号写进去
+    prompts = []
+
+    def ask(system, prompt, schema):
+        prompts.append((prompt, schema["properties"]["snapshotId"]["const"]))
+        props = schema["properties"]
+        if "verdicts" in props:
+            return {"snapshotId": props["snapshotId"]["const"], "verdicts": []}
+        return {"snapshotId": props["snapshotId"]["const"], "read": "r", "items": []}
+    sd.run_trader(sd.STRATS["relay"], NOW, "09:26", scene({"relay": {"002086": {"n": 4}}}, {"002086": q("002086", 4.0)}), ask)
+    sd.run_final(NOW, "09:26", [{"label": "x", "picks": [{"code": "002086", "name": "甲", "why": "a", "falsify": "b", "confidence": "高", "evidence": {}}]}], {}, None, ask)
+    assert len(prompts) == 2 and all(snap in prompt for prompt, snap in prompts)

@@ -149,7 +149,7 @@ def run_trader(strat: Strat, now: datetime, slot: str, scene: dict, ask) -> dict
     if not passed:
         return sub
     snap = f"DESK-{strat.key}-{now:%Y%m%d}-{slot.replace(':', '')}"
-    prompt = ("快照编号必须原样返回。\n候选（规则已放行）：" + json.dumps(passed, ensure_ascii=False)
+    prompt = (f"快照编号：{snap}（snapshotId 必须原样返回这个编号）。\n候选（规则已放行）：" + json.dumps(passed, ensure_ascii=False)
               + "\n市场：" + json.dumps(_market(ctx), ensure_ascii=False)
               + f"\n\n请返回 JSON：snapshotId、verdicts（每个候选一项：code、buy、why、falsify、confidence）。")
     try:
@@ -218,7 +218,7 @@ def run_final(now: datetime, slot: str, subs: list[dict], ctx: dict, directive: 
     if not picks:
         return {"read": "", "items": [], "fallback": False}
     snap = f"DESKM-{now:%Y%m%d}-{slot.replace(':', '')}"
-    prompt = ("快照编号必须原样返回。\n各交易员推荐：" + json.dumps(picks, ensure_ascii=False)
+    prompt = (f"快照编号：{snap}（snapshotId 必须原样返回这个编号）。\n各交易员推荐：" + json.dumps(picks, ensure_ascii=False)
               + "\n今天的行情判断：" + json.dumps({k: (directive or {}).get(k) for k in ("regime", "slot", "falsify")}, ensure_ascii=False)
               + "\n市场：" + json.dumps(_market(ctx), ensure_ascii=False)
               + "\n\n请返回 JSON：snapshotId、read（两句话总评）、items（每只一项：code、do、pct、why、falsify）。")
