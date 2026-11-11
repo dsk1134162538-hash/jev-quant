@@ -51,10 +51,10 @@ def test_buy_is_sized_by_percent_of_equity_and_logs_the_stop_and_mode(tmp_path):
     assert s.buy_step({"600001": _q("600001")}, NOW + timedelta(minutes=1)) == []                    # 同一张订单只成交一次
 
 
-def test_single_stock_is_capped_at_thirty_percent_of_equity(tmp_path):
+def test_single_stock_is_capped_at_forty_percent_of_equity(tmp_path):
     s, ledger, _ = _setup(tmp_path, [_order(pct=0.9)])
     fills = s.buy_step({"600001": _q("600001")}, NOW)
-    assert fills[0].shares == 3500                                                                    # 12 万 × 30% ÷ 10 元（含手续费、整手）
+    assert fills[0].shares == 4700                                                                    # 12 万 × 40% ÷ 10 元（含手续费、整手）；dj 2026-11-11 票数少、仓位大
 
 
 @pytest.mark.parametrize("change,why", [
@@ -77,13 +77,13 @@ def test_cannot_buy_at_limit_up_or_with_stale_quote_or_when_buying_is_off(tmp_pa
     assert s3.buy_step({"600001": _q("600001")}, NOW) == []
 
 
-def test_at_most_five_positions_and_no_adding_to_a_losing_position(tmp_path):
-    s, ledger, conn = _setup(tmp_path, [_order(code="600006")])
-    for i in range(1, 6):
+def test_at_most_three_positions_and_no_adding_to_a_losing_position(tmp_path):
+    s, ledger, conn = _setup(tmp_path, [_order(code="600004")])
+    for i in range(1, 4):
         ledger.buy(ACCOUNT, _q(f"60000{i}"), NOW - timedelta(days=1), "x", budget=10000)
-    qs = {f"60000{i}": _q(f"60000{i}") for i in range(1, 7)}
-    assert s.buy_step(qs, NOW) == []                                                                  # 第 6 只
-    assert "持仓已满" in _decisions(conn)[0][2]
+    qs = {f"60000{i}": _q(f"60000{i}") for i in range(1, 5)}
+    assert s.buy_step(qs, NOW) == []                                                                  # 第 4 只
+    assert "持仓已满（3 只）" in _decisions(conn)[0][2]
     s2, ledger2, conn2 = _setup(tmp_path, [_order(ref_price=9.7)])
     ledger2.buy(ACCOUNT, _q("600001"), NOW - timedelta(days=1), "x", budget=10000)
     assert s2.buy_step({"600001": _q("600001", price=9.7)}, NOW) == []                                # 亏损持仓不加仓

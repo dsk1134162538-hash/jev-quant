@@ -4,7 +4,7 @@ DeepSeek 在关键时点（ai_loop，dashboard/flex_trader.py）自己判断买�
 dashboard/runtime/flex_orders.json；这里每分钟读订单，按实时行情成交，并实时盯着 AI 自己设的止损线。
 AI 可以突破任何选股规则（订单里标「模式外」，复盘时和「模式内」分开统计），但有四条保命的护栏，不是选股规则
 （知识库「仓位与风控」：先保证活着，再谈赚多少），代码里强制执行，AI 绕不过去：
-  1. 单票最多占账户净值 FLEX_MAX_PCT（30%），持仓最多 FLEX_MAX_POSITIONS（5）只，亏损的持仓不加仓；
+  1. 单票最多占账户净值 FLEX_MAX_PCT（40%），持仓最多 FLEX_MAX_POSITIONS（3）只，亏损的持仓不加仓；
   2. 买入必须同时给：止损位（低于现价、不超过 12% 远）、「错了的信号」、模式（模式内 / 模式外）；
   3. 当日净值亏到 FLEX_DAY_LOSS（3%）当天不再开新仓；
   4. 连亏 FLEX_LOSS_STREAK（3）笔，当天不再开新仓。

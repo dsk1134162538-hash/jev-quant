@@ -294,8 +294,9 @@ BZ_BUY_UNTIL = (9, 33)
 BZ_SELL_AT = (14, 55)
 # 灵活账户的护栏（不是选股规则，是让账户活下去；知识库「仓位与风控」）：
 FLEX_CAPITAL = 120_000.0
-FLEX_MAX_POSITIONS = 5
-FLEX_MAX_PCT = 0.30               # 单票最多占账户净值
+# dj 2026-11-11：「持有票数太多了，仓位又低，要么降低票数，要么提高仓位」——两头都动：最多 3 只（原 5），单票 40%（原 30%）
+FLEX_MAX_POSITIONS = 3
+FLEX_MAX_PCT = 0.40               # 单票最多占账户净值
 FLEX_DAY_LOSS = 0.03              # 当日亏到净值的 3% 当天不再开新仓
 FLEX_LOSS_STREAK = 3              # 连亏 3 笔，当天不再开新仓
 MGR_CAPITAL = 10_000.0            # 经理账户本金：和 dj 的实盘资金一样大

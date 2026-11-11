@@ -46,7 +46,7 @@ def _ctx():
 
 def test_prompt_carries_the_handbook_the_research_calibration_and_the_guardrails():
     system, prompt = ft.build_prompt(_ctx())
-    for text in ("突破", "模式外", "30%", "止损", "错了的信号", "冰点", "弱转强", "补涨", "龙头"):
+    for text in ("突破", "模式外", "40%", "止损", "错了的信号", "冰点", "弱转强", "补涨", "龙头"):
         assert text in system, text
     assert "一致高潮" in system and "分歧" in system                                # 回测校准
     assert "600001" in prompt and "机器人" in prompt and "FLEX-20261103-1000" in prompt
@@ -123,7 +123,7 @@ def test_two_traders_share_guardrails_but_differ_in_style_and_files():
     # 二号交易员（dj 2026-11-05「再加一个 deepseek 交易员」）：趋势/强势跟随，不打板、不接力
     one, two = ft.TRADERS["aiflex"], ft.TRADERS["aiflex2"]
     assert one.system is ft.SYSTEM_PROMPT and two.system != one.system
-    for text in ("单票最多占账户净值 30%", "止损", "错了的信号", "只做沪深主板", "orders"):
+    for text in ("单票最多占账户净值 40%，持仓最多 3 只", "止损", "错了的信号", "只做沪深主板", "orders"):
         assert text in two.system, text                                             # 护栏和输出要求原样共用
     assert "趋势" in two.system and "不打板" in two.system and "src" in two.system
     assert "弱转强" not in two.system                                                # 手册里的打板打法不带过来
@@ -238,7 +238,7 @@ def test_prompt_lets_it_probe_on_strong_days_instead_of_vetoing_every_climax_day
     assert "兑现，不接" not in p                                   # 兑现只针对已有持仓
     assert "试错" in p and "最想买的两只" in p and "不限市值" in p
     assert "不是禁令" in p and "一票否决" in p
-    assert "单票最多占账户净值 30%" in p and "只做沪深主板" in p     # 护栏原样保留
+    assert "单票最多占账户净值 40%，持仓最多 3 只" in p and "只做沪深主板" in p     # 护栏原样保留
 
 
 def test_pick_movers_finds_strong_unsealed_main_board_stocks_that_are_not_first_boards():

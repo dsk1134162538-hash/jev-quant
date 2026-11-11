@@ -913,7 +913,7 @@ def _load_flex(conn, ledger: Ledger, trade_days, can_buy: bool, log: Callable[[s
         if can_buy and sid == "mgr":
             log(f"{name}：执行器已加载（一万元、单票全仓、只拿一只；票由经理从交易员给的数据里挑；买入必带止损、T+1）")
         elif can_buy:
-            log(f"{name}：执行器已加载（订单来自 ai_loop 的关键时点；护栏：单票≤30%、持仓≤5、买入必带止损、日亏3%/连亏3笔停开仓）")
+            log(f"{name}：执行器已加载（订单来自 ai_loop 的关键时点；护栏：单票≤{config.FLEX_MAX_PCT:.0%}、持仓≤{config.FLEX_MAX_POSITIONS}、买入必带止损、日亏3%/连亏3笔停开仓）")
         return AiflexStrategy(conn, ledger, trade_days, orders_path=path, can_buy=can_buy, sid=sid)
     except Exception as e:
         conn.rollback()
