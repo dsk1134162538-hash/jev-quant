@@ -249,3 +249,11 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
 .d-hold { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 13px; margin: 0 0 8px; padding: 6px 8px; background: rgba(42, 36, 29, 0.04); }
 .d-hold b { font-size: 15px; } .d-hold .near { color: var(--d-red); font-weight: 700; }
 .d-company + .d-company { margin-top: 6px; border-width: 1px; }
+
+/* 周复盘和经理的风险档位 */
+.d-risk { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: baseline; margin: 2px 0 8px; font-size: 13px; line-height: 1.55; }
+.d-risk b { font-size: 24px; font-weight: 900; letter-spacing: 2px; color: var(--d-amber); }
+.d-risk.lv-高 b { color: var(--d-red); } .d-risk.lv-低 b { color: var(--d-green); } .d-risk.lv-中 b { color: var(--d-muted); }
+.d-rules { margin: 0 0 8px; padding: 0 0 0 18px; font-size: 12.5px; line-height: 1.6; display: grid; gap: 2px; }
+.d-said { margin: 8px 0 0; font-size: 12.5px; } .d-said ul { margin: 2px 0 0; padding: 0 0 0 16px; line-height: 1.6; }
+.d-said li.ask { color: var(--d-blue); }

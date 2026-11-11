@@ -46,6 +46,9 @@ def _isolated_targets_file(monkeypatch, tmp_path):
     monkeypatch.setattr("dashboard.manager_trade.ORDERS_PATH", tmp_path / "manager_orders.json")
     monkeypatch.setattr("dashboard.manager_trade.LOG_PATH", tmp_path / "manager_trade_log.jsonl")
     monkeypatch.setattr("dashboard.manager_trade.STATE_PATH", tmp_path / "manager_trade_state.json")
+    monkeypatch.setattr("dashboard.weekly_review.STANCE_PATH", tmp_path / "manager_stance.json")
+    monkeypatch.setattr("dashboard.weekly_review.LOG_PATH", tmp_path / "weekly_review.jsonl")
+    monkeypatch.setattr("dashboard.weekly_review.STATE_PATH", tmp_path / "weekly_review_state.json")
 
 
 @pytest.fixture(autouse=True)

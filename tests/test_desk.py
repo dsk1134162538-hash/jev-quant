@@ -158,3 +158,18 @@ def test_payload_carries_the_managers_own_account_with_its_lower_target_and_toda
     mine = [e for e in p["log"] if e["who"] == "经理账户"]
     assert {e["tag"] for e in mine} == {"判断", "买入", "丢弃"} and any("买不起一手" in e["text"] for e in mine)
     assert desk.desk_payload(tmp_path / "none.sqlite", tmp_path / "rt2", {}, {}, at(10, 0))["mgr"]["account"]["equity"] == 10000
+
+
+def test_payload_shows_the_managers_risk_stance_and_the_latest_weekly_review(tmp_path):
+    # 周复盘会（dj 2026-11-11）：经理每周给自己定风险档位；还没开过会时显示老板的默认风格「中高」
+    rt, db = _runtime(tmp_path), _db(tmp_path)
+    p = desk.desk_payload(db, rt, {}, {}, at(10, 0))
+    assert p["stance"]["level"] == "中高" and p["stance"]["week"] is None and p["weekly"] is None
+    (rt / "manager_stance.json").write_text(json.dumps({"week": "2026-W45", "level": "高", "why": "普涨放量", "rules": ["开足"]}, ensure_ascii=False), encoding="utf-8")
+    (rt / "weekly_review.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
+        {"week": "2026-W44", "level": "中", "summary": "旧的"},
+        {"week": "2026-W45", "level": "高", "summary": "赚在 PCB", "rules": ["开足"], "traders": {"aiflex": "少做 2 板"},
+         "statements": {"aiflex": {"label": "AI灵活交易", "good": "g", "bad": "b", "next": "n"}}, "stats": {"big": 1}}]) + "\n", encoding="utf-8")
+    p = desk.desk_payload(db, rt, {}, {}, at(10, 0))
+    assert p["stance"]["level"] == "高" and p["weekly"]["summary"] == "赚在 PCB" and p["weekly"]["statements"]["aiflex"]["good"] == "g"
+    assert "stats" not in p["weekly"]

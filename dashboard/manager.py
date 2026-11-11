@@ -144,7 +144,7 @@ def company_score(conn, accounts: list[tuple[str, float]], now: datetime, target
 
 # ---------- 给经理的现场 ----------
 def manager_context(now: datetime, slot: str, ctx: dict, reports: list, accounts: dict, logs: dict, earlier: list | None = None,
-                    company: dict | None = None) -> dict:
+                    company: dict | None = None, stance: dict | None = None) -> dict:
     """经理看汇报、市场概况、题材梯队（不带成员）、每位交易员的账户和今天的想法、今天之前的指令；不看整张行情表。"""
     ctx = ctx or {}
     traders = {}
@@ -156,7 +156,7 @@ def manager_context(now: datetime, slot: str, ctx: dict, reports: list, accounts
                         "today": [{"slot": r.get("slot"), "stage": (r.get("analysis") or {}).get("stage"),
                                    "plan": (r.get("analysis") or {}).get("plan"), "orders": [f"{o.get('action')}{o.get('code')}" for o in r.get("orders") or []],
                                    "skipped": r.get("skipped")} for r in (logs or {}).get(sid, [])][-4:]}
-    return {**({"company": company} if company else {}),
+    return {**({"company": company} if company else {}), **({"stance": stance} if stance else {}),
             "time": f"{now:%H:%M}", "slot": slot, "snapshotId": f"MGR-{now:%Y%m%d}-{slot.replace(':', '')}",
             "reports": [{"name": r["name"], "line": r["line"], "level": r["level"]} for r in reports],
             "market": ctx.get("market") or {}, "highBoards": ctx.get("highBoards") or {},
@@ -168,22 +168,25 @@ SYSTEM_PROMPT = (
     "你是 A 股短线交易台的经理，手下有几位 DeepSeek 交易员（各管一个模拟账户，不下真单）和一组用代码算数的汇报员。"
     "你不选股、不下单：你的工作是判断今天是什么行情，决定哪位交易员今天开新仓、单笔最多多大。交易员照常自己选股，"
     "你关掉开仓的那位只管持仓（卖出照常）。\n\n"
+    "【仓位——少而重】每位交易员最多拿 3 只、单票最多 40%：票数少，所以该上的那位要给足额度（打板日 / 趋势日被开的那位 0.30~0.40），"
+    "不要把额度切成一堆 10% 的小仓，那样对了也赚不到目标。\n\n"
     "【行情分类】\n"
     "打板日：赚钱效应集中在涨停板，连板梯队完整、高标强势、昨日涨停股今天红盘率高、炸板率低——打板/接力型交易员该上。\n"
     "趋势日：涨停接力吃面（高标走弱、炸板多），但普涨或板块放量走强、异动票多——趋势/强势跟随型交易员该上，打板型收手。\n"
-    "混沌日：方向不清，题材轮动快、宽度一般——都可以开，但单笔上限放小（10%~15%），试错为主。\n"
+    "混沌日：方向不清，题材轮动快、宽度一般——都可以开，但单笔上限放小（15%~20%），试错为主。\n"
     "空仓日：跌停扩散、宽度极差（上涨占比 <30%）、炸板率很高——都关新仓。全关只用在真的很差的日子：空仓有代价，"
     "dj 说过分析了半天一只不买是太严了。\n\n"
+    "【风险档位】stance 是你在周复盘会上给自己定的这一周的档位 level（低 / 中 / 中高 / 高）和当时定的做法 rules。老板的风格偏中高风险，没开过周会时默认就是中高。档位决定你给额度的松紧：中高和高——行情配合时把该开的交易员给足（0.30~0.40），混沌日也敢留一位在场；中——额度减一档；低——只留最有把握的一位、小仓。行情和档位明显对不上时按行情来，并在 read 里说一句。\n\n"
     "【怎么判断】先看汇报员（reports，level 是 ok/warn/bad/idle）和 highBoards、themeLadder；再看每位交易员今天前几轮的想法和账户；"
     "earlier 是你今天之前的指令和否证条件——先检查之前的否证条件有没有被触发，触发了就说明之前判断错了，要改。\n"
     "每个判断都是一个假设：必须写 falsify（否证条件）——到下一次判断前，出现什么具体、可观察的情况就说明你判断错了"
     "（例如「10:30 前先进封装涨停数掉到 3 家以下」「上涨家数跌破 2000」），不写模糊的话。\n\n"
     "【公司目标——你的所有决定都为它服务】company 是两位交易员合计的记分：今日 / 本周 / 本月的实际收益率 actual、目标 target"
     "（每天 1%、每周 5%、每月 20%）、还差多少元 gapYuan。目标很高，靠的是把仓位放在今天最可能赚钱的那位交易员身上、"
-    "少在不该出手的日子亏钱，不是靠赌：落后时不许用放大亏损的办法去追（护栏一条不放宽，单笔上限仍在 0.03~0.30），"
+    "少在不该出手的日子亏钱，不是靠赌：落后时不许用放大亏损的办法去追（护栏不为追目标放宽，单笔上限仍在 0.03~0.40），"
     "行情配合就把该开的交易员开足，行情不配合就少亏；已经达标的日子优先守住。read 里用一句话说清今天打算怎么向目标靠。\n\n"
     "输出：snapshotId 原样返回；regime（打板日/趋势日/混沌日/空仓日）；read（行情判断两三句，引用汇报里的数字）；"
-    "traders：每位交易员 {buy: 开不开新仓, maxPct: 单笔上限（0.03~0.30，占账户净值）, why: 一句话}；falsify；watch（接下来盯什么）。"
+    "traders：每位交易员 {buy: 开不开新仓, maxPct: 单笔上限（0.03~0.40，占账户净值）, why: 一句话}；falsify；watch（接下来盯什么）。"
 )
 
 
@@ -274,7 +277,7 @@ def run_manager(now: datetime, slot: str, *, gather, ask, notifier=None, directi
     earlier = [{"slot": r.get("slot"), "regime": r.get("regime"), "falsify": r.get("falsify"),
                 "traders": {k: v.get("buy") for k, v in (r.get("traders") or {}).items()}}
                for r in _today_rows(log_path, now.date().isoformat())]
-    mctx = manager_context(now, slot, scene.get("ctx"), reports, scene.get("accounts"), scene.get("logs"), earlier, scene.get("company"))
+    mctx = manager_context(now, slot, scene.get("ctx"), reports, scene.get("accounts"), scene.get("logs"), earlier, scene.get("company"), scene.get("stance"))
     system, prompt = build_prompt(mctx)
     sids = list(ft.TRADERS)
     d = validate_directive(ask(system, prompt, answer_schema(mctx["snapshotId"], sids)), mctx["snapshotId"], sids)
@@ -312,7 +315,8 @@ def gather_scene(now: datetime, slot: str) -> dict:
             conn.close()
     except (sqlite3.Error, KeyError, TypeError, OSError):          # 记分算不出来只是经理少一块信息，不挡住开会
         company = None
-    return {"ctx": ctx, "accounts": accounts, "logs": logs, "company": company}
+    from dashboard import weekly_review                              # 放在函数里：weekly_review 反过来要用本模块
+    return {"ctx": ctx, "accounts": accounts, "logs": logs, "company": company, "stance": weekly_review.read_stance()}
 
 
 # ---------- 交易员这一侧 ----------

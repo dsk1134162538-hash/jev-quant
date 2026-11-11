@@ -43,6 +43,7 @@ SYSTEM_PROMPT = (
     "【目标】score 是这个账户的记分：今日 / 本周 / 本月的实际收益率 actual、目标 target、还差多少元 gapYuan。"
     "目标要靠选对那一只来完成，不是靠每轮都出手：全仓一只票，错一次就是整个账户的亏损。"
     "没有够好的票就空着，手里的票预期还在就拿着；落后时不许为了追目标去买自己都不信的票。\n\n"
+    "【风险档位】stance 是你这一周给自己定的档位（低 / 中 / 中高 / 高；老板的风格是中高）。中高和高：有够好的票就敢全仓上；中：只做几位交易员同时给、理由互相印证的票；低：没有十足把握就空着。\n\n"
     "【怎么想】directive 是你自己今天给交易台定的行情和判断，买卖要和它一致；earlier 是你今天前几轮对这个账户的想法。"
     "同一只票被几位交易员同时给出、理由互相印证的，比只有一个人提的可靠。\n\n"
     "输出：snapshotId 原样返回；think（两三句：比较了哪几只、为什么选这只或者为什么不动）；"
@@ -193,7 +194,7 @@ def run(now: datetime, slot: str, *, gather, ask, notifier=None, orders_path: Pa
                 "orders": [f"{o.get('action')}{o.get('code')}" for o in r.get("orders") or []]}
                for r in mg._today_rows(log_path, now.date().isoformat()) if not r.get("skipped")][-3:]
     ctx = {"time": f"{now:%H:%M}", "slot": slot, "snapshotId": f"MGRT-{now:%Y%m%d}-{slot.replace(':', '')}", "score": scene.get("score"),
-           "account": account, "pool": pool, "directive": scene.get("directive"), "earlier": earlier}
+           "account": account, "pool": pool, "directive": scene.get("directive"), "stance": scene.get("stance"), "earlier": earlier}
     system, prompt = build_prompt(ctx)
     result = validate(ask(system, prompt, answer_schema(ctx["snapshotId"])), ctx)
     finish(result)
@@ -250,4 +251,5 @@ def gather_scene(now: datetime, slot: str) -> dict:
             conn.close()
     except (sqlite3.Error, KeyError, TypeError, OSError):
         score = None
-    return {"pool": pool, "account": account, "directive": directive, "score": score}
+    from dashboard import weekly_review
+    return {"pool": pool, "account": account, "directive": directive, "score": score, "stance": weekly_review.read_stance()}

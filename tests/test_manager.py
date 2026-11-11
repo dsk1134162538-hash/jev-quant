@@ -249,3 +249,10 @@ def test_company_score_uses_last_equity_before_each_period_or_capital():
     day, week, month = c["items"]
     assert day["actual"] == week["actual"] == round((240190 / 239000 - 1) * 100, 2) and month["actual"] == round((240190 / 240000 - 1) * 100, 2)
     assert day["gapYuan"] == round(239000 * 1.01 - 240190) and not day["hit"]
+
+
+def test_manager_sizes_bigger_and_concentrates_because_many_small_positions_cannot_reach_the_target():
+    # dj 2026-11-11：「持有票数太多了，仓位又低，要么降低票数，要么提高仓位」；风格偏中高风险
+    assert (ft.config.FLEX_MAX_POSITIONS, ft.config.FLEX_MAX_PCT, ft.DEFAULT_PCT) == (3, 0.40, 0.30)
+    assert "15%~20%" in mg.SYSTEM_PROMPT and "10%~15%" not in mg.SYSTEM_PROMPT and "0.03~0.40" in mg.SYSTEM_PROMPT
+    assert mg.answer_schema("S", ["aiflex"])["properties"]["traders"]["properties"]["aiflex"]["properties"]["maxPct"]["maximum"] == 0.40

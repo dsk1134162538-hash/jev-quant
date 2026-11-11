@@ -17,6 +17,7 @@ from jevq import config
 
 from dashboard import flex_trader as ft
 from dashboard import manager as mg
+from dashboard import weekly_review
 
 CURVE_DAYS = 30
 
@@ -246,7 +247,17 @@ def desk_payload(db_path: Path | None, runtime_dir: Path, quotes: dict, market_b
     calls = len(history) + sum(1 for t in traders for r in t["rounds"] if not r.get("skipped"))
     strategy = _strategy_desk(rt / "desk_submissions.json", day)
     return {"now": now.isoformat(timespec="seconds"), "roles": roles, "rolesAt": reports.get("ts") if roles else None,
-            "manager": manager, "traders": traders, "strategyDesk": strategy, "company": company, "mgr": mgr, "log": log[:120], "params": _params(), "calls": calls}
+            "manager": manager, "traders": traders, "strategyDesk": strategy, "company": company, "mgr": mgr,
+            "stance": weekly_review.read_stance(rt / "manager_stance.json"), "weekly": _weekly(rt / "weekly_review.jsonl"), "log": log[:120], "params": _params(), "calls": calls}
+
+
+def _weekly(path: Path) -> dict | None:
+    """最近一次周复盘会的记录（不带那一周的原始统计，面板用不上）。"""
+    try:
+        last = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()][-1]
+        return {k: v for k, v in json.loads(last).items() if k != "stats"}
+    except (OSError, ValueError, IndexError):
+        return None
 
 
 def _strategy_desk(path: Path, day: str) -> dict | None:

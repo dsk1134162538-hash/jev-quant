@@ -197,7 +197,21 @@ def _daily() -> dict:
     except Exception as e:                                   # noqa: BLE001
         archived = {"error": f"{type(e).__name__}: {str(e)[:200]}"}
     result = daily_job(notifier=notifier_from_env())
-    return {**result, "minutes": archived}
+    weekly = _weekly(datetime.now())
+    return {**result, "minutes": archived, **({"weekly": weekly} if weekly else {})}
+
+
+def _weekly(now: datetime) -> dict | None:
+    """周五收盘后的复盘会（dj 2026-11-11）：交易员各自复盘，经理总评并定下周的风险档位。挂在收盘后任务里——
+    盘中的时点钩子收盘后不再被调用。没到周五、这周开过了返回 None；没开成只记错误，不记已开。"""
+    from dashboard import flex_trader, weekly_review
+    from jevq.notify import notifier_from_env
+    if not weekly_review.due(now):
+        return None
+    try:
+        return weekly_review.run(now, gather=weekly_review.gather_scene, ask=flex_trader.ask_workbuddy, notifier=notifier_from_env())
+    except Exception as e:                                       # noqa: BLE001
+        return {"error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
 def _flex(now: datetime) -> dict | None:

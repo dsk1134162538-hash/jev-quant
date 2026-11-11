@@ -254,3 +254,19 @@ def test_flex_runs_at_key_times_and_its_failures_never_count_as_main_loop_failur
     assert len(seen) >= 3 and alerts == []
     assert any(l.get("flex") == {"slot": "10:00", "orders": 1} for l in logs)
     assert any("RuntimeError" in str(l.get("flexError")) and l["ok"] is False for l in logs)
+
+
+def test_weekly_review_hangs_off_the_after_close_job_only_on_friday_and_its_failure_is_contained(monkeypatch):
+    # 周复盘会（dj 2026-11-11）：盘中的时点钩子收盘后不再被调用，所以挂在收盘后任务里
+    from datetime import datetime
+    from dashboard import weekly_review
+    ran = []
+    monkeypatch.setattr("jevq.notify.notifier_from_env", lambda: object())
+    monkeypatch.setattr(weekly_review, "run", lambda now, **kw: ran.append(kw["gather"]) or {"week": "2026-W46", "level": "中高"})
+    assert ai_loop._weekly(datetime(2026, 11, 12, 15, 41)) is None and ran == []                     # 周四
+    assert ai_loop._weekly(datetime(2026, 11, 13, 15, 41)) == {"week": "2026-W46", "level": "中高"} and ran == [weekly_review.gather_scene]
+
+    def boom(now, **kw):
+        raise TimeoutError("经理超时")
+    monkeypatch.setattr(weekly_review, "run", boom)
+    assert "TimeoutError" in ai_loop._weekly(datetime(2026, 11, 13, 15, 41))["error"]

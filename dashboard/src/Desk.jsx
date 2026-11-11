@@ -319,6 +319,33 @@ function ManagerAccount({ m }) {
   )
 }
 
+// 周复盘会：周五收盘后交易员各自复盘，经理总评并给自己定下周的风险档位
+function Weekly({ stance, weekly }) {
+  if (!stance) return null
+  return (
+    <section className="d-card d-weekly">
+      <header><h2>周复盘 · 经理的风险档位</h2><span className="d-dim">{stance.week || '还没开过周会'}</span></header>
+      <div className={`d-risk lv-${stance.level}`}><b>{stance.level}</b><span>{stance.why || '—'}</span></div>
+      {stance.market && <p className="d-sub">对这一周市场的看法：{stance.market}</p>}
+      {stance.rules?.length > 0 && <ol className="d-rules">{stance.rules.map((r, i) => <li key={i}>{r}</li>)}</ol>}
+      {weekly ? (
+        <details className="d-more"><summary>看上次会议记录</summary>
+          <p className="d-read">{weekly.summary}</p>
+          {Object.entries(weekly.statements || {}).map(([sid, s]) => (
+            <div key={sid} className="d-said">
+              <b>{s.label}</b>
+              {s.error ? <p className="d-sub">没交复盘：{s.error}</p> : (
+                <ul><li>做对：{s.good}</li><li>做错：{s.bad}</li><li>下周：{s.next}</li>
+                  {weekly.traders?.[sid] && <li className="ask">经理要求：{weekly.traders[sid]}</li>}</ul>
+              )}
+            </div>
+          ))}
+        </details>
+      ) : <p className="d-empty small">每周五收盘后开会：交易员各自复盘，经理总评并定下周的档位。默认按你的风格「中高」。</p>}
+    </section>
+  )
+}
+
 function StrategyDesk({ sd }) {
   if (!sd) {
     return (
@@ -395,6 +422,7 @@ export default function DeskPage({ onTerm, onDetail }) {
         <span className={`d-phase ${phase === '盘中' ? 'on' : ''}`}>{phase}</span>
         <span className="mono d-clock">{data?.now ? data.now.slice(11, 19) : '--:--:--'}</span>
         {m && <span className={`d-chip ${REGIME_TONE[m.regime] || ''}`}>{m.regime}</span>}
+        {data?.stance && <span className="d-chip ghost">风险档位 <b>{data.stance.level}</b></span>}
         {dayAll != null && (
           <span className="d-chip ghost">两个账户合计 <b className={`mono ${tone(dayAll)}`}>{pct(dayAll)}</b> <b className={`mono ${tone(dayAll)}`}>{eqNow - eqPrev > 0 ? '+' : ''}{Math.round(eqNow - eqPrev).toLocaleString('en-US')} 元</b></span>
         )}
@@ -418,6 +446,7 @@ export default function DeskPage({ onTerm, onDetail }) {
         <aside className="d-right">
           <ManagerAccount m={data?.mgr && { ...data.mgr, today: data.now?.slice(0, 10) }} />
           <StrategyDesk sd={data?.strategyDesk} />
+          <Weekly stance={data?.stance} weekly={data?.weekly} />
           <Analysis data={data} />
           <Log log={data?.log} />
           <Params params={data?.params} />
