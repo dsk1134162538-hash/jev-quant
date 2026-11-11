@@ -515,7 +515,7 @@ def _scan_market() -> dict:
 
 def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapshot_path: Path = SNAPSHOT_PATH,
                    fetch_quotes=None, fetch_rows=None, fetch_market=None, log_path: Path | None = None,
-                   theme_cache: Path = THEME_CACHE, trader: Trader | None = None) -> dict:
+                   theme_cache: Path = THEME_CACHE, trader: Trader | None = None, skip_src: tuple | None = None) -> dict:
     """市场状态 + 题材梯队（带成员代码）+ 所有策略的标的 + 候选实时行情 + 账户 + 今天前几轮的想法。
     任何一块取不到都只是缺那一块，不整轮失败。trader 决定读哪个账户和哪份日志；不传就是一号。"""
     trader = trader or TRADERS["aiflex"]
@@ -561,8 +561,9 @@ def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapsho
         add(pick_movers((fetch_market or _scan_market)(), now), "异动")
     except Exception:                                            # noqa: BLE001  全市场扫描失败只是少了异动股
         pass
-    handed = [c for c, tag in src.items() if tag in trader.skip_src and c.startswith(("60", "00"))]
-    codes = [c for c, tag in src.items() if c.startswith(("60", "00")) and tag not in trader.skip_src][:MAX_CANDIDATES]
+    skip = trader.skip_src if skip_src is None else skip_src        # 经理和策略席借用这份现场时传 ()：他们要看全市场，分工只管交易员
+    handed = [c for c, tag in src.items() if tag in skip and c.startswith(("60", "00"))]
+    codes = [c for c, tag in src.items() if c.startswith(("60", "00")) and tag not in skip][:MAX_CANDIDATES]
     try:
         quotes = fetch_quotes(codes) if codes else {}
     except Exception:                                            # noqa: BLE001

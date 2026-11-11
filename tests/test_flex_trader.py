@@ -396,3 +396,24 @@ def test_schema_and_prompt_ask_for_picks():
     assert "picks" in schema["properties"]
     assert set(schema["properties"]["picks"]["items"]["properties"]["verdict"]["enum"]) == {"推荐", "不推荐"}
     assert "picks" in ft.SYSTEM_PROMPT and "picks" in ft.TREND_PROMPT
+
+
+def test_manager_and_strategy_desk_still_see_movers_when_they_borrow_the_first_traders_context(tmp_path, monkeypatch):
+    # 2026-11-11：分工上线后，经理和策略席借用一号的现场，异动票被一起去掉了，「异动」汇报员会一直报 0 只
+    from factories import quote
+    market = {"601111": quote("601111", pct=4.0, amount=6e8, ts=at(10, 0), name="异动股")}
+    ctx = ft.gather_context(at(10, 0, 20), "10:00", db_path=_flex_db(tmp_path), snapshot_path=tmp_path / "none.json",
+                            fetch_quotes=lambda codes: {c: quote(c, pct=3.0, ts=at(10, 0)) for c in codes},
+                            fetch_rows=lambda d: [], fetch_market=lambda: market,
+                            log_path=tmp_path / "log.jsonl", theme_cache=tmp_path / "theme.json", skip_src=())
+    assert ctx["quotes"]["601111"]["src"] == "异动" and ctx["handedOff"] == []
+    from dashboard import manager, strategy_desk
+    seen = []
+    monkeypatch.setattr(ft, "gather_context", lambda now, slot, **kw: seen.append(kw) or {"quotes": {}})
+    monkeypatch.setattr(ft, "_account_state", lambda *a, **k: {})
+    manager.gather_scene(at(10, 0), "10:00")
+    try:
+        strategy_desk.gather_scene(at(10, 0), "10:00")
+    except Exception:                                              # noqa: BLE001  后面还要取别的数据，这里只看它怎么取现场
+        pass
+    assert len(seen) == 2 and all(kw.get("skip_src") == () for kw in seen)

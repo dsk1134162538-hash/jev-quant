@@ -316,7 +316,7 @@ def run_desk(now: datetime, slot: str, *, gather, ask, notifier=None, directive:
 def gather_scene(now: datetime, slot: str) -> dict:
     """真实现场：一号的 context（市场、梯队、高标）+ 今天各策略候选 + 候选实时行情。"""
     from jevq.data import tencent
-    ctx = ft.gather_context(now, slot)
+    ctx = ft.gather_context(now, slot, skip_src=())
     cands = read_candidates(now)
     codes = sorted({c for v in cands.values() for c in v})
     try:

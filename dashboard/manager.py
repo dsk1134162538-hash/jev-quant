@@ -265,7 +265,7 @@ def run_manager(now: datetime, slot: str, *, gather, ask, notifier=None, directi
 
 def gather_scene(now: datetime, slot: str) -> dict:
     """真实现场：一号的 context（市场、梯队、高标、候选行情）+ 每位交易员的账户 + 今天的日志。"""
-    ctx = ft.gather_context(now, slot)
+    ctx = ft.gather_context(now, slot, skip_src=())                 # 经理要看全市场（含异动票），交易员之间的分工不管经理
     quotes = {c: SimpleNamespace(price=q["price"]) for c, q in (ctx.get("quotes") or {}).items()}
     accounts = {sid: ft._account_state(ft.DB_PATH, quotes, now.date(), sid) for sid in ft.TRADERS}
     logs = {sid: _today_rows(t.log_path, now.date().isoformat()) for sid, t in ft.TRADERS.items()}
