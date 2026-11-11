@@ -128,3 +128,15 @@ def test_manager_log_line_joins_a_list_of_falsify_conditions_into_plain_text(tmp
     p = desk.desk_payload(_db(tmp_path), rt, {}, {}, at(10, 0))
     line = next(e["text"] for e in p["log"] if e["who"] == "经理")
     assert "否证：涨停数 <30；炸板率 >40%" in line and "[" not in line
+
+
+def test_company_scoreboard_compares_today_week_and_month_with_the_targets(tmp_path):
+    # dj 2026-11-11：给公司（两位 AI 交易员合计）定目标——每天 1%、每周 5%、每月 20%。只记分，不改护栏
+    p = desk.desk_payload(_db(tmp_path), _runtime(tmp_path), {"600002": Q(20.0, 19.0)}, {}, at(10, 0))   # 11-09 是周一
+    c = p["company"]
+    now = sum(t["account"]["equity"] for t in p["traders"])
+    assert c["equity"] == round(now, 2) and [i["key"] for i in c["items"]] == ["day", "week", "month"]
+    day, week, month = c["items"]
+    assert (day["target"], week["target"], month["target"]) == (1.0, 5.0, 20.0)
+    assert day["actual"] == week["actual"] == round((now / (119000 + 120000) - 1) * 100, 2)   # 上周五有净值的用净值，没有的用本金
+    assert month["actual"] == round((now / 240000 - 1) * 100, 2) and day["hit"] is (day["actual"] >= 1.0)

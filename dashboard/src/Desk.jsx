@@ -84,6 +84,28 @@ function RoleCards({ data, active, onPick }) {
   )
 }
 
+// ---------- 公司目标：两位 AI 交易员合计，对着每天 / 每周 / 每月的目标记分 ----------
+function Company({ c }) {
+  if (!c?.items?.length) return null
+  return (
+    <section className="d-company" aria-label="公司目标">
+      <h2>公司目标<em>两位 AI 交易员合计 · 净值 {Math.round(c.equity).toLocaleString('en-US')}</em></h2>
+      {c.items.map((i) => {
+        const fill = i.actual == null ? 0 : Math.max(0, Math.min(1, i.actual / i.target))
+        return (
+          <div key={i.key} className={`d-goal ${i.hit ? 'hit' : ''}`}>
+            <span className="d-goal-name">{i.label}</span>
+            <b className={`mono ${tone(i.actual)}`}>{pct(i.actual)}</b>
+            <span className="d-goal-of mono">/ 目标 +{i.target}%</span>
+            <span className="d-goal-bar"><i style={{ width: `${fill * 100}%` }} /></span>
+            <span className="d-goal-gap">{i.hit ? '达标' : i.gapYuan == null ? '—' : `还差 ${i.gapYuan.toLocaleString('en-US')} 元`}</span>
+          </div>
+        )
+      })}
+    </section>
+  )
+}
+
 // ---------- 右栏 ----------
 function Analysis({ data }) {
   const m = data?.manager
@@ -338,6 +360,7 @@ export default function DeskPage({ onTerm, onDetail }) {
           <button onClick={onDetail}>详细记录</button>
         </nav>
       </header>
+      <Company c={data?.company} />
       <main className="d-grid">
         <div className="d-left">
           <div className="d-office-wrap"><Office data={data} active={active} picked={!!picked} event={event} phase={phase} onPick={pick} /></div>

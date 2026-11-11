@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from jevq import config
@@ -55,6 +55,31 @@ def _live_breadth(report: dict, mb: dict, now: datetime) -> dict:
         line += f" · 成交 {mb['amount'] / 1e8:,.0f} 亿"
     return {**report, "line": line, "level": "ok" if share >= 0.6 else "bad" if share <= 0.35 else "warn",
             "ts": f"{now:%H:%M}", "live": True}
+
+
+def _company(conn, accounts: list[tuple[str, float]], now: datetime) -> dict:
+    """公司记分牌：两位 AI 交易员合计的今日 / 本周 / 本月收益率，对着 config.DESK_TARGETS。
+    基数取「这段时间开始前最后一天的净值」，那之前还没有净值记录的账户用本金。"""
+    day = now.date()
+    starts = {"day": day, "week": day - timedelta(days=day.weekday()), "month": day.replace(day=1)}
+    total = sum(eq for _, eq in accounts)
+    items = []
+    for key, label in (("day", "今日"), ("week", "本周"), ("month", "本月")):
+        base = 0.0
+        for account, _ in accounts:
+            row = None
+            if conn is not None:
+                try:
+                    row = conn.execute("SELECT value FROM equity WHERE account=? AND date < ? ORDER BY date DESC LIMIT 1",
+                                       (account, starts[key].isoformat())).fetchone()
+                except sqlite3.Error:
+                    row = None
+            base += row[0] if row and row[0] else config.ACCOUNT_CAPITAL.get(account, config.FLEX_CAPITAL)
+        actual = round((total / base - 1) * 100, 2) if base else None
+        target = float(config.DESK_TARGETS[key])
+        items.append({"key": key, "label": label, "target": target, "actual": actual, "hit": actual is not None and actual >= target,
+                      "gapYuan": round(base * (1 + target / 100) - total) if base else None})
+    return {"equity": round(total, 2), "items": items}
 
 
 def _joined(v) -> str:
@@ -198,6 +223,7 @@ def desk_payload(db_path: Path | None, runtime_dir: Path, quotes: dict, market_b
                                         "orders": r.get("orders") or [], "dropped": r.get("dropped") or [], "skipped": r.get("skipped")}
                                        for r in rounds],
                             "directive": ((manager or {}).get("traders") or {}).get(sid), "funnel": _funnel(rounds, fills)})
+        company = _company(conn, [(ft.TRADERS[t["sid"]].account, t["account"]["equity"]) for t in traders], now)
     finally:
         if conn is not None:
             conn.close()
@@ -205,7 +231,7 @@ def desk_payload(db_path: Path | None, runtime_dir: Path, quotes: dict, market_b
     calls = len(history) + sum(1 for t in traders for r in t["rounds"] if not r.get("skipped"))
     strategy = _strategy_desk(rt / "desk_submissions.json", day)
     return {"now": now.isoformat(timespec="seconds"), "roles": roles, "rolesAt": reports.get("ts") if roles else None,
-            "manager": manager, "traders": traders, "strategyDesk": strategy, "log": log[:120], "params": _params(), "calls": calls}
+            "manager": manager, "traders": traders, "strategyDesk": strategy, "company": company, "log": log[:120], "params": _params(), "calls": calls}
 
 
 def _strategy_desk(path: Path, day: str) -> dict | None:

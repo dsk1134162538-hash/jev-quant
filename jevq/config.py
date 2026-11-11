@@ -304,6 +304,8 @@ ACCOUNT_MAX_POSITIONS = {"relay_main": RELAY_MAX_POSITIONS, "relay_shadow": RELA
 STRATEGY_CAPITAL = {"relay": RELAY_CAPITAL, "wts": WTS_CAPITAL, "ice": ICE_CAPITAL, "smallcap": SC_CAPITAL,
                     "bz": BZ_CAPITAL, "aiflex": FLEX_CAPITAL, "aiflex2": FLEX_CAPITAL}
 AI_BOARD_ENABLED = True
+# dj 2026-11-11：公司（两位 AI 交易员合计）的目标收益率 %。只在交易台上记分、告诉经理差多少，不放宽任何护栏
+DESK_TARGETS = {"day": 1.0, "week": 5.0, "month": 20.0}
 AI_SCORE_PUSH = False           # dj 2026-11-10：「AI 赛马记分」不再推微信（记分、复盘、经验条照常）
 AI_BOARD_FIRST_PCT = 0.5        # 首次建仓只用一半，另一半留给回本（做T/低吸补仓）
 # dj 2026-11-02：次日开盘就卖（108 天回测：开盘卖优于等反弹/拿到收盘/止损；「不亏不卖」把亏损放大一倍多）。
