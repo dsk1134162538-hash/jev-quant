@@ -83,7 +83,7 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
 .d-office-wrap { background: #1d1a16; border: 2px solid var(--d-ink); box-shadow: 4px 4px 0 rgba(42, 36, 29, 0.18); }
 .d-office { position: relative; }
 /* 整屏：宽度取「页面宽」和「一屏高度能放下的宽」里小的那个，画面不变形、气泡的百分比定位也不会偏 */
-.d-office { width: min(100%, calc((100vh - 118px) * 1.7778)); margin: 0 auto; }
+.d-office { width: min(100%, calc((100vh - 226px) * 1.7778)); margin: 0 auto; }
 .d-office-wrap { margin-top: 10px; }
 .d-office svg { display: block; width: 100%; height: auto; }
 .d-office svg text { user-select: none; pointer-events: none; }

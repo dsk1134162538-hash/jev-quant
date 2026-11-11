@@ -450,10 +450,10 @@ export default function DeskPage({ onTerm, onDetail }) {
           <button onClick={onDetail}>详细记录</button>
         </nav>
       </header>
-      {/* 打开就是一整屏办公室（dj 2026-11-11），数据往下滚 */}
-      <div className="d-office-wrap"><Office data={data} active={active} picked={!!picked} event={event} phase={phase} onPick={pick} /></div>
+      {/* 目标放最上面（dj 2026-11-11），下面紧跟整屏办公室，数据往下滚 */}
       <Company c={data?.company} />
       <Company c={data?.mgr?.score} title="经理账户目标" sub="经理自己操作 · 一万元单票全仓" />
+      <div className="d-office-wrap"><Office data={data} active={active} picked={!!picked} event={event} phase={phase} onPick={pick} /></div>
       <main className="d-grid">
         <div className="d-left">
           <RoleCards data={data} active={active} onPick={pick} />
