@@ -265,9 +265,8 @@ def test_gather_context_adds_market_movers_tagged_by_source_and_survives_a_faile
     ctx = ft.gather_context(at(10, 0, 20), "10:00", db_path=_flex_db(tmp_path), snapshot_path=tmp_path / "none.json",
                             fetch_quotes=lambda codes: {c: quote(c, pct=3.0, ts=at(10, 0)) for c in codes},
                             fetch_rows=lambda d: rows, fetch_market=lambda: market,
-                            log_path=tmp_path / "log.jsonl", theme_cache=tmp_path / "theme.json")
-    assert "601111" in ctx["quotes"] and ctx["quotes"]["601111"]["src"] == "异动"
-    assert ctx["quotes"]["600002"]["src"] == "持仓"                               # 账户里的持仓仍在，来源另标
+                            log_path=tmp_path / "log.jsonl", theme_cache=tmp_path / "theme.json", trader=ft.TRADERS["aiflex2"])
+    assert "601111" in ctx["quotes"] and ctx["quotes"]["601111"]["src"] == "异动"     # 异动票只给趋势交易员看
 
     def boom():
         raise TimeoutError("腾讯超时")
@@ -296,8 +295,30 @@ def test_prompt_says_planned_buys_must_be_in_orders():
     assert "必须同时写进 orders" in ft.SYSTEM_PROMPT
 
 
-def test_prompt_tells_it_not_to_fixate_on_first_boards():
-    assert "不要只盯" in ft.SYSTEM_PROMPT and "异动" in ft.SYSTEM_PROMPT
+def test_trend_prompt_tells_it_not_to_fixate_on_first_boards():
+    assert "不要只盯" in ft.TREND_PROMPT and "异动" in ft.TREND_PROMPT
+
+
+def test_flex_trader_never_sees_movers_and_a_buy_of_one_is_dropped_with_the_reason(tmp_path):
+    # dj 2026-11-11：11-10 灵活交易员 5 只持仓里 3 只是半路/趋势票，和趋势交易员买重了。分工由程序拦，不靠提示词自觉
+    from factories import quote
+    rows = [{"code": "600001", "name": "甲", "reason": "机器人", "high_days": "首板"}]
+    market = {"601111": quote("601111", pct=4.0, amount=6e8, ts=at(10, 0), name="异动股")}
+    ctx = ft.gather_context(at(10, 0, 20), "10:00", db_path=_flex_db(tmp_path), snapshot_path=tmp_path / "none.json",
+                            fetch_quotes=lambda codes: {c: quote(c, pct=3.0, ts=at(10, 0)) for c in codes},
+                            fetch_rows=lambda d: rows, fetch_market=lambda: market,
+                            log_path=tmp_path / "log.jsonl", theme_cache=tmp_path / "theme.json")
+    assert "601111" not in ctx["quotes"] and ctx["handedOff"] == ["601111"]
+    assert "600002" in ctx["quotes"]                                              # 持仓还在
+    ans = {"snapshotId": ctx["snapshotId"], "analysis": {"market": "m", "stage": "发酵", "plan": "p"},
+           "orders": [{"action": "买入", "code": "601111", "pct": 0.2, "stop": 9.5, "reason": "板块放量半路"}]}
+    r = ft.validate_answer(ans, ctx)
+    assert r["orders"] == [] and "趋势交易员" in r["dropped"][0]["why"]
+
+
+def test_flex_prompt_states_the_division_of_labour_and_no_longer_invites_halfway_buys():
+    assert "半路、竞价抢" not in ft.SYSTEM_PROMPT and "归二号趋势交易员" in ft.SYSTEM_PROMPT
+    assert "归二号趋势交易员" not in ft.TREND_PROMPT and ft.TRADERS["aiflex2"].skip_src == ()
 
 
 def test_gather_context_survives_missing_snapshot_theme_data_and_empty_account(tmp_path):

@@ -50,9 +50,21 @@ def _pct_of(raw: dict) -> float:
     return DEFAULT_PCT
 STAGES = ("冰点", "启动", "发酵", "高潮", "分歧", "退潮", "混沌")
 
+# 两位交易员的分工（dj 2026-11-11）：11-10 一号 5 只持仓里 3 只是半路/趋势票，和二号买重了，接力的名额被占满。
+# 一号只做题材情绪，盘中异动票连看都看不到（gather_context 里按 Trader.skip_src 去掉），买了也会被丢弃；二号照旧能看到。
+FLEX_SCOPE = (
+    "【分工——程序强制】你只做题材情绪：打板、接力、弱转强、补涨、龙头回封，标的来自 quotes 里 src 为 高标/策略/扫板/梯队 的票和已有持仓。"
+    "盘中放量走强但不在涨停梯队里的票（半路、趋势跟随、板块跟涨、大票异动）归二号趋势交易员，不在你的 quotes 里，下单会被程序丢弃；"
+    "没有题材情绪的机会就空仓，不要拿趋势票凑数。\n\n"
+)
+MOVER_NOTE = (
+    "不要只盯昨日首板：quotes 里每只票有 src（持仓/高标/策略/扫板/梯队/异动）。src 为「异动」的是今天盘中放量走强、涨幅 2~8%、还没封板的票，"
+    "老题材、大票、低位启动、放量突破、板块跟涨都可以买，不需要是首板或涨停股，买入照样要写止损和错了的信号。\n\n"
+)
+
 SYSTEM_PROMPT = (
     "你是 A 股短线灵活交易员，管理一个模拟账户（12 万本金，不下真单）。目标是在可承受的回撤内尽量赚钱；"
-    "每天都想赚，但不为赚而乱做，空仓也是一种决策。你可以突破任何选股规则：半路、竞价抢、重仓高把握的一两只，"
+    "每天都想赚，但不为赚而乱做，空仓也是一种决策。你可以突破任何选股规则：竞价抢、重仓高把握的一两只，"
     "都允许，但订单里必须标「模式外」并写清楚为什么。不要因为没有规则允许就放弃明显的机会，也不要为了出手而出手：先判断市场在哪个阶段，"
     "再决定做什么、做多大。\n\n"
     "【护栏——程序强制执行，违反的订单会被拒，不是选股规则，是让账户活下去】\n"
@@ -80,8 +92,7 @@ SYSTEM_PROMPT = (
     "只有跌停扩散、炸板率抬头，或日亏 3% / 连亏 3 笔的护栏触发了，才可以整天不动。不限市值：大盘股小盘股都可以，按资金、题材、承接判断。"
     "某个时点不下单，plan 里必须写出「最想买的两只」是谁、这次为什么放弃，不要只写「观望」。\n"
     "plan 或 next 里说要买/要卖的票，必须同时写进 orders（code 用 quotes 里的 6 位代码），orders 里没有的就不会成交——写了「买通富微电」orders 却是空的，等于没买。\n"
-    "不要只盯昨日首板：quotes 里每只票有 src（持仓/高标/策略/扫板/梯队/异动）。src 为「异动」的是今天盘中放量走强、涨幅 2~8%、还没封板的票，"
-    "老题材、大票、低位启动、放量突破、板块跟涨都可以买，不需要是首板或涨停股，买入照样要写止损和错了的信号。\n\n"
+    + FLEX_SCOPE +
     "【轮动警示（2026-11-04 实例）】那天昨天的 3~4 连板全部低开低走（-8%~-11%），涨停榜没有连板，116 只首板里三季报增长占 48 只，"
     "资金从旧题材换去低位科技（先进封装、存储芯片、半导体设备、有色）。看 context.highBoards：verdict 是「高标走弱」时，"
     "接力、补涨这类押旧题材延续的打法不要做，改去找低位首板、有业绩或消息催化、放量的新方向；是「高标强势」时可以考虑接力。"
@@ -115,7 +126,7 @@ TREND_PROMPT = (
     "不买：已涨停或一字（买不到也不追）、涨幅已超 8%、下跌趋势里的反抽、缩量冲高、大股东减持、利好兑现的放量大阴线。\n"
     "思路参考（不是禁令，有盘感可以突破）：大盘普涨放量时，找板块里成交额最大的几只走强票；大盘缩量分化时，只买板块里相对最强且回踩不破均价线的；"
     "大盘走弱、跌停扩散就空仓。\n\n"
-    + _slice(SYSTEM_PROMPT, "【试错额度", "【轮动警示") + _slice(SYSTEM_PROMPT, "输出要求")
+    + _slice(SYSTEM_PROMPT, "【试错额度", "【分工") + MOVER_NOTE + _slice(SYSTEM_PROMPT, "输出要求")
 )
 
 
@@ -129,6 +140,7 @@ class Trader:
     log_path: Path
     state_path: Path
     style: str = ""                 # 给经理看的一句话：这位擅长什么行情
+    skip_src: tuple = ()            # 这些来源的候选不给这位交易员（分工由程序拦，不靠提示词自觉）
 
     @property
     def account(self) -> str:
@@ -137,7 +149,7 @@ class Trader:
 
 TRADERS = {
     "aiflex": Trader("aiflex", "AI灵活交易", SYSTEM_PROMPT, ORDERS_PATH, LOG_PATH, STATE_PATH,
-                     "题材情绪型：打板、接力、弱转强、补涨，吃连板梯队和龙头溢价"),
+                     "题材情绪型：打板、接力、弱转强、补涨，吃连板梯队和龙头溢价", skip_src=("异动",)),
     "aiflex2": Trader("aiflex2", "AI趋势交易员", TREND_PROMPT, RUNTIME / "flex2_orders.json", RUNTIME / "flex2_log.jsonl",
                       RUNTIME / "flex2_state.json", "趋势/强势跟随：不打板，买放量走强、回踩不破的票，持有 1~5 天"),
 }
@@ -248,12 +260,13 @@ def validate_answer(answer, ctx: dict) -> dict:
         raise ValueError("灵活交易的回答与快照编号不一致")
     held = {p["code"] for p in ctx.get("account", {}).get("positions", [])}
     quotes = set(ctx.get("quotes", {}))
+    handed = set(ctx.get("handedOff") or [])
     orders, dropped = [], []
     raw_orders = [r for r in (answer.get("orders") or []) if isinstance(r, dict)]
     for raw in raw_orders:
         action, code = _action_of(raw), str(raw.get("code", ""))
         if action == "买入" and code not in quotes:
-            dropped.append({"action": action, "code": code, "why": "不在候选里"})
+            dropped.append({"action": action, "code": code, "why": "盘中异动票归趋势交易员，这位不做" if code in handed else "不在候选里"})
         elif action == "卖出" and code not in held:
             dropped.append({"action": action, "code": code, "why": "没有这只持仓"})
         elif (action == "买入" and code in quotes) or (action == "卖出" and code in held):
@@ -548,7 +561,8 @@ def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapsho
         add(pick_movers((fetch_market or _scan_market)(), now), "异动")
     except Exception:                                            # noqa: BLE001  全市场扫描失败只是少了异动股
         pass
-    codes = [c for c in src if c.startswith(("60", "00"))][:MAX_CANDIDATES]
+    handed = [c for c, tag in src.items() if tag in trader.skip_src and c.startswith(("60", "00"))]
+    codes = [c for c, tag in src.items() if c.startswith(("60", "00")) and tag not in trader.skip_src][:MAX_CANDIDATES]
     try:
         quotes = fetch_quotes(codes) if codes else {}
     except Exception:                                            # noqa: BLE001
@@ -571,4 +585,5 @@ def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapsho
     return {"time": f"{now:%H:%M}", "slot": slot, "snapshotId": f"FLEX-{now:%Y%m%d}-{slot.replace(':', '')}",
             "market": {"breadth": breadth, "sentiment": (pctx.get("memory") or {}).get("sentiment")},
             "highBoards": high_board_state(prev_rows, quotes),
-            "themeLadder": ladder, "strategyTargets": targets, "quotes": payload, "account": account, "notes": notes[-6:]}
+            "themeLadder": ladder, "strategyTargets": targets, "quotes": payload, "account": account, "notes": notes[-6:],
+            "handedOff": handed}
