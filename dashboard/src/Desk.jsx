@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Office, SEATS, STRAT_INFO, liveEvent, sceneOf, stratLine, traderLine } from './Office.jsx'
+import { SEATS, STRAT_INFO, liveEvent, sceneOf, stratLine, traderLine } from './Office.jsx'
+import { IsoOffice } from './IsoOffice.jsx'
 
 // 交易台（dj 2026-11-09，仿「横行 SIDEWAYS」）：经理 + 代码汇报员 + 策略交易员 + DeepSeek 交易员，一屏看清谁在干什么、卡在哪一层。
 // 像素办公室在 Office.jsx，这里是页面骨架、岗位卡和右栏。
@@ -453,7 +454,7 @@ export default function DeskPage({ onTerm, onDetail }) {
       {/* 目标放最上面（dj 2026-11-11），下面紧跟整屏办公室，数据往下滚 */}
       <Company c={data?.company} />
       <Company c={data?.mgr?.score} title="经理账户目标" sub="经理自己操作 · 一万元单票全仓" />
-      <div className="d-office-wrap"><Office data={data} active={active} picked={!!picked} event={event} phase={phase} onPick={pick} /></div>
+      <div className="d-office-wrap"><IsoOffice data={data} active={active} picked={!!picked} event={event} phase={phase} onPick={pick} /></div>
       <main className="d-grid">
         <div className="d-left">
           <RoleCards data={data} active={active} onPick={pick} />
