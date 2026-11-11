@@ -88,6 +88,23 @@ class Ledger:
         self.conn.execute("UPDATE cash SET amount = amount + ? WHERE account=?", (amount - fee, account))
         return self._record(Fill(account, pos.code, "sell", q.price, pos.shares, fee, ts, reason))
 
+    def sell_part(self, account: str, pos: Position, q: Quote, ts: datetime, reason: str, shares: int) -> Fill | None:
+        """卖掉一部分（分批止盈用）：剩下的股数留在原持仓里，买入价、买入日不变，成本按比例减。要卖的不少于持仓就等于全卖。"""
+        if shares >= pos.shares:
+            return self.sell(account, pos, q, ts, reason)
+        if shares <= 0 or q.suspended or q.price <= q.limit_down:
+            return None
+        left = pos.shares - shares
+        cur = self.conn.execute("UPDATE positions SET shares=?, cost=? WHERE account=? AND code=? AND shares=?",
+                                (left, round(pos.cost * left / pos.shares, 2), account, pos.code, pos.shares))
+        if cur.rowcount != 1:                       # 另一个连接已经动过这笔持仓：不重复入账
+            self.conn.rollback()
+            return None
+        amount = shares * q.price
+        fee = sell_fee(amount)
+        self.conn.execute("UPDATE cash SET amount = amount + ? WHERE account=?", (amount - fee, account))
+        return self._record(Fill(account, pos.code, "sell", q.price, shares, fee, ts, reason))
+
     def equity(self, account: str, prices: dict[str, float]) -> float:
         held = sum(p.shares * prices.get(p.code, p.buy_price) for p in self.positions(account))
         return round(self.cash(account) + held, 2)

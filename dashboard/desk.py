@@ -117,6 +117,19 @@ def _stop(conn, sid: str | None, code: str) -> float | None:
         return None
 
 
+def _trail(conn, sid: str | None, code: str, buy_date: str) -> dict:
+    """越涨越卖的状态（jevq/strategies/flex.py 写的 trail 记录）：最高价、卖过几档、移动止盈线。不是这一笔持仓的记录不算。"""
+    if not sid:
+        return {}
+    try:
+        row = conn.execute("SELECT trace FROM decisions WHERE strategy=? AND verdict='trail' AND code=? "
+                           "ORDER BY ts DESC, rowid DESC LIMIT 1", (sid, code)).fetchone()
+        st = json.loads(row[0]) if row and row[0] else {}
+        return st if isinstance(st, dict) and st.get("buy_date") == buy_date else {}
+    except (sqlite3.Error, ValueError, TypeError):
+        return {}
+
+
 def _account(conn, account: str, quotes: dict, day: str, sid: str | None = None) -> tuple[dict, list]:
     cash_row = conn.execute("SELECT amount FROM cash WHERE account=?", (account,)).fetchone()
     capital = config.ACCOUNT_CAPITAL.get(account, config.FLEX_CAPITAL)
@@ -132,8 +145,11 @@ def _account(conn, account: str, quotes: dict, day: str, sid: str | None = None)
             last = conn.execute("SELECT close FROM closes WHERE code=? ORDER BY date DESC LIMIT 1", (code,)).fetchone()
             price = last[0] if last else buy_price
         mv += price * shares
-        stop = _stop(conn, sid, code)
-        positions.append({"code": code, "stop": stop, "toStop": round((stop / price - 1) * 100, 1) if stop and price else None, "name": getattr(q, "name", None) or code, "shares": shares, "price": round(price, 2),
+        trail = _trail(conn, sid, code, buy_date)
+        lines = [x for x in (_stop(conn, sid, code), trail.get("stop")) if x]
+        stop = max(lines) if lines else None                       # 真正会触发卖出的那条线：AI 自设止损和移动止盈线里高的
+        positions.append({"code": code, "stop": stop, "toStop": round((stop / price - 1) * 100, 1) if stop and price else None,
+                          "peak": trail.get("peak"), "tiers": trail.get("tiers"), "name": getattr(q, "name", None) or code, "shares": shares, "price": round(price, 2),
                           "pct": round((q.price / q.pre_close - 1) * 100, 2) if q is not None and q.pre_close else None,
                           "pnl": round((price / buy_price - 1) * 100, 2) if buy_price else None, "buyDate": buy_date})
     equity = cash_row[0] + mv

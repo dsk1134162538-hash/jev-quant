@@ -102,3 +102,16 @@ def test_manager_sees_his_stance_every_time_he_decides():
     assert mctx["stance"]["level"] == "中高" and "stance" in mg.SYSTEM_PROMPT and "中高" in mg.SYSTEM_PROMPT
     assert "stance" not in mg.manager_context(datetime(2026, 11, 16, 9, 27), "09:26", {}, [], {}, {})
     assert set(ft.TRADERS) <= set(wr.TRADER_ASK)                         # 每位交易员都有自己的复盘提问
+
+
+def test_week_stats_split_the_cost_when_a_position_is_sold_in_parts():
+    # 越涨越卖（dj 2026-11-11）：分批卖出的每一笔只摊它卖掉的那部分成本，不能把第一笔算成巨亏
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE fills(id INTEGER PRIMARY KEY, account TEXT, code TEXT, side TEXT, price REAL, shares INTEGER, fee REAL, ts TEXT, reason TEXT)")
+    conn.execute("CREATE TABLE equity(date TEXT, account TEXT, value REAL)")
+    conn.executemany("INSERT INTO fills(account, code, side, price, shares, fee, ts, reason) VALUES (?,?,?,?,?,?,?,?)", [
+        ("aiflex_main", "600001", "buy", 10.0, 900, 0.0, "2026-11-09T10:00:00", "b"),
+        ("aiflex_main", "600001", "sell", 11.0, 300, 0.0, "2026-11-10T10:00:00", "分批止盈"),
+        ("aiflex_main", "600001", "sell", 12.0, 600, 0.0, "2026-11-11T10:00:00", "移动止盈")])
+    s = wr.week_stats(conn, "aiflex_main", FRI)
+    assert s["closed"] == 2 and s["wins"] == 2 and s["pnlYuan"] == 1500.0 and s["worst"]["pct"] == 10.0 and s["best"]["pct"] == 20.0

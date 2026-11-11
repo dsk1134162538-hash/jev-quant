@@ -250,11 +250,11 @@ function TraderCard({ t }) {
       <Curve points={t.curve} />
       {a.positions?.length ? (
         <ul className="d-pos">
-          <li className="head"><span>持仓</span><span>现价</span><span>今日</span><span>浮盈</span><span>离止损</span></li>
+          <li className="head"><span>持仓</span><span>现价</span><span>今日</span><span>浮盈</span><span title="AI 自设止损和移动止盈线里高的那条">离卖出线</span></li>
           {a.positions.map((p) => (
             <li key={p.code}><b>{p.name}</b><span className="mono">{p.price}</span><span className={`mono ${tone(p.pct)}`}>{pct(p.pct)}</span>
               <span className={`mono ${tone(p.pnl)}`}>{pct(p.pnl, 1)}</span>
-              <span className={`mono ${p.toStop != null && p.toStop > -2 ? 'near' : 'd-dim'}`} title={p.stop ? `止损价 ${p.stop}` : '这只没有记到止损价'}>
+              <span className={`mono ${p.toStop != null && p.toStop > -2 ? 'near' : 'd-dim'}`} title={p.stop ? `会触发卖出的线 ${p.stop}${p.peak ? `｜买入后最高 ${p.peak}` : ''}${p.tiers ? `｜已分批卖 ${p.tiers} 档` : ''}` : '这只没有记到止损价'}>
                 {p.toStop == null ? '—' : p.toStop >= 0 ? '已破' : `${p.toStop}%`}</span></li>
           ))}
         </ul>

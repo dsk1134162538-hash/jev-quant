@@ -203,3 +203,79 @@ def test_manager_account_cannot_afford_a_lot_of_a_stock_above_a_hundred_yuan(tmp
 def test_trader_accounts_keep_their_own_limits(tmp_path):
     s, _, _ = _setup(tmp_path, [_order(pct=0.9)])
     assert (s.max_pct, s.max_positions) == (config.FLEX_MAX_PCT, config.FLEX_MAX_POSITIONS)
+
+
+# ---------- 越涨越卖（dj 2026-11-11：「本来盈利 20%，一轮下跌硬拿着，最后 -3% 割肉，白白浪费几天。正确做法是越涨越卖」） ----------
+D2 = datetime(2026, 11, 4, 9, 45)
+
+
+def _held(tmp_path, shares_budget=10100, sid="aiflex"):
+    """前一天 10 元买入、AI 自设止损 9.5 的一笔持仓（默认 1000 股）。"""
+    s, ledger, conn = (_setup(tmp_path, []) if sid == "aiflex" else _mgr(tmp_path, []))
+    ledger.buy(s.account, _q("600001", ts=NOW), NOW, "x", budget=shares_budget)
+    s._log(NOW, "stop", "600001", "止损 9.5", {"code": "600001", "stop": 9.5, "invalid": "跌破 9.5"})
+    return s, ledger, conn
+
+
+def _px(price, pre, minute=0):
+    t = D2 + timedelta(minutes=minute)
+    return {"600001": _q("600001", price=price, pre=pre, ts=t)}, t
+
+
+def test_ledger_can_sell_part_of_a_position_and_keeps_the_rest_at_the_same_buy_price(tmp_path):
+    s, ledger, _ = _held(tmp_path)
+    pos = ledger.positions(ACCOUNT)[0]
+    assert pos.shares == 1000
+    f = ledger.sell_part(ACCOUNT, pos, _q("600001", price=11.0, pre=10.5, ts=D2), D2, "分批", 300)
+    left = ledger.positions(ACCOUNT)[0]
+    assert f.shares == 300 and f.side == "sell" and left.shares == 700 and left.buy_price == 10.0
+    assert left.cost == pytest.approx(pos.cost * 0.7, abs=0.01)
+    whole = ledger.sell_part(ACCOUNT, left, _q("600001", price=11.0, pre=10.5, ts=D2), D2, "清掉", 9999)
+    assert whole.shares == 700 and ledger.positions(ACCOUNT) == []
+
+
+def test_sells_a_third_at_each_profit_tier_then_trails_the_rest_from_the_high(tmp_path):
+    s, ledger, _ = _held(tmp_path)
+    q, t = _px(10.85, 10.4)                                   # +8.5%：第一档，卖 1/3
+    f1 = s.sell_step(q, t)
+    assert [(f.shares, f.side) for f in f1] == [(300, "sell")] and "分批止盈" in f1[0].reason
+    assert s.sell_step(*_px(10.9, 10.4, 1)) == []             # 同一档不重复卖
+    f2 = s.sell_step(*_px(11.6, 10.9, 2))                     # +16%：第二档，再卖 1/3
+    assert [f.shares for f in f2] == [300]
+    assert s.sell_step(*_px(12.0, 11.2, 3)) == []             # 继续涨：剩下的拿着，最高价 12
+    assert s.sell_step(*_px(11.5, 11.2, 4)) == []             # 回撤 4.2%，还没到 5%
+    f3 = s.sell_step(*_px(11.35, 11.2, 5))                    # 从 12 回撤超过 5%：剩下的全走，锁住 +13.5%，不等回到 9.5
+    assert [f.shares for f in f3] == [400] and "移动止盈" in f3[0].reason and ledger.positions(ACCOUNT) == []
+
+
+def test_once_five_percent_up_it_never_turns_into_a_loss(tmp_path):
+    s, ledger, _ = _held(tmp_path)
+    assert s.sell_step(*_px(10.6, 10.3)) == []                # +6%：没到第一档，但止损已经上移到成本
+    assert s.effective_stop(ledger.positions(ACCOUNT)[0]) == pytest.approx(10.07, abs=0.01)   # 10.6 回撤 5% = 10.07，高于成本
+    sold = s.sell_step(*_px(10.05, 10.3, 1))
+    assert len(sold) == 1 and sold[0].shares == 1000 and "移动止盈" in sold[0].reason
+    cold, ledger2, _ = _held(tmp_path)                        # 从没涨到 +5% 的：还是按 AI 自己定的 9.5
+    assert cold.sell_step(*_px(9.8, 10.0)) == [] and cold.effective_stop(ledger2.positions(ACCOUNT)[0]) == 9.5
+
+
+def test_the_high_is_tracked_on_the_buy_day_even_though_nothing_can_be_sold_then(tmp_path):
+    s, ledger, _ = _held(tmp_path)
+    same_day = NOW + timedelta(minutes=30)
+    assert s.sell_step({"600001": _q("600001", price=10.9, pre=10.0, ts=same_day)}, same_day) == []      # T+1：当天卖不了
+    sold = s.sell_step(*_px(10.3, 10.9))                      # 第二天开在 10.3：已经从 10.9 回撤超过 5%
+    assert len(sold) == 1 and "移动止盈" in sold[0].reason
+
+
+def test_a_single_lot_cannot_be_split_so_the_managers_account_only_trails(tmp_path):
+    s, ledger, _ = _held(tmp_path, shares_budget=1100, sid="mgr")
+    assert ledger.positions("mgr_main")[0].shares == 100
+    assert s.sell_step(*_px(11.6, 10.9)) == []                # 过了两档，但 100 股拆不开
+    sold = s.sell_step(*_px(11.0, 10.9, 1))
+    assert [f.shares for f in sold] == [100] and "移动止盈" in sold[0].reason
+
+
+def test_partial_sells_are_not_counted_as_a_fake_loss_by_the_losing_streak_guard(tmp_path):
+    s, ledger, _ = _held(tmp_path)
+    s.sell_step(*_px(10.85, 10.4))                            # 卖 300 股，赚
+    results = s._results()
+    assert len(results) == 1 and results[0][1] > 0            # 300 股对 300 股的成本，不是对 1000 股的成本

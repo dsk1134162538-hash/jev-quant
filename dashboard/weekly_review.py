@@ -61,17 +61,22 @@ def week_id(now: datetime) -> str:
 def week_stats(conn, account: str, now: datetime) -> dict:
     """本周了结的每一笔（按卖出日期算在哪一周）、胜率、合计盈亏、最好最差的一笔；本周买了几笔；账户本周涨跌。"""
     monday, today = week_start(now.date()).isoformat(), now.date().isoformat()
-    opens: dict[str, float] = {}
+    opens: dict[str, list] = {}                     # code → [剩余成本, 剩余股数]；分批卖出（越涨越卖）每一笔只摊卖掉的那部分成本
     closed, buys = [], 0
     for code, side, price, shares, fee, ts in conn.execute(
             "SELECT code, side, price, shares, fee, ts FROM fills WHERE account=? ORDER BY id", (account,)):
         day = str(ts)[:10]
         if side == "buy":
-            opens[code] = price * shares + (fee or 0)
+            opens[code] = [price * shares + (fee or 0), shares]
             buys += monday <= day <= today
         elif code in opens:
-            cost = opens.pop(code)
-            if monday <= day <= today:
+            left_cost, held = opens[code]
+            cost = left_cost * min(shares, held) / held if held else left_cost
+            if shares >= held:
+                opens.pop(code)
+            else:
+                opens[code] = [left_cost - cost, held - shares]
+            if monday <= day <= today and cost:
                 pnl = price * shares - (fee or 0) - cost
                 closed.append({"code": code, "yuan": round(pnl, 2), "pct": round(pnl / cost * 100, 2)})
     capital = config.ACCOUNT_CAPITAL.get(account, config.FLEX_CAPITAL)

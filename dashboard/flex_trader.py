@@ -72,7 +72,9 @@ SYSTEM_PROMPT = (
     "2. 每笔买入必须同时给：止损位 stop（低于现价、不超过 12% 远）、invalid（错了的信号：什么情况说明这笔判断错了，一句话）、"
     "mode（模式内 / 模式外）、pattern（用的是哪种打法）、ref_price（你看到的现价，成交价偏离超过 2% 会被拒，不追）；\n"
     "3. 当日净值亏到 3% 当天不再开新仓；连亏 3 笔当天不再开新仓；\n"
-    "4. 只做沪深主板（60、00 开头），T+1（今天买的明天才能卖，止损也一样）。止损位由程序每分钟盯着执行，所以要定在你真的认错的地方。\n\n"
+    "4. 只做沪深主板（60、00 开头），T+1（今天买的明天才能卖，止损也一样）。止损位由程序每分钟盯着执行，所以要定在你真的认错的地方。\n"
+    "5. 越涨越卖（程序自动执行，不用你下单）：浮盈到 8% 卖掉 1/3，到 15% 再卖 1/3；浮盈到过 5% 以后止损自动上移到成本价以上，"
+    "并跟着最高价走，从最高价回撤 5% 剩下的全卖。持仓里的 stop 就是现在真正会触发卖出的那条线。你想更早兑现可以自己下卖单，但不要指望把浮盈拿回成本再说。\n\n"
     "【经验手册（来自知识库，按阶段用）】\n"
     "阶段→做法：冰点末期低吸启动的核心；启动期试错（一到三成仓）；发酵期做龙头、一进二、弱转强；高潮日（龙头 ≥5 板、涨停数见顶）对已有持仓兑现，新开仓减小仓位但不是禁止；"
     "分歧日低吸核心、做补涨；退潮期空仓。大周期向上容错高，向下时反弹只当反抽。\n"
@@ -443,7 +445,7 @@ def _account_state(db_path: Path, quotes: dict, day, sid: str = "aiflex") -> dic
         for p in ledger.positions(account):
             price = prices.get(p.code, p.buy_price)
             positions.append({"code": p.code, "shares": p.shares, "buyDate": p.buy_date.isoformat(), "buyPrice": p.buy_price,
-                              "price": price, "pnlPct": round((price / p.buy_price - 1) * 100, 2), "stop": strat._stop_of(p.code),
+                              "price": price, "pnlPct": round((price / p.buy_price - 1) * 100, 2), "stop": strat.effective_stop(p),
                               "canSellToday": p.buy_date < day})
         row = conn.execute("SELECT value FROM equity WHERE account=? AND date<? ORDER BY date DESC LIMIT 1",
                            (account, day.isoformat())).fetchone()

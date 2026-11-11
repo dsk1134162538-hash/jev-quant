@@ -299,6 +299,10 @@ FLEX_MAX_POSITIONS = 3
 FLEX_MAX_PCT = 0.40               # 单票最多占账户净值
 FLEX_DAY_LOSS = 0.03              # 当日亏到净值的 3% 当天不再开新仓
 FLEX_LOSS_STREAK = 3              # 连亏 3 笔，当天不再开新仓
+# 越涨越卖（dj 2026-11-11：「本来盈利 20%，一轮下跌硬拿着，最后 -3% 割肉，白白浪费几天。正确做法是越涨越卖」）。程序强制，AI 不用下单：
+FLEX_TAKE_PROFIT = ((0.08, 1 / 3), (0.15, 1 / 3))   # 浮盈到 8% 卖最初股数的 1/3，到 15% 再卖 1/3（凑不够一手的档跳过）
+FLEX_PROTECT_AT = 0.05            # 浮盈到过 5% 以后，这笔不许再变成亏损：止损上移到成本价以上
+FLEX_TRAIL = 0.05                 # 并且跟着最高价走：从最高价回撤 5% 剩下的全卖
 MGR_CAPITAL = 10_000.0            # 经理账户本金：和 dj 的实盘资金一样大
 # 同一个执行器、不同账户的上限；没列出来的 sid 用上面的 FLEX_MAX_PCT / FLEX_MAX_POSITIONS
 FLEX_LIMITS = {"mgr": {"max_pct": 1.0, "max_positions": 1, "label": "经理"}}

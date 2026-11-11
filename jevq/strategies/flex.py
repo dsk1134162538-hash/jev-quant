@@ -90,15 +90,20 @@ class AiflexStrategy:
 
     def _results(self) -> list[tuple[str, float]]:
         """已了结的每笔（按卖出顺序）：[(卖出日期, 盈亏元)]。"""
-        opens: dict[str, tuple[float, int]] = {}
+        opens: dict[str, list] = {}                 # code → [剩余成本, 剩余股数]；分批卖出只摊卖掉的那部分成本
         out = []
         for code, side, price, shares, fee, ts in self.conn.execute(
                 "SELECT code, side, price, shares, fee, ts FROM fills WHERE account=? ORDER BY id", (self.account,)):
             if side == "buy":
-                opens[code] = (price * shares + fee, shares)
+                opens[code] = [price * shares + fee, shares]
             elif code in opens:
-                cost, _ = opens.pop(code)
-                out.append((ts[:10], price * shares - fee - cost))
+                cost, held = opens[code]
+                part = cost * min(shares, held) / held if held else cost
+                out.append((ts[:10], price * shares - fee - part))
+                if shares >= held:
+                    opens.pop(code)
+                else:
+                    opens[code] = [cost - part, held - shares]
         return out
 
     def _blocked(self, equity: float, day: date) -> str:
@@ -181,13 +186,20 @@ class AiflexStrategy:
         day = now.date()
         for pos in self.ledger.positions(self.account):
             q = quotes.get(pos.code)
-            if q is None or q.ts.date() != day or pos.buy_date >= day:
+            if q is None or q.ts.date() != day:
                 continue
-            stop = self._stop_of(pos.code)
-            if stop is not None and q.price <= stop:
-                f = self.ledger.sell(self.account, pos, q, now, f"止损（AI 自设 {stop}）｜{self._invalid_of(pos.code)}"[:120])
-                if f:
-                    fills.append(f)
+            st = self._track(pos, q.price, now)                       # 买入当天也记最高价，只是当天卖不了
+            if pos.buy_date >= day:
+                continue
+            ai_stop, trail = self._stop_of(pos.code), st.get("stop")
+            if trail is not None and q.price <= trail and (ai_stop is None or trail >= ai_stop):
+                f = self.ledger.sell(self.account, pos, q, now, f"移动止盈（最高 {st['peak']}，回撤 {config.FLEX_TRAIL:.0%} 或回到成本，线 {trail}）"[:120])
+            elif ai_stop is not None and q.price <= ai_stop:
+                f = self.ledger.sell(self.account, pos, q, now, f"止损（AI 自设 {ai_stop}）｜{self._invalid_of(pos.code)}"[:120])
+            else:
+                f = self._take_profit(pos, q, st, now)
+            if f:
+                fills.append(f)
         ts, orders = self._load()
         for order in [o for o in orders if o.get("action") == "卖出" and o["id"] not in self._done_ids(day)]:
             if ts is None or (now - ts).total_seconds() > ORDER_TTL_SECONDS:
@@ -213,6 +225,58 @@ class AiflexStrategy:
             return self._reject(now, order, "跌停或停牌，卖不出去")
         self._log(now, "order_ok", code, f"卖出 {fill.shares} 股 @{fill.price:.2f}", {**order, "id": order["id"]})
         return fill
+
+    # ---------- 越涨越卖：分批止盈 + 移动止盈（config.FLEX_TAKE_PROFIT / FLEX_PROTECT_AT / FLEX_TRAIL） ----------
+    def _trail_state(self, pos: Position) -> dict:
+        """这笔持仓的状态：买入以来的最高价、已经卖过几档、最初的股数、当前的移动止盈线。按买入日认是不是同一笔。"""
+        row = self.conn.execute("SELECT trace FROM decisions WHERE strategy=? AND verdict='trail' AND code=? "
+                                "ORDER BY ts DESC, rowid DESC LIMIT 1", (self.sid, pos.code)).fetchone()
+        try:
+            st = json.loads(row[0]) if row else None
+        except ValueError:
+            st = None
+        if not st or st.get("buy_date") != pos.buy_date.isoformat():
+            st = {"code": pos.code, "buy_date": pos.buy_date.isoformat(), "peak": pos.buy_price, "tiers": 0, "shares0": pos.shares, "stop": None}
+        return st
+
+    def _save_trail(self, now: datetime, st: dict, note: str) -> None:
+        self._log(now, "trail", st["code"], note, st)
+
+    def _track(self, pos: Position, price: float, now: datetime) -> dict:
+        """更新最高价。浮盈到过 FLEX_PROTECT_AT 以后，止盈线 = max(成本价, 最高价 × (1 − FLEX_TRAIL))，只升不降。"""
+        st = self._trail_state(pos)
+        if price > st["peak"]:
+            st["peak"] = price
+            stop = None
+            if price >= pos.buy_price * (1 + config.FLEX_PROTECT_AT):
+                stop = round(max(pos.buy_price, price * (1 - config.FLEX_TRAIL)), 2)
+            if stop != st.get("stop") and (stop or 0) >= (st.get("stop") or 0):
+                st["stop"] = stop
+                self._save_trail(now, st, f"最高 {price}，移动止盈线 {stop}")
+            elif price >= (st.get("saved_peak") or pos.buy_price) * 1.01:      # 没到保护线：每涨 1% 存一次最高价，不刷屏
+                self._save_trail(now, {**st, "saved_peak": price}, f"最高 {price}")
+        return st
+
+    def _take_profit(self, pos: Position, q: Quote, st: dict, now: datetime) -> Fill | None:
+        """到了下一档就卖最初股数的那一份（整手）；凑不够一手、或者会把剩下的卖光，这一档只记已过不卖——剩下的交给移动止盈。"""
+        done = int(st.get("tiers") or 0)
+        if done >= len(config.FLEX_TAKE_PROFIT):
+            return None
+        gain, frac = config.FLEX_TAKE_PROFIT[done]
+        if q.price < pos.buy_price * (1 + gain):
+            return None
+        lots = int(st["shares0"] * frac // 100) * 100
+        st["tiers"] = done + 1
+        fill = None
+        if 0 < lots < pos.shares:
+            fill = self.ledger.sell_part(self.account, pos, q, now, f"分批止盈（浮盈到 {gain:.0%}，卖第 {done + 1} 份）"[:120], lots)
+        self._save_trail(now, st, f"第 {done + 1} 档止盈" + (f"卖出 {lots} 股" if fill else "（不够拆，交给移动止盈）"))
+        return fill
+
+    def effective_stop(self, pos: Position) -> float | None:
+        """现在真正会触发卖出的那条线：AI 自己定的止损和移动止盈线里高的那个。给交易员、经理和面板看。"""
+        lines = [x for x in (self._stop_of(pos.code), self._trail_state(pos).get("stop")) if x is not None]
+        return max(lines) if lines else None
 
     def _stop_row(self, code: str) -> dict | None:
         row = self.conn.execute("SELECT trace FROM decisions WHERE strategy=? AND verdict='stop' AND code=? "

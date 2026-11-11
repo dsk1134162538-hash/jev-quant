@@ -190,3 +190,24 @@ def test_weekly_review_on_the_panel_carries_the_weeks_numbers_and_past_risk_leve
     assert w["stats"]["traders"]["aiflex"] == {"label": "AI灵活交易", "weekPct": 1.2, "closed": 3, "wins": 2, "pnlYuan": 900.0,
                                                "best": {"code": "600001", "pct": 9.8}, "worst": {"code": "600002", "pct": -5.2}}
     assert w["stats"]["mgr"]["weekPct"] == 2.1 and w["stats"]["companyWeek"] == 0.4 and w["stats"]["regimes"][0]["regime"] == "打板日"
+
+
+def test_position_stop_on_the_panel_is_the_line_that_will_really_sell_including_the_trailing_one(tmp_path):
+    # 越涨越卖（dj 2026-11-11）：浮盈到过 5% 以后，移动止盈线比 AI 自己定的止损高，面板和交易员看到的应该是它
+    import sqlite3
+    db = _db(tmp_path)
+    conn = sqlite3.connect(db)
+    buy_date = conn.execute("SELECT buy_date FROM positions WHERE account='aiflex_main'").fetchone()[0]
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy, trace) VALUES ('2026-11-09T09:40:00', '600002', 'stop', 's', 'aiflex', ?)",
+                 (json.dumps({"code": "600002", "stop": 18.0}),))
+    conn.execute("INSERT INTO decisions(ts, code, verdict, detail, strategy, trace) VALUES ('2026-11-09T09:50:00', '600002', 'trail', 't', 'aiflex', ?)",
+                 (json.dumps({"code": "600002", "buy_date": buy_date, "peak": 20.6, "tiers": 1, "shares0": 1500, "stop": 19.57}),))
+    conn.commit()
+    conn.close()
+    p = desk.desk_payload(db, _runtime(tmp_path), {"600002": Q(20.0, 19.0)}, {}, at(10, 0))
+    pos = {t["sid"]: t["account"]["positions"] for t in p["traders"]}["aiflex"][0]
+    assert pos["stop"] == 19.57 and pos["toStop"] == -2.1 and pos["peak"] == 20.6 and pos["tiers"] == 1
+    from dashboard import flex_trader as ft2
+    state = ft2._account_state(db, {"600002": Q(20.0, 19.0)}, at(10, 0).date(), "aiflex")
+    assert state["positions"][0]["stop"] == 19.57
+    assert "越涨越卖" in ft2.SYSTEM_PROMPT and "越涨越卖" in ft2.TREND_PROMPT
