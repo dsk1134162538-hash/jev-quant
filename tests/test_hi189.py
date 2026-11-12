@@ -5,7 +5,7 @@ import pytest
 
 from jevq import db
 from jevq.data import hi189
-from jevq.data.hi189 import Article, Sector
+from jevq.data.hi189 import Article
 
 FIXTURE = Path(__file__).parent / "fixtures" / "hi189_evening.txt"
 PREV, TODAY = date(2026, 9, 29), date(2026, 9, 30)

@@ -81,25 +81,8 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
 
 /* 办公室：像素场景铺满左栏，所有动效用 steps() 保持像素感 */
 .d-office-wrap { background: #1d1a16; border: 2px solid var(--d-ink); box-shadow: 4px 4px 0 rgba(42, 36, 29, 0.18); }
-.d-office { position: relative; }
 /* 整屏：宽度取「页面宽」和「一屏高度能放下的宽」里小的那个，画面不变形、气泡的百分比定位也不会偏 */
-.d-office { width: min(100%, calc((100vh - 226px) * 1.7778)); margin: 0 auto; }
 .d-office-wrap { margin-top: 10px; }
-.d-office svg { display: block; width: 100%; height: auto; }
-.d-office svg text { user-select: none; pointer-events: none; }
-.d-svg-screen { font: 700 6.5px "Microsoft YaHei", sans-serif; fill: #9fe3bd; }
-.d-svg-screen .up { fill: #ff6b60; } .d-svg-screen .down { fill: #5fd08a; }
-.d-svg-screen .dim { fill: #6fae8c; font-size: 5px; } .d-svg-screen.dim { fill: #6fae8c; }
-.d-svg-screen.small { font-size: 5px; font-weight: 600; } .d-svg-screen.amber { fill: #f0c36a; }
-.d-svg-screen.d-ticker { fill: #cfe9db; animation: d-ticker 30s linear infinite; }
-@keyframes d-ticker { from { transform: translateX(110px); } to { transform: translateX(calc(-1 * var(--tw))); } }
-.d-svg-board { font: 600 5px "Microsoft YaHei", sans-serif; fill: #5d554a; }
-.d-svg-board.big { font-size: 10px; font-weight: 900; fill: #2a241d; }
-.d-svg-board.up { fill: #c8322b; } .d-svg-board.down { fill: #2f8a4c; } .d-svg-board.amber { fill: #b7791b; } .d-svg-board.flat { fill: #8a7f70; }
-.d-svg-name { font: 700 4.8px "Microsoft YaHei", sans-serif; fill: #5d554a; } .d-svg-name.dark { fill: #2a241d; } .d-svg-name.light { fill: #f6efdc; }
-.d-svg-zone { font: 600 4px "Microsoft YaHei", sans-serif; fill: #7a5c38; opacity: 0.62; letter-spacing: 0.3px; } .d-svg-zone.light { fill: #f6efdc; opacity: 0.75; }
-.d-svg-plate { font: 700 4px "Microsoft YaHei", sans-serif; fill: #f6efdc; }
-.d-svg-mon { font: 800 6px "Microsoft YaHei", sans-serif; } .d-svg-mon.s { font-size: 4.6px; }
 
 .d-char.is-active { animation: d-hop 0.56s steps(1) infinite; }
 .d-char.look { animation: d-look 9s steps(1) infinite; }
@@ -107,33 +90,18 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
 @keyframes d-hop { 0% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
 @keyframes d-look { 0%, 100% { transform: none; } 86% { transform: translateX(1px); } 93% { transform: none; } }
 @keyframes d-nap { 0% { transform: translate(1px, 3px); } 50% { transform: translate(1px, 4px); } }
-.d-lid { opacity: 0; animation: d-blink-eye 4.6s steps(1) infinite; } .d-lid.shut { opacity: 1; animation: none; }
-@keyframes d-blink-eye { 0% { opacity: 0; } 95% { opacity: 1; } }
 .d-bar { transform-box: fill-box; transform-origin: 50% 100%; animation: d-bar 1.9s steps(1) infinite; }
 @keyframes d-bar { 0% { transform: scaleY(1); } 33% { transform: scaleY(0.5); } 66% { transform: scaleY(0.75); } }
-.d-typing .d-hand { animation: d-type 0.32s steps(1) infinite; }
-.d-typing .d-hand.b { animation-delay: -0.16s; }
 @keyframes d-type { 0% { transform: translateY(0); } 50% { transform: translateY(1px); } }
 .d-led { animation: d-blink 1.2s steps(1) infinite; } .d-led.fast { animation-duration: 0.5s; }
 @keyframes d-blink { 0% { opacity: 1; } 50% { opacity: 0.15; } }
-.d-cloud { animation: d-cloud 70s steps(140) infinite; } .d-cloud.slow { animation-duration: 110s; }
-@keyframes d-cloud { from { transform: translateX(-16px); } to { transform: translateX(56px); } }
 .d-steam { animation: d-steam 2.4s steps(1) infinite; } .d-steam.late { animation-delay: -1.2s; }
 @keyframes d-steam { 0% { opacity: 0; transform: translateY(0); } 25% { opacity: 0.85; transform: translateY(-1px); } 60% { opacity: 0.5; transform: translateY(-2px); } 85% { opacity: 0; transform: translateY(-3px); } }
 .d-zz { font: 700 5px ui-monospace, monospace; fill: #5d6f8a; animation: d-zz 2.7s steps(6) infinite; }
 @keyframes d-zz { 0% { opacity: 0; transform: translate(0, 0); } 20% { opacity: 1; } 100% { opacity: 0; transform: translate(3px, -7px); } }
-.d-runner { animation: d-run 16s steps(75) infinite; }
-@keyframes d-run { 0% { transform: translateX(0); } 48%, 52% { transform: translateX(150px); } 100% { transform: translateX(0); } }
-.d-runner-in { animation: d-turn 16s steps(1) infinite; }
-@keyframes d-turn { 0% { transform: none; } 50% { transform: translateX(8px) scaleX(-1); } }
-.d-leg.a { animation: d-flick 0.4s steps(1) infinite; } .d-leg.b { animation: d-flick 0.4s steps(1) infinite -0.2s; }
 @keyframes d-flick { 0% { opacity: 1; } 50% { opacity: 0; } }
-.d-carry { animation: d-carry 16s steps(1) infinite; }
-@keyframes d-carry { 0% { opacity: 1; } 50% { opacity: 0; } }
 .d-arms { opacity: 0; animation: d-arms 9s steps(1) infinite; }
 @keyframes d-arms { 0% { opacity: 0; } 74% { opacity: 1; } 90% { opacity: 0; } }
-.d-saver { animation: d-saver 7s steps(1) infinite; }
-@keyframes d-saver { 0% { transform: translate(0, 0); } 25% { transform: translate(8px, 2px); } 50% { transform: translate(11px, -2px); } 75% { transform: translate(4px, -3px); } }
 .d-hit { fill: transparent; pointer-events: all; cursor: pointer; } .d-hit:hover, .d-hit.is-on { fill: rgba(255, 255, 255, 0.16); }
 
 .d-bubble { position: absolute; z-index: 2; transform: translate(-50%, calc(-100% - 8px)); width: max-content; max-width: min(40%, 380px); background: #fff;

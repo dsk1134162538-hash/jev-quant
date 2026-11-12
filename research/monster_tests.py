@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import pickle
 from collections import defaultdict
-from statistics import mean, median
+from statistics import mean
 
 from research import dragon_relay as dr
 from research.dragon_relay import ART, lim
-from research.monster import streak_series
 from research.relay_years import fmt
 
 

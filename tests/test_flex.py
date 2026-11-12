@@ -6,7 +6,7 @@ import json
 from datetime import date, datetime, timedelta
 
 import pytest
-from factories import position, quote
+from factories import quote
 
 from jevq import config, db
 from jevq.ledger import Ledger

@@ -2,7 +2,7 @@
 次日收盘卖，日均 +0.72%，偏弱的苗头）。主账户过 Jev 排雷，影子只按规则；实盘不跟。"""
 from datetime import date, datetime
 
-from factories import position, quote
+from factories import quote
 
 from jevq import config, db
 from jevq.data.wts_pool import build_pool

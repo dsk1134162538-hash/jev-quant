@@ -3,7 +3,7 @@ from datetime import date, datetime, time
 import pytest
 
 from factories import quote
-from jevq.rules.board import (Candidate, hot_concepts, in_scan_window, is_first_board, leader, limit_price,
+from jevq.rules.board import (hot_concepts, in_scan_window, is_first_board, leader, limit_price,
                               scan_trigger, watch_candidates)
 
 TODAY = date(2026, 9, 24)

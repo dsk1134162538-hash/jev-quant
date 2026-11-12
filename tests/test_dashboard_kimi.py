@@ -3,7 +3,7 @@ from datetime import datetime
 import pytest
 
 from dashboard.decision_journal import DecisionJournal, build_questions
-from dashboard.kimi_judge import KimiJudge, KimiJudgeError, chat_completions_url, extract_json_object
+from dashboard.kimi_judge import KimiJudge, chat_completions_url, extract_json_object
 
 
 class Response:

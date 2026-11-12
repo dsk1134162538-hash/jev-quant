@@ -1,7 +1,7 @@
 """超跌反弹卖出：相对买入价止损 -2%、浮盈 ≥ +1.5% 后从当日最高回落 0.8 点止盈、最多拿 2 个交易日。"""
 from datetime import date, datetime
 
-from factories import position, quote
+from factories import position
 
 from jevq.models import Quote
 from jevq.rules.rebound_sell import decide_rebound_sell

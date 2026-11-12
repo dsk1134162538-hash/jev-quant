@@ -1,7 +1,7 @@
 from datetime import datetime
 from types import SimpleNamespace
 
-from dashboard.decision_journal import DecisionJournal, build_questions, make_record
+from dashboard.decision_journal import DecisionJournal
 from dashboard.market_snapshot import (MarketSnapshotService, market_symbol, parse_industries, summarize_industries,
                                        summarize_market)
 

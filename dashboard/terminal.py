@@ -10,7 +10,7 @@ import sqlite3
 import statistics
 import threading
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 import requests

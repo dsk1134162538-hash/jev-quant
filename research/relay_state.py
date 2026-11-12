@@ -13,7 +13,6 @@
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from statistics import mean, median
 
 from research import dragon_relay as dr

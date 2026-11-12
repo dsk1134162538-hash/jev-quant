@@ -1,4 +1,4 @@
-﻿"""AI 灵活交易账户的执行器（dj 2026-11-03「要灵活交易，有时候就得突破一下」）。
+"""AI 灵活交易账户的执行器（dj 2026-11-03「要灵活交易，有时候就得突破一下」）。
 
 DeepSeek 在关键时点（ai_loop，dashboard/flex_trader.py）自己判断买什么、买多少、什么时候卖，把订单写进
 dashboard/runtime/flex_orders.json；这里每分钟读订单，按实时行情成交，并实时盯着 AI 自己设的止损线。

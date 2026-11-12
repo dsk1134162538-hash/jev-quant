@@ -2,7 +2,7 @@ import importlib
 import os
 import sys
 import threading
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 import daemon

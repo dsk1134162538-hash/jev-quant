@@ -1,7 +1,6 @@
 import time
 from datetime import date
 
-import pytest
 
 from jevq.notify import Notifier, notifier_from_env
 
