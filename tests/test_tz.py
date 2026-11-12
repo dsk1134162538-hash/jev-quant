@@ -13,9 +13,14 @@ CODE = ("import os; os.environ['TZ'] = {tz!r}\n"
 
 def _run(tz):
     env = {k: v for k, v in os.environ.items() if k != "JEVQ_KEEP_LOCAL_TZ"}
+    # stdin 显式给 DEVNULL：上线闸门跑在 pythonw 下没有标准输入句柄，再起子进程可能 WinError 6（10-09 出过一次）。
+    # 11-10 闸门在这条上挂过一次、报错没留下来，所以失败时把返回码和 stderr 一起带出来。
     out = subprocess.run([sys.executable, "-c", CODE.format(tz=tz)], capture_output=True, text=True, env=env,
-                         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), timeout=60)
-    return out.stdout.strip()
+                         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), timeout=180,
+                         stdin=subprocess.DEVNULL)
+    if out.stdout.strip() != "True True":
+        return f"{out.stdout.strip()!r} rc={out.returncode} stderr={out.stderr[-800:]!r}"
+    return "True True"
 
 
 def test_import_jevq_pins_beijing_time_whatever_the_machine_timezone_is():

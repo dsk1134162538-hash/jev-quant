@@ -29,10 +29,17 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+TAIL_BYTES = 1_048_576          # 读日志只读最后 1 MB（200 行绰绰有余；从行中间切开的那半行解析不了会被跳过）
+
+
 def _today_rows(path: Path, day: str) -> list[dict]:
     rows = []
     try:
-        for line in Path(path).read_text(encoding="utf-8").splitlines()[-200:]:
+        with open(path, "rb") as f:                              # 只读文件尾：日志只追加，今天的行都在最后
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - TAIL_BYTES))
+            text = f.read().decode("utf-8", errors="ignore")
+        for line in text.splitlines()[-200:]:
             try:
                 row = json.loads(line)
             except ValueError:

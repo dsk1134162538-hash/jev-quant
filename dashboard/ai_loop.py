@@ -198,7 +198,19 @@ def _daily() -> dict:
         archived = {"error": f"{type(e).__name__}: {str(e)[:200]}"}
     result = daily_job(notifier=notifier_from_env())
     weekly = _weekly(datetime.now())
-    return {**result, "minutes": archived, **({"weekly": weekly} if weekly else {})}
+    rotated = _rotate_logs(datetime.now())
+    return {**result, "minutes": archived, **({"weekly": weekly} if weekly else {}), **({"rotated": rotated} if rotated else {})}
+
+
+def _rotate_logs(now: datetime) -> dict:
+    """只追加的大日志每天收盘后搬一次家（dashboard/log_rotate.py）。出错只记在返回值里，不影响别的收盘任务。"""
+    from dashboard import log_rotate
+    from dashboard.subscription_bridge import DECISIONS_PATH
+    try:
+        out = log_rotate.rotate_jsonl(DECISIONS_PATH, now)
+    except Exception as e:                                   # noqa: BLE001
+        out = {"error": f"{type(e).__name__}: {str(e)[:160]}"}
+    return {"ai_decisions": out} if out.get("moved") or out.get("error") else {}
 
 
 WEEKLY_ATTEMPTS = 3

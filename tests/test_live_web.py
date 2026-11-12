@@ -35,9 +35,8 @@ def conn():
 @contextmanager
 def running_server(conn, clock=lambda: NOW, quotes=lambda codes: {}, factory=None, **handler_kw):
     handler_cls = make_handler(factory or (lambda: conn), clock=clock, quotes=quotes, **handler_kw)
-    srv = serve(["127.0.0.1"], 0, handler_cls)[0]
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
+    srv = serve(["127.0.0.1"], 0, handler_cls)[0]      # serve() 自己已经起了 serve_forever 线程，这里不能再起第二个：
+    # 两个循环抢同一个 socket，shutdown() 只停得掉一个，另一个在关掉的 socket 上 select 会抛 WinError 10038
     port = srv.server_address[1]
     try:
         yield f"http://127.0.0.1:{port}"

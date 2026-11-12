@@ -18,7 +18,6 @@ SEED_PATH = Path(__file__).with_name("own_sectors_seed.json")
 KIND_ZYGC, KIND_INTRO, KIND_INTROJ = "zygc", "intro", "introj"
 NONE_OF_THEM = ""            # 产品映射：都不属于任何板块
 UNUSABLE = "?"               # 产品映射：这行是收入类型/业务类别，不是具体产品
-ACTIVE_MEMBER = ("auto", "confirmed")
 
 
 # ---------- 板块定义 ----------

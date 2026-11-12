@@ -15,6 +15,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+DESK_CACHE_SECONDS = 1.5
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -111,9 +112,15 @@ class DashboardService:
     def desk_payload(self) -> dict:
         """交易台页（dj 2026-11-09）：岗位卡、经理指令、交易员漏斗、事件日志（只读）。"""
         from dashboard.desk import desk_payload
+        # 页面每 2 秒问一次，多开几个页面就是几倍：1.5 秒内的重复请求直接给上一份，不重读数据库和日志
+        cached = getattr(self, "_desk_cache", None)
+        if cached and time.monotonic() - cached[0] < DESK_CACHE_SECONDS:
+            return cached[1]
         self._refresh_quotes()
-        return desk_payload(self.db_path, ROOT / "dashboard" / "runtime", self._quotes,
-                            self.market.payload().get("marketBreadth", {}))
+        payload = desk_payload(self.db_path, ROOT / "dashboard" / "runtime", self._quotes,
+                               self.market.payload().get("marketBreadth", {}))
+        self._desk_cache = (time.monotonic(), payload)
+        return payload
 
     @staticmethod
     def _default_decision_judge():

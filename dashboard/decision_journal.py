@@ -24,7 +24,6 @@ ANALYSIS_FIELDS = {
     # 记忆（dj 2026-11-01：没有记忆做 T 会乱做）：每轮写下一步计划，下一轮先核对计划兑现没有
     "plan": "下一步计划：接下来几轮你要盯什么、到什么价位/条件做什么（开闸、否决哪只、持仓怎么处理）；先核对上一轮计划兑现没有",
 }
-ANALYSIS_MAX = 400
 
 
 def build_questions(analysis: bool = False) -> dict:

@@ -110,3 +110,57 @@ Kronos 仅读取 T 日及之前的 512 根 OHLCV，预测 T+1 至 T+6 六根日�
 随后按精确上下文长度跨信号日分组，并缓存每只股票的排序结果、日期索引和各信号日未来时间戳。相同样本复测为 98 批、508 秒、1.008 条／秒，仅比原基准快约 1.9%；512 个键和分数逐项完全一致。优化产物位于 `research/artifacts/pit-kronos-small-optimized-benchmark/`，全量时间估算约 39.06 天，仍未启动全量五折。主要成本仍是模型推理，分组优化不会带来数量级提速；当前轻量元数据仍在内存中物化，全量运行如需限制内存，应先实现外部分桶或分块处理。
 
 面板通过 `GET /api/research/kronos` 只读展示上述状态；接口不加载模型、不触发推理或训练，也不连接交易。
+
+## 脚本索引
+
+研究脚本的索引（2026-11-12 体检时按每个文件开头的说明生成）。这里的脚本只读数据、不碰账户；结论见 `docs/2026-11-strategies-and-research.md` 和 GitHub #7。
+新加脚本请在这里补一行，不然下次体检又会被当成「没人引用」。
+
+| 文件 | 干什么 | 状态 |
+|---|---|---|
+| `akshare_backfill.py` | 使用 AKShare／新浪逐股续传全 A 前复权日线，独立于 iFinD 数据。 | 能直接跑、有测试 |
+| `ambush.py` | 提前埋伏（dj 2026-11-02「找最有概率封板的标的，根据新闻、市场热度、风口」）：竞价开盘价买，看当天封板率和次日收益。 | 能直接跑、被 tdx_indicators.py 用到 |
+| `board_patterns.py` | 二板（1 进 2）和龙回头的日线回测（dj 2026-11-02「我们可以做二板，或者龙回头」）。 | 只有函数，没有入口、被 regime_router.py 用到 |
+| `board_touch_study.py` | 买点研究（dj 2026-11-02）：用 data/minutes.sqlite 里攒下的分时 + 9% 触线快照，看「在 9% 那一刻能看到的东西」 | 能直接跑、有测试 |
+| `candidate_paper_bridge.py` | 训练候选（paper_candidate）到订阅模拟闭环的桥接。 | 只有函数，没有入口、有测试、被 subscription_bridge.py 用到 |
+| `classic_strats.py` | 线上低吸 / 超跌反弹两个策略的 7 年日线回测（dj 2026-11-03「做吧」）。 | 能直接跑、被 factor_scan.py、factor_weekly.py、kb_events.py 用到 |
+| `cross_sectional_model.py` | 五日横截面相对强弱模型：滚动 LightGBM、RankIC 与扣费组合验证。 | 能直接跑、有测试、被 kronos_cross_sectional.py、prepare_cross_sectional_samples.py、prepare_pit_stocks.py 用到 |
+| `dragon_relay.py` | 打板接力 / 龙头（dj 2026-11-02「还是打板或做龙头，去想办法」）：只测「竞价能买到」的买点。 | 能直接跑、有测试、被 config.py、relay.py、ambush.py 用到 |
+| `dragon_return.py` | dj 的「龙回头 · 龙头版」通达信指标（2026-11-02 给的公式）翻成 Python，并做放宽版本对照。 | 只有函数，没有入口、被 regime_router.py 用到 |
+| `entry_points.py` | 买点对比（dj 2026-11-02「怎么买到快速封板的票」）：用新浪 5 分钟线（research/min5_backfill.py）比较 | 能直接跑、有测试、被 dragon_relay.py、intraday_regime.py 用到 |
+| `factor_scan.py` | 全市场日线因子扫描（dj 2026-11-03）：8 个常见因子，每天按因子把票分 10 档，看最低档 / 最高档收盘买、 | 能直接跑 |
+| `factor_weekly.py` | 慢节奏因子回测（dj 2026-11-03「总之你去想办法」）：持有 5 / 10 / 20 个交易日，手续费占比远小于日频。 | 能直接跑、被 size_study.py 用到 |
+| `first_board_ai.py` | 打首板 AI 对照实验（dj 2026-11-02「都试一下」）：在 first_board_history 的 108 天样本上，按模拟收益比较 | 能直接跑、有测试 |
+| `first_board_history.py` | 打首板的历史样本（dj 2026-11-02「去执行吧 / 都试一下」）：比 board_events 的 20 天大好几倍、没有幸存者偏差。 | 只有函数，没有入口、有测试、被 board_patterns.py、dragon_return.py、first_board_ai.py 用到 |
+| `ifind_backfill.py` | 按全 A 历史主数据续传 iFinD 前复权日线；不连接交易链路。 | 能直接跑、有测试、被 akshare_backfill.py 用到 |
+| `intraday_regime.py` | 盘中状态能不能决定「今天该不该追板」（dj 2026-11-03「根据盘中实时更换策略才是最好」）的检验。 | 能直接跑 |
+| `kb_events.py` | 知识库两条有苗头的规则按「事件」细看（kb_rules.py 里按股票×天算，同一天几千只票高度相关，样本数是虚的）： | 能直接跑、有测试、被 config.py、ice.py、ice.py 用到 |
+| `kb_rules.py` | 知识库（jevq/app/knowledge.json，Telegram @gsxt233 的整理）里能用日线验证的规则，7 年（2019 起）逐条回测。 | 能直接跑、被 kb_events.py 用到 |
+| `kline_long.py` | 把主板日线往前拉到 2019 年（dj 2026-11-02：高标接力只有两年样本，拉长历史再回测）。 | 能直接跑、被 dragon_relay.py、kline_sina_fill.py、monster.py 用到 |
+| `kline_model.py` | K 线与成交量形态研究模型：LightGBM、时间顺序验证、独立隔夜回测。 | 能直接跑、有测试、被 cross_sectional_model.py、train_kline_automation.py 用到 |
+| `kline_sina_fill.py` | 腾讯日线被 WAF 限流（501）后，用新浪日线补 kline_long.sqlite 里缺的主板票（2019-01 ~ 2024-10）。 | 能直接跑 |
+| `kronos_cross_sectional.py` | Kronos-small 零样本横截面对照；复用全 A PIT 样本、滚动测试折和评价器。 | 能直接跑、有测试、被 record_kronos_benchmark.py 用到 |
+| `kronos_status.py` | Kronos 对照实验的只读状态；全量结果优先，冒烟结果不得视为可比业绩。 | 只有函数，没有入口、有测试、被 server.py 用到 |
+| `min5_backfill.py` | 历史 5 分钟线回填（dj 2026-11-02：Kimi 没额度，iFinD 用不了）：新浪 5 分钟 K 线一次最多 5000 根 ≈ 最近 104 个交易日。 | 能直接跑、有测试、被 entry_points.py、intraday_regime.py、kline_long.py 用到 |
+| `monster.py` | 妖股研究（dj 2026-11-02「每月都有几只连板很多的票，一年有几只翻倍妖股，专门做这种」）。 | 能直接跑 |
+| `monster_tests.py` | 妖股跟随的细查（dj 2026-11-02 夜里）： | 能直接跑 |
+| `paper_validation.py` | 模拟（paper）验证门：候选先在模拟盘跑够样本，才允许成为 paper champion。 | 只有函数，没有入口、有测试、被 subscription_bridge.py、strategy_lifecycle.py 用到 |
+| `pattern_analog.py` | K 线形态找历史相似走势（dj 2026-11-11：「看 K 线技术形态，回测这只票之前类似的走势，给出预测，供交易员和经理参考」）。 | 能直接跑、有测试 |
+| `pit_backfill.py` | 可续传的财新全 A 历史主数据回溯；默认只估算，不发起计费请求。 | 能直接跑、有测试 |
+| `pit_validation.py` | 历史时点股票池校验：按交易日期匹配上市身份并过滤非上市期间行情。 | 只有函数，没有入口、有测试、被 cross_sectional_model.py、prepare_cross_sectional_samples.py、prepare_pit_stocks.py 用到 |
+| `prepare_cross_sectional_samples.py` | 固化全 A PIT 横截面训练样本，供滚动折独立续跑。 | 能直接跑 |
+| `prepare_pit_benchmark.py` | 下载并校验 PIT 研究所需的沪深 300 未复权日线。 | 能直接跑 |
+| `prepare_pit_stocks.py` | 第一阶段：固化经过历史上市身份过滤的全 A 行情。 | 能直接跑 |
+| `qlib_validation.py` | Qlib 风险分析接入验证：真实 A 股日线、时间顺序回测与样本外报告。 | 能直接跑、有测试、被 kline_model.py、prepare_pit_benchmark.py 用到 |
+| `record_kronos_benchmark.py` | 根据真实 Kronos 冒烟运行计时生成速度估算；不生成或修改业绩结论。 | 能直接跑 |
+| `regime_router.py` | 按行情换打法（dj 2026-11-02「真正的策略是根据行情来换，现在能做到吗」）。 | 只有函数，没有入口 |
+| `relay_state.py` | 高标接力 × 竞价状态闸门（dj 2026-11-03「指标和各项规则结合」）。7 年日线（2019 起，kline_long + 现有）。 | 能直接跑 |
+| `relay_years.py` | 高标接力 7 年复验（dj 2026-11-02）：逐年表现、相邻参数、连亏与回撤。数据 2019 起（kline_long.py）+ 现有两年。 | 能直接跑、被 monster_tests.py 用到 |
+| `run_pit_folds.py` | 逐折运行并汇总全 A PIT 滚动 LightGBM 基线，支持中断续跑。 | 能直接跑、被 kronos_cross_sectional.py、record_kronos_benchmark.py 用到 |
+| `size_study.py` | 小市值效应的压力测试（dj 2026-11-03）。factor_weekly.py 里「流通市值最低 10%、持有 20 天」8 年里 7 年跑赢全市场， | 能直接跑、有测试、被 config.py、smallcap.py、smallcap.py 用到 |
+| `status.py` | 研究产物的只读状态投影；不触发训练，不连接账户或交易执行器。 | 只有函数，没有入口、有测试、被 adaptive_paper.py、decision_journal.py、server.py 用到 |
+| `strategy_lifecycle.py` | 确定性策略发布门（paper-only）。 | 能直接跑、有测试、被 candidate_paper_bridge.py、paper_validation.py、train_kline_automation.py 用到 |
+| `tdx_indicators.py` | hi189 的通达信指标（dj 2026-11-02 贴的源码）翻成 Python 并回测。 | 只有函数，没有入口 |
+| `theme_history.py` | 同花顺涨停揭秘历史（dj 2026-11-03「龙头识别、题材梯队、上车点、补涨怎么做」）：每个交易日每只涨停股的原因题材和连板描述。 | 能直接跑、被 theme_ladder.py 用到 |
+| `theme_ladder.py` | 题材梯队、龙头、补涨、题材阶段（dj 2026-11-03）：用同花顺涨停揭秘一年真实的涨停原因题材（theme_history.py）做回测。 | 能直接跑、有测试、被 config.py、themes.py 用到 |
+| `train_kline_automation.py` | 每日刷新真实日线并重训研究模型；不连接账户或交易执行器。 | 能直接跑 |

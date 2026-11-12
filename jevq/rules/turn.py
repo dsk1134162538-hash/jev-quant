@@ -19,7 +19,6 @@ from datetime import datetime, time
 from jevq import config
 
 MORNING = (time(9, 30), time(11, 30))
-AFTERNOON = (time(13, 0), time(15, 0))
 
 
 @dataclass(frozen=True)

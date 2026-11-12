@@ -314,3 +314,12 @@ def test_real_runners_decode_utf8_and_never_raise_on_bad_bytes(monkeypatch, tmp_
     deploy._real_run_tests(Path("python"), tmp_path, install_requirements=True, log=lambda m: None)
     assert len(seen) == 3
     assert all(k["encoding"] == "utf-8" and k["errors"] == "replace" for k in seen)   # 中文 Windows 默认 gbk，解 UTF-8 输出会抛 UnicodeDecodeError
+
+
+def test_test_detail_keeps_the_failure_text_ahead_of_a_long_warning_summary():
+    from jevq.sync.deploy import _test_detail
+    out = ("....F..\n" + "=" * 30 + " FAILURES " + "=" * 30 + "\n___ test_x ___\nAssertionError: 真正的原因\n"
+           + "=" * 30 + " warnings summary " + "=" * 30 + "\n" + "warning line\n" * 2000 + "1 failed, 6 passed in 1.0s\n")
+    detail = _test_detail(out)
+    assert "真正的原因" in detail and "1 failed, 6 passed" in detail and len(detail) < 8000
+    assert _test_detail("x" * 9000 + "7 passed") == ("x" * 9000 + "7 passed")[-4000:]      # 全过：照旧只留结尾

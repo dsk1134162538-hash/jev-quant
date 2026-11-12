@@ -8,6 +8,15 @@ A 股主板（60/00）T+1 模拟盘：规则选股 → Jev（TypeSafe System One
 
 **2026-11 起新增的策略（接力/弱转强/补涨/冰点/小市值/AI 灵活交易）、研究结论和运维问题见 `docs/2026-11-strategies-and-research.md`（本文的策略表和「运行现状」还停在 9 月底）。**
 
+**2026-11-09 起的交易台（这部分本文没写，进展以 GitHub issue 为准）**：
+- 经理（`dashboard/manager.py`）每个关键时点定行情、给两位交易员下指令；公司目标日 1% / 周 5% / 月 20%，写在 `config.DESK_TARGETS`。
+- 两位 AI 交易员共用执行器 `jevq/strategies/flex.py`：灵活（`aiflex`）只做题材情绪，趋势（`aiflex2`）接盘中异动票。护栏数字都在 `config.FLEX_*`：单票 40%、最多 3 只、越涨越卖（8% / 15% 各卖 1/3，浮盈到过 5% 后移动止盈回撤 5%）。
+- 策略席（`dashboard/strategy_desk.py`）：接力 / 弱转强 / 补涨三位各报一次候选，汇总成「今天该做什么」。
+- 经理自己的一万元账户 `mgr_main`（`dashboard/manager_trade.py`）：单票全仓，只从交易员给的票里挑，模拟 dj 的实盘规模，也是考核经理。
+- 周五收盘后周复盘会（`dashboard/weekly_review.py`），经理定下周风险档位，写 `runtime/manager_stance.json`。
+- 面板交易台页（`dashboard/desk.py` + `src/Desk.jsx`），办公室动画在 `src/IsoOffice.jsx`。
+- 工作记录和待办：issue #9（交易台）、#10（上线闸门）、#7（研究）。做完一件事或遇到问题都在 issue 里补评论、勾清单（全局 CLAUDE.md「GitHub 交接」）。
+
 用户风格见全局 `~/.claude/CLAUDE.md`：中文，结论先行，先问再做，破坏性/对外操作先确认，关键权衡给一个推荐。
 
 ## 接手第一步

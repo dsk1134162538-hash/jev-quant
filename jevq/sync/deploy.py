@@ -43,7 +43,16 @@ def _real_run_tests(python_exe: Path, cwd: Path, install_requirements: bool, log
     r = subprocess.run([str(python_exe), "-m", "pytest", "-q", "-p", "no:cacheprovider"],
                        cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                        timeout=900, stdin=subprocess.DEVNULL)
-    return r.returncode == 0, (r.stdout + r.stderr)[-4000:]
+    return r.returncode == 0, _test_detail(r.stdout + r.stderr)
+
+
+def _test_detail(output: str) -> str:
+    """留给日志的那段输出：失败用例的报错在前（pytest 的 FAILURES / ERRORS 段），结尾汇总在后。
+    只截最后 4000 字的话，结尾的警告汇总会把真正的报错挤掉（11-10 test_tz 挂了一次，原因就没留下来）。"""
+    m = re.search(r"^=+ (?:FAILURES|ERRORS) =+$", output, re.M)
+    if not m:
+        return output[-4000:]
+    return output[m.start():][:6000] + "\n…\n" + output[-1500:]
 
 
 def _count_failed(detail: str) -> int:
