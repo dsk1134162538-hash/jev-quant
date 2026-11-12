@@ -52,9 +52,9 @@ function phaseOf(iso) {
 }
 
 // ---------- 顶部岗位卡 ----------
-const KIND_TAG = { 行情: '行情', 算术: '算术', 扫描: '扫描', 账户: '账户' }
+const KIND_TAG = { 行情: '行情', 算术: '算术', 扫描: '扫描', 账户: '账户', 回测: '回测' }
 const PLACEHOLDER = [['breadth', 'BREADTH', '宽度'], ['ladder', 'LADDER', '梯队'], ['high', 'HIGH', '高标'], ['movers', 'MOVERS', '异动'],
-  ['scan', 'SCAN', '扫板'], ['book', 'BOOK', '持仓'], ['risk', 'RISK', '风控']]
+  ['scan', 'SCAN', '扫板'], ['book', 'BOOK', '持仓'], ['risk', 'RISK', '风控'], ['backtest', 'BACKTEST', '回测']]
 
 function RoleCards({ data, active, onPick }) {
   const m = data?.manager

@@ -45,11 +45,11 @@ const PODS = {
 }
 const PLACE = {
   breadth: ['A', 'far', 0], ladder: ['A', 'far', 1], high: ['A', 'near', 0], movers: ['A', 'near', 1],
-  scan: ['B', 'far', 0], book: ['B', 'far', 1], risk: ['B', 'near', 0],
+  scan: ['B', 'far', 0], book: ['B', 'far', 1], risk: ['B', 'near', 0], backtest: ['B', 'near', 1],
   'strat:relay': ['C', 'far', 0], 'strat:wts': ['C', 'far', 1], 'strat:bz': ['C', 'near', 0],
   'trader:aiflex': ['D', 'near', 0], 'trader:aiflex2': ['D', 'near', 1],
 }
-const SPARE = [['B', 1], ['C', 1]]                         // near 一侧没人常坐的位子
+const SPARE = [['C', 1]]                                   // near 一侧没人常坐的位子（汇报二组那个空位 11-12 给了回测员）
 // f 是这个人脸朝的方向（世界坐标）：far 一侧朝 +gy，near 一侧朝 -gy，都是冲着桌子
 const seatAt = (pod, side, col) => ({ gx: PODS[pod].x + 1 + col * 2, gy: side === 'far' ? PODS[pod].y - 0.2 : PODS[pod].y + 2.2, f: [0, side === 'far' ? 1 : -1] })
 const HOME = { manager: { gx: 3.5, gy: 1.72, f: [0, 1] }, ...Object.fromEntries(Object.entries(PLACE).map(([r, [p, s, c]]) => [r, seatAt(p, s, c)])) }
@@ -64,7 +64,7 @@ const CAT_SPOTS = [[12.3, 11.4], [6.8, 6.4], [17.3, 3.7], [5.0, 5.3]]
 // hx 歪头（像素），lean 身子往桌子探（正）或往后靠（负）
 const POSE = {
   manager: { k: 'chin' }, breadth: { k: 'type' }, ladder: { k: 'phone', hx: 1 }, high: { k: 'chin', hx: -1 }, movers: { k: 'type', lean: 1 },
-  scan: { k: 'sip' }, book: { k: 'write', hx: -1, lean: 1 }, risk: { k: 'cross', lean: -1 },
+  scan: { k: 'sip' }, book: { k: 'write', hx: -1, lean: 1 }, risk: { k: 'cross', lean: -1 }, backtest: { k: 'mouse', lean: 1 },
   'strat:relay': { k: 'mouse' }, 'strat:wts': { k: 'type', hx: 1 }, 'strat:bz': { k: 'sip', lean: -1 },
   'trader:aiflex': { k: 'type', lean: 1 }, 'trader:aiflex2': { k: 'mouse', hx: -1 },
 }
@@ -421,7 +421,7 @@ function tickerOf(data) {
 function footOf(sc, phase, n) {
   if (sc.stage === 'closed') return '周末休市 · 办公室没人，只有猫在'
   if (sc.stage === 'empty') return sc.m < 525 ? '还没上班 · 08:45 开始到岗' : '下班了 · 灯关了，机柜里程序还在跑'
-  if (sc.stage === 'arrive') return `盘前 · 陆续到岗 ${n}/13`
+  if (sc.stage === 'arrive') return `盘前 · 陆续到岗 ${n}/${SEATS.length + 1}`
   if (sc.stage === 'lunch') return '午休 · 13:00 开工'
   if (sc.stage === 'review') return '收盘 · 经理在白板前复盘'
   if (sc.stage === 'leave') return sc.meeting ? '周五 · 经理和两位交易员在会议室开周复盘会，其他人陆续下班' : `收盘 · 陆续下班，还剩 ${n} 人`

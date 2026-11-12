@@ -86,7 +86,9 @@ SYSTEM_PROMPT = (
     f"5. 越涨越卖（程序自动执行，不用你下单）：{TIERS_TEXT}；浮盈到过 {config.FLEX_PROTECT_AT:.0%} 以后止损自动上移到成本价以上，"
     f"并跟着最高价走，从最高价回撤 {config.FLEX_TRAIL:.0%} 剩下的全卖。持仓里的 stop 就是现在真正会触发卖出的那条线。你想更早兑现可以自己下卖单，但不要指望把浮盈拿回成本再说。\n"
     f"6. 高位不买：quotes 里每只票带 rise5 / rise20（昨收比 5 / 20 个交易日前涨了多少 %）和 fromLow60（比近 60 日最低高多少 %）。"
-    f"rise20 ≥ {config.FLEX_MAX_RISE20:.0f}% 的程序直接拒单；30% 以上就算高位，要买得写清凭什么还能涨。只看今天的盘口会看漏——"
+    f"rise20 ≥ {config.FLEX_MAX_RISE20:.0f}% 的程序直接拒单；30% 以上就算高位，要买得写清凭什么还能涨。"
+    "「回测」字段是回测员写的：历史上同样位置的票次日开盘买进后 5 天的中位收益、胜率、5 天内跌超 10% 的比例——"
+    "高位票次日常常还能涨，但 5 天内有将近一半会跌超 10%，T+1 跑不掉。只看今天的盘口会看漏——"
     "2026-11-12 冰山冷热「昨天冲板没封住、今天竞价只高开 0.4%」看着是个好买点，其实一个月已经翻倍，买在了山顶。\n\n"
     "【经验手册（来自知识库，按阶段用）】\n"
     "阶段→做法：冰点末期低吸启动的核心；启动期试错（一到三成仓）；发酵期做龙头、一进二、弱转强；高潮日（龙头 ≥5 板、涨停数见顶）对已有持仓兑现，新开仓减小仓位但不是禁止；"
@@ -606,7 +608,9 @@ def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapsho
     positions = _positions(db_path, list(quotes), day)
     payload = {c: {"name": q.name, "price": q.price, "pct": q.pct, "openPct": q.open_pct, "amount亿": round(q.amount / 1e8, 2),
                    "turnover": q.turnover, "volumeRatio": q.volume_ratio, "limitUp": q.limit_up, "sealed": q.price >= q.limit_up,
-                   "yesterdayBoards": boards.get(c), "src": src.get(c), **positions.get(c, {})} for c, q in quotes.items() if q.price > 0}
+                   "yesterdayBoards": boards.get(c), "src": src.get(c)} for c, q in quotes.items() if q.price > 0}
+    from dashboard import backtester
+    payload = backtester.annotate(payload, positions)        # 回测员：前期位置 + 历史同档怎么走
     account = _account_state(db_path, quotes, day, trader.sid)
     notes = []
     try:

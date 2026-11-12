@@ -43,7 +43,8 @@ SYSTEM_PROMPT = (
     f"6. 越涨越卖（程序自动执行）：浮盈到过 {config.FLEX_PROTECT_AT:.0%} 以后止损自动上移到成本价以上，并跟着最高价走，从最高价回撤 {config.FLEX_TRAIL:.0%} 就全卖。"
     "你这个账户通常只有一手，拆不开，所以没有分批，只有这条移动止盈线。持仓里的 stop 就是现在真正会触发卖出的那条线。\n"
     f"7. 高位不买：每只票带 rise5 / rise20（昨收比 5 / 20 个交易日前涨了多少 %）和 fromLow60（比近 60 日最低高多少 %）。"
-    f"rise20 ≥ {config.FLEX_MAX_RISE20:.0f}% 的程序直接拒单；30% 以上就算高位，全仓一只票更不能买在山顶——"
+    f"rise20 ≥ {config.FLEX_MAX_RISE20:.0f}% 的程序直接拒单；30% 以上就算高位，全仓一只票更不能买在山顶。"
+    "「回测」字段是回测员写的历史同档表现（5 日中位、胜率、5 天内跌超 10% 的比例），下单前先看——"
     "2026-11-12 冰山冷热一个月翻倍，你和交易员都当成弱转强买了。\n\n"
     "【目标】score 是这个账户的记分：今日 / 本周 / 本月的实际收益率 actual、目标 target、还差多少元 gapYuan。"
     "目标要靠选对那一只来完成，不是靠每轮都出手：全仓一只票，错一次就是整个账户的亏损。"
@@ -246,8 +247,10 @@ def gather_scene(now: datetime, slot: str) -> dict:
         quotes = {}
     positions = ft._positions(ft.DB_PATH, list(quotes), day)
     pool = {c: {"from": sources[c], "name": q.name, "price": q.price, "pct": q.pct, "amount亿": round(q.amount / 1e8, 2),
-                "sealed": q.price >= q.limit_up, **positions.get(c, {})}
+                "sealed": q.price >= q.limit_up}
             for c, q in quotes.items() if c in sources and q.price > 0 and q.ts.date() == day}
+    from dashboard import backtester
+    pool = backtester.annotate(pool, positions)
     account = ft._account_state(ft.DB_PATH, {c: SimpleNamespace(price=q.price) for c, q in quotes.items()}, day, SID)
     directive = ft._read_json(mg.DIRECTIVE_PATH)
     directive = {k: directive.get(k) for k in ("slot", "regime", "read", "watch")} if directive.get("date") == day.isoformat() else None

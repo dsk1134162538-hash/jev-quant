@@ -21,7 +21,9 @@ const TRADER_SEATS = [
   ['trader:aiflex2', '交易员2', '#2f8a6c', 'long', '#5a3a22', 0],
 ].map(([role, name, color, hair, hairColor, skin]) => ({ role, name, color, hair, hairColor, skin, headset: true, kind: 'trader' }))
 // 顺序不能随便动：排班（到岗 / 下班 / 午休干什么）和邻座聊天都按这个下标算
-export const SEATS = [...REPORT_SEATS, ...STRAT_SEATS, ...TRADER_SEATS]
+// 回测员（dj 2026-11-12）：后加的，放在最后——前面的下标排班要用，插到中间会把每个人的午休和到岗时间都打乱
+const LATE_SEATS = [{ role: 'backtest', name: '回测', color: '#4a7a8c', hair: 'side', hairColor: '#2a2420', skin: 2, glasses: true, kind: 'report' }]
+export const SEATS = [...REPORT_SEATS, ...STRAT_SEATS, ...TRADER_SEATS, ...LATE_SEATS]
 
 export const STRAT_INFO = [['relay', 'RELAY', '高标接力官'], ['wts', 'WTS', '弱转强官'], ['bz', 'BZ', '补涨官']]
 
@@ -29,7 +31,7 @@ export const STRAT_INFO = [['relay', 'RELAY', '高标接力官'], ['wts', 'WTS',
 // ---------- 排班：谁在哪，只看北京时间（接口的 now 就是北京时间） ----------
 const PEOPLE = ['manager', ...SEATS.map((s) => s.role)]
 const MEETING = ['manager', 'trader:aiflex', 'trader:aiflex2']       // 周复盘会（dashboard/weekly_review.py）到场的人
-const LUNCH = ['sofa', 'nap', 'out', 'chat', 'out', 'nap', 'out', 'nap', 'out', 'nap', 'chat', 'nap', 'out']
+const LUNCH = ['sofa', 'nap', 'out', 'chat', 'out', 'nap', 'out', 'nap', 'out', 'nap', 'chat', 'nap', 'out', 'nap']
 const STAGE_OF = [[525, 'empty'], [555, 'arrive'], [690, 'work'], [780, 'lunch'], [900, 'work'], [930, 'review'], [1050, 'leave']]
 
 // where(role)：seat 坐着干活｜nap 趴桌睡｜chat 过道里端着杯子聊天｜sofa 沙发上躺着｜board 站在白板前｜gone 不在
@@ -113,6 +115,13 @@ function reportSpeech(role, r) {
   if (role === 'book') {
     const parts = raw.split(' · ').map((p) => p.match(/^(.+?) ([\d,]+) \/ (\d+) 只$/)).filter(Boolean)
     if (parts.length) return { short: `${head}账我对过了：${parts.map((p) => `${p[1]}净值 ${p[2]}、拿着 ${p[3]} 只`).join('；')}。`, full: [] }
+  }
+  if (role === 'backtest') {
+    const items = r.items || []
+    const top = items.find((i) => i.rise20 >= 30)
+    const short = top ? `${head}${raw}。${top.name} 20 天涨了 ${Math.round(top.rise20)}%，这个位置历史上一半的票 5 天内要跌超 10%，别追。`
+      : `${head}${raw}，没有在高位的票。`
+    return { short, full: items.map((i) => `${i.name || i.code}　5日 ${i.rise5 >= 0 ? '+' : ''}${i.rise5 ?? '—'}%　20日 ${i.rise20 >= 0 ? '+' : ''}${i.rise20}%　${i.note || i.verdict}`) }
   }
   if (role === 'risk') {
     return raw === '护栏正常' ? { short: `${head}护栏都正常，没有碰线的。`, full: [] } : { short: `${head}风控这边要注意：${raw}。`, full: [] }

@@ -24,7 +24,7 @@ STATE_PATH = RUNTIME / "manager_state.json"
 REPORTS_PATH = RUNTIME / "desk_reports.json"
 SLOTS = ("09:26", "10:30", "13:20")
 REGIMES = ("打板日", "趋势日", "混沌日", "空仓日")
-KINDS = ("行情", "算术", "扫描", "账户")
+KINDS = ("行情", "算术", "扫描", "账户", "回测")
 MIN_PCT = 0.03
 
 
@@ -97,6 +97,8 @@ def desk_reports(ctx: dict, accounts: dict, logs: dict, now: datetime) -> list[d
     out.append(_report("book", "BOOK", "持仓", "账户", " · ".join(parts) or "账户没数据", "ok" if parts else "idle", now))
     out.append(_report("risk", "RISK", "风控", "账户", "；".join(blocked) if blocked else ("护栏正常" if parts else "账户没数据"),
                        "bad" if blocked else "ok" if parts else "idle", now))
+    from dashboard import backtester
+    out.append(backtester.report(quotes, now))                 # 回测员（dj 2026-11-12）：候选的前期涨幅 + 历史同档
 
     for sid, rows in (logs or {}).items():
         if sid not in ft.TRADERS:
