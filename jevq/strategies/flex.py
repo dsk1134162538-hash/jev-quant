@@ -7,7 +7,8 @@ AI 可以突破任何选股规则（订单里标「模式外」，复盘时和�
   1. 单票最多占账户净值 FLEX_MAX_PCT（40%），持仓最多 FLEX_MAX_POSITIONS（3）只，亏损的持仓不加仓；
   2. 买入必须同时给：止损位（低于现价、不超过 12% 远）、「错了的信号」、模式（模式内 / 模式外）；
   3. 当日净值亏到 FLEX_DAY_LOSS（3%）当天不再开新仓；
-  4. 连亏 FLEX_LOSS_STREAK（3）笔，当天不再开新仓。
+  4. 连亏 FLEX_LOSS_STREAK（3）笔，当天不再开新仓；
+  5. 高位不买：昨收比 20 个交易日前涨了 FLEX_MAX_RISE20（60%）及以上的票拒单（2026-11-12 冰山冷热）。
 只做沪深主板；T+1（今天买的明天才能卖，止损也一样）；订单 10 分钟内有效，同一张订单只成交一次（重启也不重复）。
 所有订单、拒绝原因、止损位都记在 decisions（strategy='aiflex'），做复盘用。实盘不跟。
 """
@@ -17,6 +18,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from jevq import config
+from jevq.data.closes import position_stats
 from jevq.ledger import Ledger
 from jevq.models import Fill, Position, Quote
 
@@ -157,6 +159,9 @@ class AiflexStrategy:
             return self._reject(now, order, "缺少「错了的信号」（什么情况说明这笔判断错了）")
         if order.get("mode") not in MODES:
             return self._reject(now, order, "模式必须是「模式内」或「模式外」")
+        rise20 = position_stats(self.conn, [code], now.date()).get(code, {}).get("rise20")
+        if rise20 is not None and rise20 >= config.FLEX_MAX_RISE20:
+            return self._reject(now, order, f"高位不买：近 20 个交易日已涨 {rise20:.0f}%（上限 {config.FLEX_MAX_RISE20:.0f}%）")
         ref = _num(order.get("ref_price"))
         if ref and abs(q.price / ref - 1) > MAX_REF_DEVIATION:
             return self._reject(now, order, f"现价 {q.price} 已偏离参考价 {ref} 超过 {MAX_REF_DEVIATION:.0%}，不追")

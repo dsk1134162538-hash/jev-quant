@@ -41,7 +41,10 @@ SYSTEM_PROMPT = (
     "5. 每笔买入必须写止损价 stop（低于现价、不超过 12% 远）和 invalid（什么情况说明这笔判断错了）；"
     "止损由程序每分钟盯着执行。ref_price 写你看到的现价，成交价偏离超过 2% 不追。\n"
     f"6. 越涨越卖（程序自动执行）：浮盈到过 {config.FLEX_PROTECT_AT:.0%} 以后止损自动上移到成本价以上，并跟着最高价走，从最高价回撤 {config.FLEX_TRAIL:.0%} 就全卖。"
-    "你这个账户通常只有一手，拆不开，所以没有分批，只有这条移动止盈线。持仓里的 stop 就是现在真正会触发卖出的那条线。\n\n"
+    "你这个账户通常只有一手，拆不开，所以没有分批，只有这条移动止盈线。持仓里的 stop 就是现在真正会触发卖出的那条线。\n"
+    f"7. 高位不买：每只票带 rise5 / rise20（昨收比 5 / 20 个交易日前涨了多少 %）和 fromLow60（比近 60 日最低高多少 %）。"
+    f"rise20 ≥ {config.FLEX_MAX_RISE20:.0f}% 的程序直接拒单；30% 以上就算高位，全仓一只票更不能买在山顶——"
+    "2026-11-12 冰山冷热一个月翻倍，你和交易员都当成弱转强买了。\n\n"
     "【目标】score 是这个账户的记分：今日 / 本周 / 本月的实际收益率 actual、目标 target、还差多少元 gapYuan。"
     "目标要靠选对那一只来完成，不是靠每轮都出手：全仓一只票，错一次就是整个账户的亏损。"
     "没有够好的票就空着，手里的票预期还在就拿着；落后时不许为了追目标去买自己都不信的票。\n\n"
@@ -151,6 +154,8 @@ def validate(answer, ctx: dict) -> dict:
                 drop("没有实时行情")
             elif q.get("sealed"):
                 drop("已封板，买不进")
+            elif (q.get("rise20") or 0) >= config.FLEX_MAX_RISE20:
+                drop(f"高位不买：近 20 个交易日已涨 {q['rise20']:.0f}%")
             elif staying:
                 drop(f"手里还有 {staying[0]}，先卖掉才能换")
             elif affordable_shares(float(account.get("equity") or 0), float(q["price"])) == 0:
@@ -239,8 +244,10 @@ def gather_scene(now: datetime, slot: str) -> dict:
         quotes = tencent.fetch_quotes(codes) if codes else {}
     except Exception:                                            # noqa: BLE001  行情取不到：这一轮没有可买的票，持仓照旧
         quotes = {}
+    positions = ft._positions(ft.DB_PATH, list(quotes), day)
     pool = {c: {"from": sources[c], "name": q.name, "price": q.price, "pct": q.pct, "amount亿": round(q.amount / 1e8, 2),
-                "sealed": q.price >= q.limit_up} for c, q in quotes.items() if c in sources and q.price > 0 and q.ts.date() == day}
+                "sealed": q.price >= q.limit_up, **positions.get(c, {})}
+            for c, q in quotes.items() if c in sources and q.price > 0 and q.ts.date() == day}
     account = ft._account_state(ft.DB_PATH, {c: SimpleNamespace(price=q.price) for c, q in quotes.items()}, day, SID)
     directive = ft._read_json(mg.DIRECTIVE_PATH)
     directive = {k: directive.get(k) for k in ("slot", "regime", "read", "watch")} if directive.get("date") == day.isoformat() else None

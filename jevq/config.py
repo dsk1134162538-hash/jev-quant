@@ -304,7 +304,10 @@ FLEX_LOSS_STREAK = 3              # 连亏 3 笔，当天不再开新仓
 FLEX_TAKE_PROFIT = ((0.08, 1 / 3), (0.15, 1 / 3))   # 浮盈到 8% 卖最初股数的 1/3，到 15% 再卖 1/3（凑不够一手的档跳过）
 FLEX_PROTECT_AT = 0.05            # 浮盈到过 5% 以后，这笔不许再变成亏损：止损上移到成本价以上
 FLEX_TRAIL = 0.05                 # 并且跟着最高价走：从最高价回撤 5% 剩下的全卖
-MGR_CAPITAL = 10_000.0            # 经理账户本金：和 dj 的实盘资金一样大
+# 高位不买（dj 2026-11-12：冰山冷热一个月翻倍还去买，「正常人思维都不进这只票，太高了」）。
+# 昨收比 20 个交易日前涨了这么多就拒单；11-12 全市场主板只有约 0.6% 的票在这条线以上，冰山冷热是 +79%
+FLEX_MAX_RISE20 = 60.0
+MGR_CAPITAL = 10_000.0           # 经理账户本金：和 dj 的实盘资金一样大
 # 同一个执行器、不同账户的上限；没列出来的 sid 用上面的 FLEX_MAX_PCT / FLEX_MAX_POSITIONS
 FLEX_LIMITS = {"mgr": {"max_pct": 1.0, "max_positions": 1, "label": "经理"}}
 ACCOUNT_CAPITAL = {"relay_main": RELAY_CAPITAL, "relay_shadow": RELAY_CAPITAL,

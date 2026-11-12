@@ -84,7 +84,10 @@ SYSTEM_PROMPT = (
     f"3. 当日净值亏到 {config.FLEX_DAY_LOSS:.0%} 当天不再开新仓；连亏 {config.FLEX_LOSS_STREAK} 笔当天不再开新仓；\n"
     "4. 只做沪深主板（60、00 开头），T+1（今天买的明天才能卖，止损也一样）。止损位由程序每分钟盯着执行，所以要定在你真的认错的地方。\n"
     f"5. 越涨越卖（程序自动执行，不用你下单）：{TIERS_TEXT}；浮盈到过 {config.FLEX_PROTECT_AT:.0%} 以后止损自动上移到成本价以上，"
-    f"并跟着最高价走，从最高价回撤 {config.FLEX_TRAIL:.0%} 剩下的全卖。持仓里的 stop 就是现在真正会触发卖出的那条线。你想更早兑现可以自己下卖单，但不要指望把浮盈拿回成本再说。\n\n"
+    f"并跟着最高价走，从最高价回撤 {config.FLEX_TRAIL:.0%} 剩下的全卖。持仓里的 stop 就是现在真正会触发卖出的那条线。你想更早兑现可以自己下卖单，但不要指望把浮盈拿回成本再说。\n"
+    f"6. 高位不买：quotes 里每只票带 rise5 / rise20（昨收比 5 / 20 个交易日前涨了多少 %）和 fromLow60（比近 60 日最低高多少 %）。"
+    f"rise20 ≥ {config.FLEX_MAX_RISE20:.0f}% 的程序直接拒单；30% 以上就算高位，要买得写清凭什么还能涨。只看今天的盘口会看漏——"
+    "2026-11-12 冰山冷热「昨天冲板没封住、今天竞价只高开 0.4%」看着是个好买点，其实一个月已经翻倍，买在了山顶。\n\n"
     "【经验手册（来自知识库，按阶段用）】\n"
     "阶段→做法：冰点末期低吸启动的核心；启动期试错（一到三成仓）；发酵期做龙头、一进二、弱转强；高潮日（龙头 ≥5 板、涨停数见顶）对已有持仓兑现，新开仓减小仓位但不是禁止；"
     "分歧日低吸核心、做补涨；退潮期空仓。大周期向上容错高，向下时反弹只当反抽。\n"
@@ -281,6 +284,8 @@ def validate_answer(answer, ctx: dict) -> dict:
             dropped.append({"action": action, "code": code, "why": "盘中异动票归趋势交易员，这位不做" if code in handed else "不在候选里"})
         elif action == "卖出" and code not in held:
             dropped.append({"action": action, "code": code, "why": "没有这只持仓"})
+        elif action == "买入" and (ctx["quotes"][code].get("rise20") or 0) >= config.FLEX_MAX_RISE20:
+            dropped.append({"action": action, "code": code, "why": f"高位不买：近 20 个交易日已涨 {ctx['quotes'][code]['rise20']:.0f}%"})
         elif (action == "买入" and code in quotes) or (action == "卖出" and code in held):
             if len(orders) >= MAX_ORDERS_PER_CYCLE:
                 dropped.append({"action": action, "code": code, "why": "超过每轮上限"})
@@ -526,6 +531,22 @@ def _scan_market() -> dict:
     return _market_memo[1]
 
 
+def _positions(db_path: Path, codes: list[str], day) -> dict[str, dict]:
+    """每只候选的位置（rise5 / rise20 / fromLow60，jevq.data.closes.position_stats）。读不到就当没有，不影响别的字段。"""
+    import sqlite3
+    from jevq.data.closes import position_stats
+    if not codes:
+        return {}
+    try:
+        conn = sqlite3.connect(f"{Path(db_path).as_uri()}?mode=ro", uri=True, timeout=3)
+        try:
+            return position_stats(conn, codes, day)
+        finally:
+            conn.close()
+    except (sqlite3.Error, ValueError):
+        return {}
+
+
 def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapshot_path: Path = SNAPSHOT_PATH,
                    fetch_quotes=None, fetch_rows=None, fetch_market=None, log_path: Path | None = None,
                    theme_cache: Path = THEME_CACHE, trader: Trader | None = None, skip_src: tuple | None = None) -> dict:
@@ -582,9 +603,10 @@ def gather_context(now: datetime, slot: str, *, db_path: Path = DB_PATH, snapsho
     except Exception:                                            # noqa: BLE001
         quotes = {}
     boards = {m["code"]: m["boards"] for t in ladder for m in t.get("members", [])}
+    positions = _positions(db_path, list(quotes), day)
     payload = {c: {"name": q.name, "price": q.price, "pct": q.pct, "openPct": q.open_pct, "amount亿": round(q.amount / 1e8, 2),
                    "turnover": q.turnover, "volumeRatio": q.volume_ratio, "limitUp": q.limit_up, "sealed": q.price >= q.limit_up,
-                   "yesterdayBoards": boards.get(c), "src": src.get(c)} for c, q in quotes.items() if q.price > 0}
+                   "yesterdayBoards": boards.get(c), "src": src.get(c), **positions.get(c, {})} for c, q in quotes.items() if q.price > 0}
     account = _account_state(db_path, quotes, day, trader.sid)
     notes = []
     try:

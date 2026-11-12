@@ -322,3 +322,24 @@ def limit_streaks(conn, codes: Iterable[str], today: date, max_days: int = 15) -
         if n:
             out[code] = n
     return out
+
+
+def position_stats(conn, codes: Iterable[str], today: date, lookback: int = 60) -> dict[str, dict[str, float]]:
+    """这只票在高位还是低位（dj 2026-11-12：冰山冷热一个月翻倍还去买，「正常人思维都不进这只票，太高了」）。
+
+    只用 today 之前的收盘价：rise5 / rise20 = 昨收比 5 / 20 个交易日前的收盘涨了多少（%），
+    fromLow60 = 昨收比近 60 个交易日最低收盘高多少（%）。历史不够的项不给；一只都算不出就不在结果里。"""
+    out: dict[str, dict[str, float]] = {}
+    for code in dict.fromkeys(codes):
+        rows = [r[0] for r in conn.execute(
+            "SELECT close FROM closes WHERE code = ? AND date < ? AND close > 0 ORDER BY date DESC LIMIT ?",
+            (code, today.isoformat(), lookback + 1)).fetchall()]
+        if len(rows) < 6:
+            continue
+        last = rows[0]
+        stats = {"rise5": round((last / rows[5] - 1) * 100, 1)}
+        if len(rows) > 20:
+            stats["rise20"] = round((last / rows[20] - 1) * 100, 1)
+        stats["fromLow60"] = round((last / min(rows[:lookback]) - 1) * 100, 1)
+        out[code] = stats
+    return out
