@@ -267,8 +267,9 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
 
 /* 等距视角的像素办公室（IsoOffice.jsx）：全是自己画的 SVG，viewBox 600x344 */
 .iso { width: min(100%, calc((100vh - 226px) * 1.744)); margin: 0 auto; }
-.iso-stage { position: relative; line-height: 1.2; }
-.iso-stage svg { display: block; width: 100%; height: auto; }
+.iso-stage { position: relative; line-height: 1.2; background: radial-gradient(ellipse at 50% 62%, #3b3a4e 0%, #262430 45%, #1d1a16 80%); overflow: hidden; }
+.iso-stage svg { display: block; width: 100%; height: auto; cursor: grab; touch-action: none; user-select: none; }
+.iso-stage svg:active { cursor: grabbing; }
 .iso-stage svg text { user-select: none; pointer-events: none; }
 .px-led { font: 700 5.2px "Microsoft YaHei", sans-serif; fill: #9fe3bd; }
 .px-led.big { font-size: 7px; } .px-led .up { fill: #ff6b60; } .px-led .down { fill: #5fd08a; }
@@ -284,7 +285,32 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
 .px-blink { opacity: 0; animation: px-blink 5s steps(1) infinite; }
 @keyframes px-blink { 0% { opacity: 0; } 94% { opacity: 1; } 97% { opacity: 0; } }
 .px-mouth { animation: d-flick 0.36s steps(1) infinite; }
-.px-hand { animation: d-type 0.32s steps(1) infinite; }
+.px-hand { animation: d-type 0.3s steps(1) infinite; } .px-hand.b { animation-delay: -0.15s !important; } .px-hand.slow { animation-duration: 0.9s; }
+.px-mouse { animation: px-mouse 2.6s steps(1) infinite; }
+@keyframes px-mouse { 0%, 100% { transform: none; } 30% { transform: translate(1px, 0); } 55% { transform: translate(1px, 1px); } 80% { transform: translate(-1px, 0); } }
+.px-pen { animation: px-pen 1.4s steps(1) infinite; }
+@keyframes px-pen { 0%, 100% { transform: none; } 25% { transform: translate(1px, 0); } 50% { transform: translate(2px, 1px); } 75% { transform: translate(0, 1px); } }
+.px-sip { opacity: 0; animation: px-sip 11s steps(1) infinite; }
+@keyframes px-sip { 0% { opacity: 0; } 78% { opacity: 1; } 92% { opacity: 0; } }
+.px-float { animation: px-float 2.8s steps(7) infinite; }
+@keyframes px-float { 0% { opacity: 0; transform: translateY(2px); } 20% { opacity: 1; } 100% { opacity: 0; transform: translateY(-6px); } }
+.px-drip { animation: px-drip 2.2s steps(5) infinite; }
+@keyframes px-drip { 0% { opacity: 0; transform: translateY(-2px); } 20% { opacity: 1; } 100% { opacity: 0; transform: translateY(4px); } }
+.px-tick { animation: px-tick 3.6s steps(1) infinite; }
+@keyframes px-tick { 0%, 100% { transform: none; } 35% { transform: translateY(-1px); } 70% { transform: translateY(1px); } }
+.px-line { animation: px-line 2.8s steps(1) infinite; }
+@keyframes px-line { 0% { opacity: 0; } 25% { opacity: 1; } }
+.px-glint { opacity: 0; animation: px-glint 9s steps(6) infinite; }
+@keyframes px-glint { 0%, 80% { opacity: 0; transform: translateX(-8px); } 85% { opacity: 0.35; } 100% { opacity: 0; transform: translateX(8px); } }
+.px-sec { transform-box: fill-box; transform-origin: 50% 100%; animation: px-sec 60s steps(60) infinite; }
+@keyframes px-sec { to { transform: rotate(360deg); } }
+.px-earflick { animation: px-earflick 7s steps(1) infinite; }
+@keyframes px-earflick { 0%, 100% { transform: none; } 90% { transform: translateY(-1px); } 94% { transform: none; } }
+.px-exit { font: 700 4.4px "Microsoft YaHei", sans-serif; fill: #ffffff; }
+.px-logo { font: 900 9px "Microsoft YaHei", sans-serif; fill: #f6efdc; letter-spacing: 2px; } .px-logo.s { font-size: 3.6px; fill: #c8322b; letter-spacing: 0.6px; }
+.iso-ctl { position: absolute; top: 8px; right: 8px; z-index: 5; display: flex; gap: 4px; }
+.iso-ctl button { min-width: 28px; height: 28px; padding: 0 6px; border: 2px solid #2a241d; background: #f6efdc; color: #2a241d; font: 700 14px/1 "Microsoft YaHei", sans-serif; cursor: pointer; box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.35); }
+.iso-ctl button:hover { background: #ffffff; } .iso-ctl button:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 rgba(0, 0, 0, 0.35); }
 .px-breath { animation: px-breath 3.6s steps(1) infinite; }
 @keyframes px-breath { 0% { transform: translateY(0); } 50% { transform: translateY(1px); } }
 .px-sway { animation: px-sway 6s steps(1) infinite; }
@@ -293,7 +319,7 @@ body.is-desk ::selection { background: rgba(200, 50, 43, 0.18); }
 .px-cloud { animation: px-cloud 80s steps(60) infinite; }
 @keyframes px-cloud { from { transform: translateX(-6px); } to { transform: translateX(16px); } }
 .px-run { animation: px-run 30s linear infinite; }
-@keyframes px-run { 0% { transform: translate(0, 0); } 46%, 50% { transform: translate(162px, 81px); } 96%, 100% { transform: translate(0, 0); } }
+@keyframes px-run { 0% { transform: translate(0, 0); } 46%, 50% { transform: translate(var(--rx), var(--ry)); } 96%, 100% { transform: translate(0, 0); } }
 .px-bob { animation: px-bob 0.4s steps(1) infinite; }
 @keyframes px-bob { 0% { transform: translateY(0); } 50% { transform: translateY(-1px); } }
 .px-fwd { animation: px-fwd 30s steps(1) infinite; } .px-bwd { opacity: 0; animation: px-bwd 30s steps(1) infinite; }
