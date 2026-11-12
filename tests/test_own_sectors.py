@@ -8,6 +8,15 @@ from jevq.data import own_sectors as os_
 from jevq.data.hi189 import Sector
 from jevq.judge.jev import JevError
 from jevq.judge.own_sectors import NO_SECTOR, UNUSABLE_LABEL, OwnSectorJudge
+import pytest
+
+from jevq import config
+
+
+@pytest.fixture(autouse=True)
+def _own_sectors_on(monkeypatch):
+    """线上 2026-11-12 起关掉了（config.OWN_SECTORS_ENABLED = False），代码留着；这里测的是打开时的行为。"""
+    monkeypatch.setattr(config, "OWN_SECTORS_ENABLED", True)
 
 TODAY = date(2026, 10, 8)
 UNIVERSE = {"600001": "甲布", "600002": "乙显", "600003": "丙茅", "600004": "丁药", "600005": "戊泛"}

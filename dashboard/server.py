@@ -377,6 +377,14 @@ class DashboardService:
 class Handler(SimpleHTTPRequestHandler):
     service: DashboardService
 
+    def end_headers(self) -> None:
+        # 网页本身每次都回服务器确认（打包后的 js/css 文件名带哈希，可以缓存）。不加的话桌面快捷方式开的 Edge 窗口
+        # 会按启发式缓存继续用旧 index.html，前端更新了也看不到（dj 2026-11-12「新办公室还是没有」）
+        path = self.path.split("?", 1)[0]
+        if self.command == "GET" and not path.startswith(("/api/", "/assets/")):
+            self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
     def _json(self, status: int, data: dict) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)

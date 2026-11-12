@@ -157,7 +157,9 @@ HI189_MIDDAY_JUDGE = False       # 中报（标题带「(中)」）是否参与�
 HI189_TIMEOUT = 8.0              # 联网超时（秒）
 
 # 自建板块（只记录，不进交易；docs/specs/2026-10-04-own-sectors-design.md）
-OWN_SECTORS_ENABLED = True
+# dj 2026-11-12 停掉：10-04 定的「攒约 20 个交易日数据再决定」早过期了，一直没人用这份数据，每天还要问 Jev 50~100 次。
+# 关掉后收盘快照、成员刷新、盘中记录都不跑；已经攒下的数据留在库里。
+OWN_SECTORS_ENABLED = False
 OWN_SECTORS_BUDGET = 600.0       # 收盘后刷新成员最多花的秒数，没跑完下个交易日接着跑
 OWN_SECTORS_LEADERS = 6          # 日快照里记前几名龙头
 OWN_SECTORS_CORE_SHARE = 0.5     # 对应产品收入占比 ≥ 此值才算 core（进板块）
