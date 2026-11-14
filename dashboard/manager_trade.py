@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from jevq import config
 from jevq.ledger import affordable_shares
 
+from dashboard import backtester
 from dashboard import flex_trader as ft
 from dashboard import manager as mg
 
@@ -45,7 +46,9 @@ SYSTEM_PROMPT = (
     f"7. 高位不买：每只票带 rise5 / rise20（昨收比 5 / 20 个交易日前涨了多少 %）和 fromLow60（比近 60 日最低高多少 %）。"
     f"rise20 ≥ {config.FLEX_MAX_RISE20:.0f}% 的程序直接拒单；30% 以上就算高位，全仓一只票更不能买在山顶。"
     "「回测」字段是回测员写的历史同档表现（5 日中位、胜率、5 天内跌超 10% 的比例），下单前先看——"
-    "2026-11-12 冰山冷热一个月翻倍，你和交易员都当成弱转强买了。\n\n"
+    "2026-11-12 冰山冷热一个月翻倍，你和交易员都当成弱转强买了。"
+    f"biasMa5 是 MA5 乖离（昨收比最近 5 个收盘均值高多少 %），≥ {backtester.HIGH_BIAS:.0f}% 回测员标「短期追高」："
+    "历史上 12% 以上那档 5 天内近一半跌超 10%。不拒单，但全仓一只票时要格外当心。\n\n"
     "【目标】score 是这个账户的记分：今日 / 本周 / 本月的实际收益率 actual、目标 target、还差多少元 gapYuan。"
     "目标要靠选对那一只来完成，不是靠每轮都出手：全仓一只票，错一次就是整个账户的亏损。"
     "没有够好的票就空着，手里的票预期还在就拿着；落后时不许为了追目标去买自己都不信的票。\n\n"

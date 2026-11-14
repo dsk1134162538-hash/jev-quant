@@ -119,9 +119,12 @@ function reportSpeech(role, r) {
   if (role === 'backtest') {
     const items = r.items || []
     const top = items.find((i) => i.rise20 >= 30)
+    const fast = items.filter((i) => i.biasMa5 >= 8).sort((a, b) => b.biasMa5 - a.biasMa5)[0]   // 短期追高（乖离，11-14 加）
     const short = top ? `${head}${raw}。${top.name} 20 天涨了 ${Math.round(top.rise20)}%，这个位置历史上一半的票 5 天内要跌超 10%，别追。`
-      : `${head}${raw}，没有在高位的票。`
-    return { short, full: items.map((i) => `${i.name || i.code}　5日 ${i.rise5 >= 0 ? '+' : ''}${i.rise5 ?? '—'}%　20日 ${i.rise20 >= 0 ? '+' : ''}${i.rise20}%　${i.note || i.verdict}`) }
+      : fast ? `${head}${raw}。${fast.name} 比 5 日线高了 ${Math.round(fast.biasMa5)}%，冲得太急，历史上这样的票 5 天内跌超 10% 的有三成往上。`
+        : `${head}${raw}，没有在高位的票。`
+    const sign = (v) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v}`)
+    return { short, full: items.map((i) => `${i.name || i.code}　5日 ${sign(i.rise5)}%　20日 ${sign(i.rise20)}%　乖离 ${sign(i.biasMa5)}%　${i.note || i.verdict}`) }
   }
   if (role === 'risk') {
     return raw === '护栏正常' ? { short: `${head}护栏都正常，没有碰线的。`, full: [] } : { short: `${head}风控这边要注意：${raw}。`, full: [] }

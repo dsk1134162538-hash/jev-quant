@@ -47,9 +47,34 @@ def test_manager_hears_the_backtester_in_the_meeting():
     assert len(bt_row) == 1 and "冰山冷热" in bt_row[0]["line"] and bt_row[0]["level"] == "bad"
 
 
+BIAS_ROWS = [{"lo": 0, "hi": 8, "label": "0~8%", "n": 500, "avg1": 0.1, "avg5": 0.2, "med5": 0.0, "win5": 49.0, "deep5": 5.0},
+             {"lo": 8, "hi": 12, "label": "8~12%", "n": 40, "avg1": 0.1, "avg5": -0.6, "med5": -1.8, "win5": 42.0, "deep5": 29.0},
+             {"lo": 12, "hi": None, "label": "≥12%", "n": 10, "avg1": 0.2, "avg5": -1.6, "med5": -3.5, "win5": 40.0, "deep5": 48.0}]
+
+
+def test_short_term_chase_is_flagged_even_when_twenty_day_rise_is_under_the_hard_line():
+    # 11-12 买的 002310：20 日 +35%（不到 60% 硬线），但昨收比 5 日线高 16%——11-13 开盘止损
+    st = {"rise5": 25.0, "rise20": 35.3, "fromLow60": 50.0, "biasMa5": 15.8}
+    text = bt.note(st, ROWS, BIAS_ROWS)
+    assert text.startswith("高位：20日+35%") and "；短期追高：昨收比5日线高16%" in text
+    assert "乖离≥12%" in text and "跌超10%的占48%" in text
+    assert "短期追高" not in bt.note({**st, "biasMa5": 7.9}, ROWS, BIAS_ROWS)            # 8% 以下不提
+    assert bt.note({"biasMa5": 9.0}, ROWS, BIAS_ROWS).startswith("短期追高")           # 20 日历史不够也照样提醒
+
+
+def test_report_counts_chasers_and_warns_without_rejecting():
+    quotes = {"002310": {"name": "东方乙", "rise5": 25.0, "rise20": 20.0, "biasMa5": 15.8},
+              "600002": {"name": "乙", "rise5": 1.0, "rise20": 3.0, "biasMa5": 1.0}}
+    r = bt.report(quotes, NOW, ROWS, BIAS_ROWS)
+    assert r["line"] == "看了 2 只 · 高位 0 只 · 短期追高 1 只 · 最急 东方乙 比5日线高16%"
+    assert r["level"] == "warn" and r["items"][0]["biasMa5"] == 15.8 and r["items"][0]["verdict"] == "正常·短期追高"
+
+
 def test_the_shipped_base_rates_file_has_the_buckets_the_backtester_reads():
     data = json.loads(bt.RATES_PATH.read_text(encoding="utf-8"))
     rows = data["all"]
     assert rows and all({"lo", "hi", "label", "n", "med5", "win5", "deep5"} <= set(r) for r in rows)
     high = bt.bucket_of(79.0, rows)
     assert high is not None and high["deep5"] > 30                              # 高位档：5 天内跌超 10% 的比例明显偏高
+    bias = data["bias"]
+    assert bt.bucket_of(15.0, bias)["deep5"] > 30 and bt.bucket_of(1.0, bias)["deep5"] < 10   # 乖离 ≥12% 那档也一样

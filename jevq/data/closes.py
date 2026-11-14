@@ -328,7 +328,9 @@ def position_stats(conn, codes: Iterable[str], today: date, lookback: int = 60) 
     """这只票在高位还是低位（dj 2026-11-12：冰山冷热一个月翻倍还去买，「正常人思维都不进这只票，太高了」）。
 
     只用 today 之前的收盘价：rise5 / rise20 = 昨收比 5 / 20 个交易日前的收盘涨了多少（%），
-    fromLow60 = 昨收比近 60 个交易日最低收盘高多少（%）。历史不够的项不给；一只都算不出就不在结果里。"""
+    fromLow60 = 昨收比近 60 个交易日最低收盘高多少（%）。历史不够的项不给；一只都算不出就不在结果里。
+    biasMa5 = 昨收比最近 5 个收盘的均值高多少（%，dj 2026-11-14：借 daily_stock_analysis 的「乖离率 > 5% 不追高」，
+    主板 137 万样本验过：≥ 12% 那档 5 天内跌超 10% 的占 48%）。"""
     out: dict[str, dict[str, float]] = {}
     for code in dict.fromkeys(codes):
         rows = [r[0] for r in conn.execute(
@@ -337,7 +339,7 @@ def position_stats(conn, codes: Iterable[str], today: date, lookback: int = 60) 
         if len(rows) < 6:
             continue
         last = rows[0]
-        stats = {"rise5": round((last / rows[5] - 1) * 100, 1)}
+        stats = {"rise5": round((last / rows[5] - 1) * 100, 1), "biasMa5": round((last / (sum(rows[:5]) / 5) - 1) * 100, 1)}
         if len(rows) > 20:
             stats["rise20"] = round((last / rows[20] - 1) * 100, 1)
         stats["fromLow60"] = round((last / min(rows[:lookback]) - 1) * 100, 1)

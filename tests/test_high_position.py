@@ -29,7 +29,7 @@ def test_position_stats_uses_only_closes_before_today():
     conn.execute("INSERT INTO closes(date, code, close) VALUES (?, ?, ?)", (TODAY.isoformat(), "000530", 99.0))  # 今天的不算
     _closes(conn, "600001", [10.0, 10.1, 10.2])                             # 历史太短：不给
     st = position_stats(conn, ["000530", "600001"], TODAY)
-    assert st["000530"] == {"rise5": 41.0, "rise20": 79.0, "fromLow60": 125.6}
+    assert st["000530"] == {"rise5": 41.0, "biasMa5": 30.3, "rise20": 79.0, "fromLow60": 125.6}   # 乖离：11.28 比 (11.28+8×4)/5=8.66 高 30.3%
     assert "600001" not in st
 
 
